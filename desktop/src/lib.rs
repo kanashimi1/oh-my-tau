@@ -35,6 +35,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 static WINDOW_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
+mod dictation;
 mod quick;
 mod settings;
 
@@ -64,6 +65,23 @@ async fn tau_settings(app: AppHandle) -> serde_json::Value {
         "devtoolsPort": s.devtools_port,
         "devtoolsActive": state.devtools_port,
     })
+}
+
+/// Dictation preferences, including defaults for older settings files.
+#[tauri::command]
+async fn dictation_settings() -> settings::DictationSettings {
+    settings::load().dictation
+}
+
+#[tauri::command]
+async fn set_dictation(enabled: bool, hold_ms: u64, language: String) -> Result<(), String> {
+    let language = language.trim();
+    if language.is_empty() || language.len() > 32 || !language.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return Err("invalid language".into());
+    }
+    let mut s = settings::load();
+    s.dictation = settings::DictationSettings { enabled, hold_ms, language: language.into() };
+    settings::save(&s)
 }
 
 /// Re-register the capture shortcut live; on failure the previous one stays.
@@ -338,6 +356,8 @@ pub fn run() {
             capture_done,
             capture_rect,
             tau_settings,
+            dictation_settings,
+            set_dictation,
             set_capture_shortcut,
             quick::quick_toggle,
             quick::quick_capture,

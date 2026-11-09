@@ -9,12 +9,27 @@ pub const DEFAULT_CAPTURE_SHORTCUT: &str = "Ctrl+Shift+S";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct DictationSettings {
+    pub enabled: bool,
+    pub hold_ms: u64,
+    pub language: String,
+}
+
+impl Default for DictationSettings {
+    fn default() -> Self {
+        Self { enabled: true, hold_ms: 250, language: "ru".into() }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     /// Global shortcut for "capture screen → pin editor", e.g. `Ctrl+Alt+S`.
     pub capture_shortcut: String,
     /// `--remote-debugging-port` for every Tau webview (127.0.0.1 only).
     /// Off by default: anything local could drive the UI through it.
     pub devtools_port: Option<u16>,
+    pub dictation: DictationSettings,
 }
 
 impl Default for Settings {
@@ -22,6 +37,7 @@ impl Default for Settings {
         Self {
             capture_shortcut: DEFAULT_CAPTURE_SHORTCUT.to_string(),
             devtools_port: None,
+            dictation: DictationSettings::default(),
         }
     }
 }

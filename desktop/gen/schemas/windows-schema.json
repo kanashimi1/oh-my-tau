@@ -195,6 +195,12 @@
           "markdownDescription": "Enables the continue_main command without any pre-configured scope."
         },
         {
+          "description": "Enables the dictation_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-dictation-settings",
+          "markdownDescription": "Enables the dictation_settings command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notify command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notify",
@@ -231,6 +237,12 @@
           "markdownDescription": "Enables the set_devtools_port command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_dictation command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-dictation",
+          "markdownDescription": "Enables the set_dictation command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tau_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tau-settings",
@@ -253,6 +265,12 @@
           "type": "string",
           "const": "deny-continue-main",
           "markdownDescription": "Denies the continue_main command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the dictation_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-dictation-settings",
+          "markdownDescription": "Denies the dictation_settings command without any pre-configured scope."
         },
         {
           "description": "Denies the notify command without any pre-configured scope.",
@@ -289,6 +307,12 @@
           "type": "string",
           "const": "deny-set-devtools-port",
           "markdownDescription": "Denies the set_devtools_port command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_dictation command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-dictation",
+          "markdownDescription": "Denies the set_dictation command without any pre-configured scope."
         },
         {
           "description": "Denies the tau_settings command without any pre-configured scope.",

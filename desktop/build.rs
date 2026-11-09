@@ -8,6 +8,8 @@ fn main() {
             "capture_done",
             "capture_rect",
             "tau_settings",
+            "dictation_settings",
+            "set_dictation",
             "set_capture_shortcut",
             "set_devtools_port",
             "quick_toggle",

@@ -20,6 +20,8 @@
     "allow-capture-done",
     "allow-capture-rect",
     "allow-tau-settings",
+    "allow-dictation-settings",
+    "allow-set-dictation",
     "allow-set-capture-shortcut",
     "allow-set-devtools-port",
     "allow-quick-toggle",
