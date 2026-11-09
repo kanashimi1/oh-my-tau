@@ -249,6 +249,26 @@ fn handle_chunk(
     if !chunk.is_object() {
         return;
     }
+    // Mid-stream error frame (OpenRouter documents `{"error": {"code", "message"}}` after a 200
+    // and an SSE start; OpenAI-compatible relays do the same): the turn failed. Without this the
+    // following `[DONE]` settled an empty "completed" message.
+    if let Some(error) = chunk.get("error").filter(|e| e.is_object() || e.is_string()) {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| error.as_str())
+            .unwrap_or("provider sent an error frame");
+        let code = error.get("code").map(|c| match c {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        });
+        state.output.stop_reason = StopReason::Error;
+        state.output.error_message = Some(match code {
+            Some(code) if !code.is_empty() && code != "null" => format!("{code}: {message}"),
+            _ => message.to_string(),
+        });
+        return;
+    }
     if let Some(id) = chunk.get("id").and_then(|value| value.as_str()) {
         if state.output.response_id.is_none() {
             state.output.response_id = Some(id.to_string());
@@ -898,6 +918,41 @@ mod tests {
             "data: {{\"id\":\"gen-01\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{{\"prompt_tokens\":50000,\"completion_tokens\":50000,\"total_tokens\":100000,\"prompt_tokens_details\":{{\"cached_tokens\":0}}{usage_fields}}}}}\n\n"
         );
         format!("{content}{usage}{DONE}")
+    }
+
+    /// A mid-stream `{"error": ...}` frame (OpenRouter, OpenAI-compatible relays) fails the turn
+    /// instead of settling an empty completed message on the following `[DONE]`.
+    #[tokio::test]
+    async fn midstream_error_frame_fails_the_turn() {
+        let mut model = completions_model("m", "openrouter", 0.0, 0.0);
+        let body = format!(
+            "data: {}\n\ndata: {}\n\n{DONE}",
+            r#"{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}"#,
+            r#"{"error":{"code":402,"message":"This API key has expired"}}"#
+        );
+        let addr = serve_sse(body).await;
+        model["baseUrl"] = json!(format!("http://{addr}"));
+        let model: Model = serde_json::from_value(model).unwrap();
+        let options = OpenAICompletionsOptions::from_base(crate::types::StreamOptions {
+            api_key: Some("test".into()),
+            ..Default::default()
+        });
+        let mut reader = stream_openai_completions(
+            &model,
+            &Context { system_prompt: None, messages: vec![], tools: None },
+            Some(&options),
+        );
+        loop {
+            match reader.next_event().await.unwrap() {
+                AssistantMessageEvent::Done { .. } => panic!("error frame settled as a completed message"),
+                AssistantMessageEvent::Error { error, .. } => {
+                    let msg = error.error_message.unwrap_or_default();
+                    assert!(msg.contains("402") && msg.contains("expired"), "{msg}");
+                    return;
+                }
+                _ => {}
+            }
+        }
     }
 
     #[tokio::test]

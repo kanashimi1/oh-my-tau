@@ -316,6 +316,22 @@ fn chain_payload_hooks(
     }
 }
 
+/// The `x-opencode-session` value: the agent session id, else one id per process.
+fn opencode_session_id(session_id: Option<&str>) -> String {
+    static PROCESS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    match session_id.filter(|s| !s.is_empty()) {
+        Some(s) => s.to_owned(),
+        None => PROCESS
+            .get_or_init(|| {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos());
+                format!("omt-{}-{nanos:x}", std::process::id())
+            })
+            .clone(),
+    }
+}
+
 /// Stream one completion against `model` with `api_key` and the auth-resolved
 /// request `headers`: the per-request tail the switchable seams and the CLI's
 /// route-authoritative variant share.
@@ -382,6 +398,14 @@ pub fn stream_once(
                     merged
                         .get_or_insert_with(std::collections::BTreeMap::new)
                         .extend(request_headers);
+                }
+                // opencode-go routes only requests that carry `x-opencode-session` (400
+                // MissingSessionID otherwise); a configured/compaction value wins.
+                if model.provider == "opencode-go" {
+                    merged
+                        .get_or_insert_with(std::collections::BTreeMap::new)
+                        .entry("x-opencode-session".to_owned())
+                        .or_insert_with(|| opencode_session_id(options.session_id.as_deref()));
                 }
                 merged.map(|headers| headers.into_iter().collect())
             },
