@@ -22,7 +22,10 @@ fn oracle_file(name: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("OMP_COMPAT_ORACLE_DIR")
         .map(std::path::PathBuf::from)
         .into_iter()
-        .chain([repo.join("target/compat-oracle"), repo.join("runs/omp-rust/compat-oracle")])
+        .chain([
+            repo.join("target/compat-oracle"),
+            repo.join("runs/omp-rust/compat-oracle"),
+        ])
         .map(|dir| dir.join(name))
         .find(|path| path.is_file())
 }
@@ -35,13 +38,15 @@ fn model_of(spec: &Value) -> Model {
 
 fn options_of(case: &Value) -> OpenAICompletionsOptions {
     let o = &case["options"];
-    let mut base = StreamOptions::default();
-    base.max_tokens = o.get("maxTokens").and_then(Value::as_u64);
-    base.temperature = o.get("temperature").and_then(Value::as_f64);
-    base.session_id = o
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let base = StreamOptions {
+        max_tokens: o.get("maxTokens").and_then(Value::as_u64),
+        temperature: o.get("temperature").and_then(Value::as_f64),
+        session_id: o
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        ..StreamOptions::default()
+    };
     let mut opts = OpenAICompletionsOptions::from_base(base);
     opts.reasoning_effort = o
         .get("reasoning")

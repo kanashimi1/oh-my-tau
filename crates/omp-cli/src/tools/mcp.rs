@@ -23,106 +23,80 @@ use serde_json::Value;
 /// Discover MCP tools from omp's config locations (`~/.omp/agent/mcp.json`
 /// plus project `mcp.json`/`.mcp.json`) and wrap them as agent tools.
 ///
-/// This performs blocking network/subprocess I/O; call from a sync context
-/// within (or outside) a Tokio runtime.
+/// This performs network/subprocess I/O (servers connect eagerly, exactly
+/// like omp's startup) and the transports spawn `tokio::spawn` tasks (stdio
+/// read loop, subprocess pipes) that must outlive this call, so it must be
+/// awaited on the process's main runtime — never on a throwaway runtime.
 #[must_use]
-pub fn mcp_tools(cwd: &Path) -> Vec<Arc<dyn AgentTool>> {
-    block_on_discover(cwd).unwrap_or_default()
+pub async fn mcp_tools(cwd: &Path) -> Vec<Arc<dyn AgentTool>> {
+    let requested = REQUESTED_TOOLS.lock().clone();
+    register_tools(Arc::new(McpManager::from_configs_for(cwd, &requested))).await
+}
+
+/// Connect `manager`'s servers and wrap their tools (records the connected
+/// servers for the status line).
+async fn register_tools(manager: Arc<McpManager>) -> Vec<Arc<dyn AgentTool>> {
+    let discovered = manager.tools().await;
+    let mut connected = Vec::new();
+    for (name, status) in manager.statuses().await {
+        match status {
+            omp_mcp::ServerStatus::Failed(message) => {
+                eprintln!("omt: MCP server \"{name}\" unavailable: {message}");
+            }
+            omp_mcp::ServerStatus::Connected => {
+                let tools = discovered.iter().filter(|t| t.server == name).count();
+                connected.push((name, tools));
+            }
+            omp_mcp::ServerStatus::Pending => {}
+        }
+    }
+    *CONNECTED_SERVERS.lock() = connected;
+    discovered
+        .into_iter()
+        .map(|tool| {
+            let definition = tool.definition.clone();
+            let name = create_tool_name(&tool.server, &definition.name);
+            let description = definition
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("MCP tool from {}", tool.server));
+            let parameters = normalize_schema_for_mcp(&definition.input_schema);
+            Arc::new(McpTool {
+                name,
+                description,
+                parameters,
+                server: tool.server,
+                tool_name: definition.name,
+                manager: manager.clone(),
+            }) as Arc<dyn AgentTool>
+        })
+        .collect::<Vec<_>>()
+}
+
+/// Tool names this run is restricted to (`--tools <csv>`, an agent's `tools:`).
+/// MCP servers marked `enabled: false` still load when one of their tools is
+/// named here; set once at startup, read by every later (re)discovery.
+static REQUESTED_TOOLS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+/// Record the run's `--tools <csv>` list for MCP discovery (see [`REQUESTED_TOOLS`]).
+pub fn set_requested_tools(csv: &str) {
+    *REQUESTED_TOOLS.lock() = csv
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect();
 }
 
 /// Servers connected by the latest discovery, with their tool counts (TS
 /// `MCPManager.getConnectedServers` + `getConnection(name).tools.length`).
-static CONNECTED_SERVERS: std::sync::Mutex<Vec<(String, usize)>> =
-    std::sync::Mutex::new(Vec::new());
+static CONNECTED_SERVERS: parking_lot::Mutex<Vec<(String, usize)>> =
+    parking_lot::Mutex::new(Vec::new());
 
 /// `(server, tool count)` for every MCP server connected by the latest discovery.
 #[must_use]
 pub fn connected_servers() -> Vec<(String, usize)> {
-    CONNECTED_SERVERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
-    let cwd = cwd.to_path_buf();
-    let discover = move || async move {
-        let manager = Arc::new(McpManager::from_default_configs(&cwd));
-        let discovered = manager.tools().await;
-        let mut connected = Vec::new();
-        for (name, status) in manager.statuses().await {
-            match status {
-                omp_mcp::ServerStatus::Failed(message) => {
-                    eprintln!("omt: MCP server \"{name}\" unavailable: {message}");
-                }
-                omp_mcp::ServerStatus::Connected => {
-                    let tools = discovered.iter().filter(|t| t.server == name).count();
-                    connected.push((name, tools));
-                }
-                omp_mcp::ServerStatus::Pending => {}
-            }
-        }
-        *CONNECTED_SERVERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = connected;
-        discovered
-            .into_iter()
-            .map(|tool| {
-                let definition = tool.definition.clone();
-                let name = create_tool_name(&tool.server, &definition.name);
-                let description = definition
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| format!("MCP tool from {}", tool.server));
-                let parameters = normalize_schema_for_mcp(&definition.input_schema);
-                Arc::new(McpTool {
-                    name,
-                    description,
-                    parameters,
-                    server: tool.server,
-                    tool_name: definition.name,
-                    manager: manager.clone(),
-                }) as Arc<dyn AgentTool>
-            })
-            .collect::<Vec<_>>()
-    };
-    #[allow(clippy::result_large_err)]
-    match tokio::runtime::Handle::try_current() {
-        // `block_in_place` panics on a current-thread runtime; fall through
-        // to the shared fallback runtime there (rpc/print modes).
-        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            Some(tokio::task::block_in_place(|| handle.block_on(discover())))
-        }
-        // `block_in_place` and in-place `block_on` both panic or deadlock on
-        // a current-thread runtime; run discovery on the shared fallback
-        // runtime's own thread (rpc/print modes).
-        Ok(_current_thread) => {
-            let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<Arc<dyn AgentTool>>>>();
-            std::thread::spawn(move || {
-                let result: Option<Vec<Arc<dyn AgentTool>>> =
-                    Some(fallback_runtime().block_on(discover()));
-                let _ = tx.send(result);
-            });
-            rx.recv().unwrap_or(None)
-        }
-        // No ambient runtime (sync host): run discovery on a shared
-        // process-lifetime runtime so the transports' spawned tasks (stdio
-        // read loop, subprocess pipes) outlive this call — MCP tools are
-        // invoked long after registration.
-        Err(_no_runtime) => Some(fallback_runtime().block_on(discover())),
-    }
-}
-
-/// Process-lifetime runtime used when the host has no Tokio context.
-fn fallback_runtime() -> &'static tokio::runtime::Runtime {
-    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("MCP runtime")
-    });
-    &RUNTIME
+    CONNECTED_SERVERS.lock().clone()
 }
 
 /// One registered MCP tool: schema/description come from `tools/list`, the
@@ -153,7 +127,7 @@ impl AgentTool for McpTool {
         _tool_call_id: String,
         params: Value,
         signal: AbortSignal,
-        _on_update: AgentToolUpdateCallback,
+        on_update: AgentToolUpdateCallback,
     ) -> BoxFut<'static, Result<AgentToolResult>> {
         Box::pin(async move {
             if signal.is_aborted() {
@@ -164,7 +138,42 @@ impl AgentTool for McpTool {
                 Value::Object(_) => params,
                 _ => Value::Object(serde_json::Map::new()),
             };
-            match self.manager.call(&self.server, &self.tool_name, args).await {
+            // Server→client progress updates refresh the running tool card
+            // through the agent loop's `tool_execution_update` events.
+            let (server, tool_name) = (self.server.clone(), self.tool_name.clone());
+            let progress_update = {
+                let on_update = on_update.clone();
+                move |update: omp_mcp::McpProgress| {
+                    let text = match (&update.message, update.progress, update.total) {
+                        (Some(message), _, _) => format!("mcp progress: {message}"),
+                        (None, Some(done), Some(total)) => {
+                            format!("mcp progress: {done}/{total}")
+                        }
+                        (None, Some(done), None) => format!("mcp progress: {done}"),
+                        (None, None, _) => "mcp progress".to_string(),
+                    };
+                    on_update(AgentToolResult {
+                        content: vec![ToolResultContent::text(text)],
+                        details: serde_json::json!({
+                            "serverName": server,
+                            "toolName": tool_name,
+                            "isError": false,
+                            "mcpProgress": {
+                                "progress": update.progress,
+                                "total": update.total,
+                                "message": update.message,
+                            },
+                        }),
+                        terminate: None,
+                        is_error: None,
+                    });
+                }
+            };
+            match self
+                .manager
+                .call_with_progress(&self.server, &self.tool_name, args, progress_update)
+                .await
+            {
                 Ok(result) => {
                     let text = omp_mcp::format::format_tool_result(&result);
                     let content = vec![ToolResultContent::text(text)];
@@ -201,6 +210,7 @@ impl AgentTool for McpTool {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use std::io::Write;
@@ -222,6 +232,10 @@ for line in sys.stdin:
         result = {"tools": TOOLS}
     elif method == "tools/call":
         args = msg["params"].get("arguments", {})
+        if args.get("text") == "progress":
+            print(json.dumps({"jsonrpc": "2.0", "method": "notifications/progress",
+                "params": {"progressToken": msg["params"]["_meta"]["progressToken"],
+                           "progress": 1, "total": 2, "message": "halfway"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
             "result": {"content": [{"type": "text", "text": json.dumps(args)}]}}), flush=True)
         continue
@@ -233,8 +247,8 @@ for line in sys.stdin:
     /// Registration matches omp: `mcp__<server>_<tool>` names, verbatim
     /// schema passthrough, `MCP tool from <server>` fallback description,
     /// and `execute()` result formatting.
-    #[test]
-    fn mcp_tools_register_with_omp_names_and_schemas() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_tools_register_with_omp_names_and_schemas() {
         if std::process::Command::new("python3")
             .arg("--version")
             .output()
@@ -244,8 +258,6 @@ for line in sys.stdin:
             return;
         }
         let root = tempfile::tempdir().expect("tempdir");
-        let empty_user = root.path().join("usercfg");
-        std::fs::create_dir_all(&empty_user).unwrap();
         let project = root.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
         let script = project.join("fake.py");
@@ -253,18 +265,15 @@ for line in sys.stdin:
             .unwrap()
             .write_all(FAKE_SERVER_PY.as_bytes())
             .unwrap();
-        std::fs::write(
-            project.join("mcp.json"),
-            serde_json::json!({"mcpServers": {"fake": {
-                "command": "python3", "args": [script.to_string_lossy()], "timeout": 15000
-            }}})
-            .to_string(),
-        )
-        .unwrap();
-
-        std::env::set_var("OMP_CONFIG_DIR", &empty_user);
-        let tools = mcp_tools(&project);
-        std::env::remove_var("OMP_CONFIG_DIR");
+        // Explicit server config: no process env (OMP_CONFIG_DIR) or
+        // `--tools` global, which parallel tests would race on.
+        let config: omp_mcp::McpServerConfig = serde_json::from_value(serde_json::json!({
+            "command": "python3", "args": [script.to_string_lossy()], "timeout": 15000
+        }))
+        .expect("server config");
+        let configs = std::iter::once(("fake".to_string(), config)).collect();
+        let manager = McpManager::new(Arc::new(project.clone()), configs);
+        let tools = register_tools(Arc::new(manager)).await;
 
         assert_eq!(tools.len(), 1);
         let tool = &tools[0];
@@ -277,22 +286,18 @@ for line in sys.stdin:
         );
         assert_eq!(tool.parameters()["required"], serde_json::json!(["text"]));
 
-        // Execute through the AgentTool surface.
-        let result = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                tool.clone()
-                    .execute(
-                        "call-1".to_string(),
-                        serde_json::json!({"text": "hi"}),
-                        AbortSignal::never(),
-                        Arc::new(|_| {}),
-                    )
-                    .await
-                    .expect("execute")
-            });
+        // Execute through the AgentTool surface (on the same runtime that
+        // ran discovery, as the production main runtime does).
+        let result = tool
+            .clone()
+            .execute(
+                "call-1".to_string(),
+                serde_json::json!({"text": "hi"}),
+                AbortSignal::never(),
+                Arc::new(|_| {}),
+            )
+            .await
+            .expect("execute");
         let text = match &result.content[0] {
             ToolResultContent::Text(t) => t.text.clone(),
             ToolResultContent::Image(_) => panic!("unexpected content: image"),
@@ -301,5 +306,34 @@ for line in sys.stdin:
         assert_eq!(result.details["serverName"], serde_json::json!("fake"));
         assert_eq!(result.details["toolName"], serde_json::json!("echo"));
         assert_eq!(result.details["isError"], serde_json::json!(false));
+
+        let updates = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let updates_in_callback = Arc::clone(&updates);
+        tool.clone()
+            .execute(
+                "call-progress".to_string(),
+                serde_json::json!({"text": "progress"}),
+                AbortSignal::never(),
+                Arc::new(move |update| {
+                    updates_in_callback.lock().push(update);
+                }),
+            )
+            .await
+            .expect("execute with progress");
+        let updates = updates.lock();
+        assert_eq!(updates.len(), 1, "one ordered progress update");
+        assert_eq!(updates[0].details["mcpProgress"]["message"], "halfway");
+        let event = pa_agent::types::AgentEvent::ToolExecutionUpdate {
+            tool_call_id: "call-progress".to_string(),
+            tool_name: tool.name().to_string(),
+            args: serde_json::json!({"text": "progress"}),
+            partial_result: updates[0].clone(),
+        };
+        let frame = crate::events::frame(&event);
+        assert_eq!(frame["type"], "tool_execution_update");
+        assert_eq!(
+            frame["partialResult"]["details"]["mcpProgress"]["progress"],
+            1.0
+        );
     }
 }

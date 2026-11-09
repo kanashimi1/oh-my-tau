@@ -36,9 +36,117 @@ pub async fn run(
     let osc11_bg = omp_tui::chrome::probe_osc11_background(std::time::Duration::from_millis(200));
     let session_sources = session_sources(&cwd, &persist);
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
-    // Model catalogue for the `/model` picker: providers with credentials
-    // (same source the RPC `get_available_models` and `/model` builtin use).
-    let models = crate::subcmd::models::browser_models(&omp_providers::AgentDir::default())
+    let models = picker_models();
+    let rt = Runtime::start(Arc::new(agent), target, cwd.clone(), persist, tx).await;
+    if let Some(gate) = crate::approval::Gate::get() {
+        gate.bind(&rt, true);
+    }
+    if let Some(path) = resume {
+        rt.load_session(&path, None).await?;
+        rt.publish_session_file();
+        announce_loaded_session(&rt).await;
+    }
+    // Extension wiring (after the startup resume so `session_start` sees the
+    // resumed file/title; the resume itself emits no `session_switch`, as in TS).
+    if let Some(e) = &extensions {
+        e.attach_session(rt.clone(), crate::ext::ExtMode::Tui).await;
+    }
+    // Slash catalog for the editor's `/` popup: builtins + extension/file
+    // commands, same start-up announce sequence as RPC mode.
+    let mut commands = crate::rpc::slash::dynamic_commands(&rt).await;
+    commands.push(desktop_command());
+    rt.set_available_commands(commands);
+    rt.announce_commands();
+    // Session renames have no dedicated runtime frame (they reach hosts via
+    // the `sessionName` field of `state` dumps and this listener); forward
+    // them into the UI stream as `session_name_changed` frames.
+    {
+        let listener_rt = rt.clone();
+        let ext_listener = extensions.as_ref().map(|e| e.name_listener());
+        rt.set_name_listener(Some(Arc::new(move |name: &str| {
+            if let Some(f) = &ext_listener {
+                f(name);
+            }
+            listener_rt.send(serde_json::json!({
+                "type": "session_name_changed",
+                "name": name,
+            }));
+        })));
+    }
+    let (model, model_name) = {
+        let m = rt.agent.model().await;
+        (format!("{}/{}", m.provider, m.id), m.name)
+    };
+    rt.enable_context_usage_frames();
+    crate::slash_extra::mark_interactive_ui();
+    rt.publish_context_usage();
+    let port = Port {
+        rt,
+        ext: extensions,
+    };
+    omp_tui::run(
+        omp_tui::RunConfig {
+            frames: rx,
+            model,
+            model_name: Some(model_name).filter(|n| !n.is_empty()),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            cwd,
+            models,
+            session_sources,
+            osc11_bg,
+        },
+        port,
+    )
+    .await
+}
+
+/// Session file a `/desktop` handoff asked `main` to move to the hub once
+/// the TUI loop has exited (see [`take_handoff`]).
+static HANDOFF: parking_lot::Mutex<Option<PathBuf>> = parking_lot::Mutex::new(None);
+
+/// The session `/desktop` handed off, if the TUI exited for that reason.
+pub(crate) fn take_handoff() -> Option<PathBuf> {
+    HANDOFF.lock().take()
+}
+
+/// `/desktop` palette entry (TUI-only: handled by the ports, not slash.rs).
+pub(crate) fn desktop_command() -> Value {
+    serde_json::json!({
+        "name": "desktop",
+        "description": "Continue this session in the omt desktop app (the terminal stays attached)",
+        "source": "builtin",
+    })
+}
+
+/// `/desktop` in a local TUI: the session moves to the `omt web` hub (one
+/// writer per session file), so the TUI exits and `main` re-execs as
+/// `omt attach` on the hub agent.
+async fn desktop_handoff(rt: &Runtime) {
+    if rt.agent.is_streaming().await {
+        rt.send(prompt_failed(
+            "/desktop: wait for the turn to finish (or Esc to abort) first",
+        ));
+        return;
+    }
+    let Some(path) = rt.live_session_file() else {
+        rt.send(prompt_failed(
+            "/desktop: this session is not saved (--no-session)",
+        ));
+        return;
+    };
+    if let Err(e) = crate::attach::hub_agents().await {
+        rt.send(prompt_failed(format!("/desktop: {e:#}")));
+        return;
+    }
+    *HANDOFF.lock() = Some(path);
+    rt.send(prompt_completed(false));
+    rt.send(serde_json::json!({"type": "ui_exit"}));
+}
+
+/// Model catalogue for the `/model` picker: providers with credentials
+/// (same source the RPC `get_available_models` and `/model` builtin use).
+pub(crate) fn picker_models() -> Vec<omp_tui::overlays::models::ModelEntry> {
+    crate::subcmd::models::browser_models(&omp_providers::AgentDir::default())
         .into_iter()
         .map(|b| {
             let m = b.model;
@@ -63,66 +171,44 @@ pub async fn run(
             e.priority = b.priority;
             e
         })
-        .collect();
-    let rt = Runtime::start(Arc::new(agent), target, cwd.clone(), persist, tx).await;
-    if let Some(gate) = crate::approval::Gate::get() {
-        gate.bind(&rt, true);
-    }
-    if let Some(path) = resume {
-        rt.load_session(&path, None).await?;
-        rt.publish_session_file();
-        announce_loaded_session(&rt).await;
-    }
-    // Extension wiring (after the startup resume so `session_start` sees the
-    // resumed file/title; the resume itself emits no `session_switch`, as in TS).
-    if let Some(e) = &extensions {
-        e.attach_session(rt.clone(), crate::ext::ExtMode::Tui).await;
-    }
-    // Slash catalog for the editor's `/` popup: builtins + extension/file
-    // commands, same start-up announce sequence as RPC mode.
-    rt.set_available_commands(crate::rpc::slash::dynamic_commands(&rt).await);
-    rt.announce_commands();
-    // Session renames have no dedicated runtime frame (they reach hosts via
-    // the `sessionName` field of `state` dumps and this listener); forward
-    // them into the UI stream as `session_name_changed` frames.
-    {
-        let listener_rt = rt.clone();
-        let ext_listener = extensions.as_ref().map(|e| e.name_listener());
-        rt.set_name_listener(Some(Arc::new(move |name: &str| {
-            if let Some(f) = &ext_listener {
-                f(name);
+        .collect()
+}
+
+/// F5 model refresh (TS `ModelRegistry.refresh`): per-provider discovery
+/// reports as `session_info` lines, then the re-read catalogue.
+pub(crate) fn refresh_models_into(send: impl Fn(Value) + Send + 'static) {
+    tokio::task::spawn_blocking(move || {
+        // TS `ModelRegistry.refresh`: per-provider /models discovery →
+        // `models.db`.
+        match omp_providers::refresh(&omp_providers::AgentDir::default(), None) {
+            Ok(reports) => {
+                for r in reports {
+                    let msg = match &r.note {
+                        Some(note) => format!("model refresh {}: {note}", r.provider),
+                        None if r.discovered.is_empty() => {
+                            format!(
+                                "model refresh {}: no new models ({} cached)",
+                                r.provider, r.total
+                            )
+                        }
+                        None => format!(
+                            "model refresh {}: +{} ({})",
+                            r.provider,
+                            r.discovered.len(),
+                            r.discovered.join(", ")
+                        ),
+                    };
+                    // `session_info` is the one free-text frame the TUI
+                    // renders verbatim.
+                    send(serde_json::json!({"type": "session_info", "lines": [{"text": msg}]}));
+                }
+                // Re-read the merged catalog so the open /model browser
+                // shows new models immediately (TS model hub behavior).
+                send(models_changed_frame());
             }
-            listener_rt.send(serde_json::json!({
-                "type": "session_name_changed",
-                "name": name,
-            }));
-        })));
-    }
-    let (model, model_name) = {
-        let m = rt.agent.model().await;
-        (format!("{}/{}", m.provider, m.id), m.name.clone())
-    };
-    rt.enable_context_usage_frames();
-    crate::slash_extra::mark_interactive_ui();
-    rt.publish_context_usage();
-    let port = Port {
-        rt,
-        ext: extensions,
-    };
-    omp_tui::run(
-        omp_tui::RunConfig {
-            frames: rx,
-            model,
-            model_name: Some(model_name).filter(|n| !n.is_empty()),
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-            cwd,
-            models,
-            session_sources,
-            osc11_bg,
-        },
-        port,
-    )
-    .await
+            Err(e) => send(prompt_failed(format!("model refresh failed: {e:#}"))),
+        }
+    });
 }
 
 /// Session stores for the `/resume` picker: the live session file's dir
@@ -218,7 +304,7 @@ fn models_changed_frame() -> Value {
 
 /// TS `RpcPromptResultFrame` for a prompt that failed before or outside the
 /// agent run (the TUI-local paths below; the runtime emits its own).
-fn prompt_failed(message: impl Into<String>) -> Value {
+pub(crate) fn prompt_failed(message: impl Into<String>) -> Value {
     serde_json::json!({
         "type": "prompt_result",
         "agentInvoked": false,
@@ -229,7 +315,7 @@ fn prompt_failed(message: impl Into<String>) -> Value {
 }
 
 /// TS `RpcPromptResultFrame` for a prompt completed locally (slash command).
-fn prompt_completed(agent_invoked: bool) -> Value {
+pub(crate) fn prompt_completed(agent_invoked: bool) -> Value {
     serde_json::json!({
         "type": "prompt_result",
         "agentInvoked": agent_invoked,
@@ -243,7 +329,7 @@ fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -265,6 +351,7 @@ fn format_endpoint(base_url: &str) -> String {
 }
 
 /// TS `hasLocalLoopbackBaseUrl` (append-only-context-mode.ts).
+#[allow(clippy::case_sensitive_file_extension_comparisons)] // host is ASCII-lowercased by the parse below
 fn has_local_loopback_base_url(base_url: &str) -> bool {
     let Some(host) = reqwest::Url::parse(base_url)
         .ok()
@@ -312,7 +399,8 @@ fn append_only_context_enabled(setting: &str, model: &Value) -> bool {
 /// as a `session_info` frame: one entry per report line — `{"k","v"}`
 /// (dim key + value; `vs` = styled value spans), `{"head"}` (bold heading),
 /// `{"text","dim"?}` (free line; `""` = blank).
-async fn session_info_frame(rt: &Runtime) -> Value {
+#[allow(clippy::too_many_lines)] // one frame: each report section appends its rows in order
+pub(crate) async fn session_info_frame(rt: &Runtime) -> Value {
     use serde_json::json;
     let kv = |k: &str, v: String| json!({"k": k, "v": v});
     let blank = || json!({"text": ""});
@@ -405,17 +493,17 @@ async fn session_info_frame(rt: &Runtime) -> Value {
         lines.push(blank());
         lines.push(head("LSP Servers"));
         for server in lsp {
-            let (status, color) = match server.status {
+            let (label, color) = match server.status {
                 omp_lsp::client::ClientStatus::Ready => ("ready", "success"),
                 omp_lsp::client::ClientStatus::Connecting => ("connecting", "warning"),
                 omp_lsp::client::ClientStatus::Error => ("error", "error"),
             };
-            let status = match &server.error {
-                Some(e) if status == "error" => format!("{status}: {e}"),
-                _ => status.to_string(),
+            let label = match &server.error {
+                Some(e) if label == "error" => format!("{label}: {e}"),
+                _ => label.to_string(),
             };
             lines.push(json!({"k": server.name, "vs": [
-                {"t": status, "c": color},
+                {"t": label, "c": color},
                 {"t": " "},
                 {"t": format!("({})", server.file_types.join(", ")), "c": "dim"},
             ]}));
@@ -531,6 +619,10 @@ impl omp_tui::RuntimePort for Port {
     fn run_slash(&self, name: String, args: String) {
         let rt = self.rt.clone();
         let ext = self.ext.clone();
+        if name == "desktop" {
+            tokio::spawn(async move { desktop_handoff(&rt).await });
+            return;
+        }
         tokio::spawn(async move {
             // Same dispatch chain as RPC `prompt` (builtins → extensions →
             // file templates); slash.rs emits `command_output`/`notice` frames
@@ -680,42 +772,34 @@ impl omp_tui::RuntimePort for Port {
         // stable no-op so the app wiring does not change when it lands.
     }
 
+    fn prewarm_connection(&self) {
+        // Once per 30 s at most: the pooled connection stays usable for the
+        // client's 90 s idle timeout, and typing restarts after every turn.
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let last = LAST.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(last) < 30
+            || LAST
+                .compare_exchange(
+                    last,
+                    now,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .is_err()
+        {
+            return;
+        }
+        if let Some(url) = self.rt.model_base_url() {
+            tokio::spawn(async move { pa_ai::prewarm(&url).await });
+        }
+    }
+
     fn refresh_models(&self) {
         let rt = self.rt.clone();
-        tokio::task::spawn_blocking(move || {
-            // TS `ModelRegistry.refresh`: per-provider /models discovery →
-            // `models.db`.
-            match omp_providers::refresh(&omp_providers::AgentDir::default(), None) {
-                Ok(reports) => {
-                    for r in reports {
-                        let msg = match &r.note {
-                            Some(note) => format!("model refresh {}: {note}", r.provider),
-                            None if r.discovered.is_empty() => {
-                                format!(
-                                    "model refresh {}: no new models ({} cached)",
-                                    r.provider, r.total
-                                )
-                            }
-                            None => format!(
-                                "model refresh {}: +{} ({})",
-                                r.provider,
-                                r.discovered.len(),
-                                r.discovered.join(", ")
-                            ),
-                        };
-                        // `session_info` is the one free-text frame the TUI
-                        // renders verbatim.
-                        rt.send(
-                            serde_json::json!({"type": "session_info", "lines": [{"text": msg}]}),
-                        );
-                    }
-                    // Re-read the merged catalog so the open /model browser
-                    // shows new models immediately (TS model hub behavior).
-                    rt.send(models_changed_frame());
-                }
-                Err(e) => rt.send(prompt_failed(format!("model refresh failed: {e:#}"))),
-            }
-        });
+        refresh_models_into(move |frame| rt.send(frame));
     }
 
     fn request_session_info(&self) {
@@ -729,13 +813,13 @@ impl omp_tui::RuntimePort for Port {
     fn request_usage(&self) {
         let rt = self.rt.clone();
         tokio::spawn(async move {
-            let frame = crate::rpc::slash::usage_panel_frame(&rt).await;
-            rt.send(frame);
+            crate::rpc::slash::command_center(&rt, "usage").await;
         });
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use omp_tui::RuntimePort as _;
@@ -806,7 +890,7 @@ mod tests {
         let persist = crate::persist::attach_with(&agent, &cwd, true)
             .await
             .expect("session");
-        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("test-key".into()),
             model: primary,
             service_tier: None,

@@ -3,6 +3,7 @@
 //! `serializeConversationForSummary(messages, dialect)` for all ten dialects over three inputs
 //! (the converted fixture session, a synthetic set exercising thinking / images / errors / useless
 //! results / control tokens / nested arguments, and the empty conversation).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use omp_compact::dialect::{preferred_dialect, serialize_conversation_for_summary, Dialect};
 use serde_json::Value;

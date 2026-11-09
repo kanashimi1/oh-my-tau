@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Cross-language interop: the RUST collab stack against the REAL TS
 //! collab-web guest (`vendor-src/oh-my-pi/packages/collab-web/src/lib/client.ts`)
 //! driven by bun.
@@ -11,7 +12,7 @@
 //!   See the interop report, mismatch #1.
 //!
 //! * [`ts_guest_interops_with_wire_host`] hosts the room with a wire-level
-//!   rust host driver (relay_client + crypto + replication, hello gate fixed)
+//!   rust host driver (`relay_client` + crypto + replication, hello gate fixed)
 //!   and proves the whole protocol end to end with the same real TS guest:
 //!   link parse, hello, welcome, snapshot chunks, prompt → user-turn
 //!   injection, transcript reply, live entry broadcast, view-link read-only
@@ -23,10 +24,12 @@
 //! checkout) or `<repo root>/vendor-src/oh-my-pi`. `$INTEROP_TS_GUEST`
 //! overrides the guest script. When any prerequisite is missing the tests
 //! print a `skipping: ...` line to stderr and pass without running.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -43,7 +46,7 @@ use omp_collab::relay_client::{connect_relay, CollabRole, RelayEvent, RelayOptio
 use omp_collab::relay_server::start_local_relay;
 use omp_collab::replication::snapshot_chunks;
 
-/// Prompt text the TS guest sends (must match ts_guest.ts PROMPT_TEXT).
+/// Prompt text the TS guest sends (must match `ts_guest.ts` `PROMPT_TEXT`).
 const PROMPT_TEXT: &str = "interop-prompt-77";
 /// Stop reason the host hands the guests (they must surface it as ended reason).
 const BYE_REASON: &str = "interop-bye";
@@ -129,10 +132,7 @@ impl CollabHostBackend for InteropBackend {
         snapshot_entries()
     }
     fn inject_guest_prompt(&self, text: &str, images: Vec<Value>) -> anyhow::Result<()> {
-        self.prompts
-            .lock()
-            .unwrap()
-            .push((text.to_string(), images));
+        self.prompts.lock().push((text.to_string(), images));
         Ok(())
     }
     fn abort_turn(&self) -> anyhow::Result<()> {
@@ -167,8 +167,7 @@ fn guest_script_path() -> Option<std::path::PathBuf> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     if !bun_ok {
         eprintln!("skipping: `bun` not found on PATH");
         return None;
@@ -185,6 +184,7 @@ fn guest_script_path() -> Option<std::path::PathBuf> {
 }
 
 /// Markers the TS guest printed, one bool per protocol phase.
+#[allow(clippy::struct_excessive_bools)] // one flag per protocol phase by design
 #[derive(Default, Debug)]
 struct GuestMarkers {
     full_live_snapshot: bool,
@@ -230,14 +230,13 @@ async fn drive_ts_guest(
     let interaction = async {
         while let Some(line) = lines.next_line().await.expect("read child stdout") {
             println!("[ts-guest] {line}");
-            if line.starts_with("FATAL") {
-                panic!(
-                    "TS guest failed: {line}\n\
-                     hint: `timeout waiting for full reaches live` with no prior frames means the \
-                     rust host never answered the hello — see the interop report, mismatch #1 \
-                     (crates/omp-collab/src/host.rs:417 drops the first hello)"
-                );
-            }
+            assert!(
+                !line.starts_with("FATAL"),
+                "TS guest failed: {line}\n\
+                 hint: `timeout waiting for full reaches live` with no prior frames means the \
+                 rust host never answered the hello — see the interop report, mismatch #1 \
+                 (crates/omp-collab/src/host.rs:417 drops the first hello)"
+            );
             if !line.starts_with("MARK ") {
                 continue;
             }
@@ -298,12 +297,10 @@ async fn drive_ts_guest(
         }
     };
 
-    match tokio::time::timeout(GUEST_BUDGET, interaction).await {
-        Ok(()) => {}
-        Err(_) => {
-            let _ = child.kill().await;
-            panic!("TS guest interaction exceeded {GUEST_BUDGET:?}");
-        }
+    if let Ok(()) = tokio::time::timeout(GUEST_BUDGET, interaction).await {
+    } else {
+        let _ = child.kill().await;
+        panic!("TS guest interaction exceeded {GUEST_BUDGET:?}");
     }
 
     let output = child.wait_with_output().await.expect("reap bun child");
@@ -320,6 +317,7 @@ async fn drive_ts_guest(
 ///
 /// Regression test for the join path. FAILS until host.rs:417 exempts
 /// `hello` from the unknown-peer gate (mismatch #1 in the interop report).
+#[allow(clippy::too_many_lines)] // end-to-end interop scenario; splitting would obscure the protocol sequence
 #[tokio::test(flavor = "multi_thread")]
 async fn ts_guest_interops_with_rust_host() {
     let Some(script) = guest_script_path() else {
@@ -406,10 +404,9 @@ async fn ts_guest_interops_with_rust_host() {
                     "rust host registered the TS guest"
                 );
                 // Mirror a live entry: host→guest broadcast through the relay.
-                broadcast_host.broadcast_entry(
-                    serde_json::to_string(&sample_entry(3, "live broadcast entry"))
-                        .expect("entry json"),
-                );
+                let entry_json = serde_json::to_string(&sample_entry(3, "live broadcast entry"))
+                    .expect("entry json");
+                broadcast_host.broadcast_entry(&entry_json);
             }),
             on_view_notice: Box::new(move || {
                 let _ = stop_for_hooks.send(BYE_REASON.to_string());
@@ -446,7 +443,7 @@ async fn ts_guest_interops_with_rust_host() {
     );
 
     // The rust host received exactly the guest's prompt as a user-turn injection.
-    let prompts = backend.prompts.lock().unwrap().clone();
+    let prompts = backend.prompts.lock().clone();
     assert_eq!(
         prompts,
         vec![(PROMPT_TEXT.to_string(), Vec::<Value>::new())],
@@ -469,11 +466,13 @@ async fn ts_guest_interops_with_rust_host() {
 
 // ═══════════════ Test B: wire-level rust host vs the same TS guest ═══════════════
 
+/// One observed `hello`: `(peer, name, writeToken present, writeToken value)`.
+type HelloRecord = (u32, String, bool, Option<String>);
+
 /// What the wire host saw, for protocol-level assertions.
 #[derive(Default)]
 struct WireHostLog {
-    /// `(peer, name, writeToken present, writeToken value)` per hello.
-    hellos: Mutex<Vec<(u32, String, bool, Option<String>)>>,
+    hellos: Mutex<Vec<HelloRecord>>,
     prompts: Mutex<Vec<(u32, String)>>,
     transcript_requests: Mutex<Vec<u32>>,
 }
@@ -484,6 +483,11 @@ struct WireHostLog {
 /// exactly like TS `host.ts:707` (transport-liveness gate, not a peer-list
 /// gate). Every outbound frame is the typed [`CollabFrame`] serde encoding;
 /// every inbound frame must parse as [`CollabFrame`].
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation
+)] // ported TS host loop needs the full frame context; peer ids are u32 on the wire
 async fn run_wire_host(
     relay_url: String,
     room_id: String,
@@ -539,15 +543,12 @@ async fn run_wire_host(
                     match frame {
                         CollabFrame::Hello { proto, name, write_token } => {
                             assert_eq!(proto, COLLAB_PROTO as u32, "TS guest speaks proto 3");
-                            match &write_token {
-                                Some(token) => assert_eq!(
-                                    token, &write_token_b64,
-                                    "TS guest must echo the link's write token verbatim"
-                                ),
-                                None => {}
-                            }
+                            if let Some(token) = &write_token { assert_eq!(
+                                token, &write_token_b64,
+                                "TS guest must echo the link's write token verbatim"
+                            ); }
                             let can_write = write_token.is_some();
-                            log.hellos.lock().unwrap().push((
+                            log.hellos.lock().push((
                                 peer,
                                 name,
                                 can_write,
@@ -579,7 +580,7 @@ async fn run_wire_host(
                         }
                         CollabFrame::Prompt { text, images } => match peers.get(&peer) {
                             Some(true) => {
-                                log.prompts.lock().unwrap().push((peer, text.clone()));
+                                log.prompts.lock().push((peer, text.clone()));
                                 backend.inject_guest_prompt(&text, images)
                                     .expect("prompt recorded");
                             }
@@ -589,7 +590,7 @@ async fn run_wire_host(
                             None => {} // unknown peer, like the TS gate
                         },
                         CollabFrame::FetchTranscript { req_id, from_byte, .. } => {
-                            log.transcript_requests.lock().unwrap().push(peer);
+                            log.transcript_requests.lock().push(peer);
                             send_frame(&relay, &cipher, peer, &CollabFrame::Transcript {
                                 req_id,
                                 text: String::new(),
@@ -608,7 +609,7 @@ async fn run_wire_host(
                     if let Ok(msg) = serde_json::from_str::<Value>(&text) {
                         if msg.get("t").and_then(Value::as_str) == Some("peer-left") {
                             if let Some(peer) = msg.get("peer").and_then(Value::as_u64) {
-                                peers.remove(&(peer as u32));
+                                peers.remove(&(u32::try_from(peer).unwrap_or(u32::MAX)));
                             }
                         }
                     }
@@ -632,7 +633,7 @@ async fn run_wire_host(
     }
 }
 
-/// Test B — wire-level rust host (relay_client + crypto + replication) vs
+/// Test B — wire-level rust host (`relay_client` + crypto + replication) vs
 /// the same real TS guest: proves the rust wire format, sealing, link
 /// encoding, and every frame type interop with the browser client.
 #[tokio::test(flavor = "multi_thread")]
@@ -693,7 +694,7 @@ async fn ts_guest_interops_with_wire_host() {
     .await;
 
     // ── rust-side protocol assertions ─────────────────────────────────────
-    let hellos = log.hellos.lock().unwrap().clone();
+    let hellos = log.hellos.lock().clone();
     assert_eq!(
         hellos.len(),
         2,
@@ -712,7 +713,7 @@ async fn ts_guest_interops_with_wire_host() {
     assert_eq!(view_hello.1, "bun-viewer", "view guest display name");
     assert_eq!(view_hello.3, None, "view link carries no write token");
 
-    let prompts = log.prompts.lock().unwrap().clone();
+    let prompts = log.prompts.lock().clone();
     assert_eq!(
         prompts.len(),
         1,
@@ -720,12 +721,12 @@ async fn ts_guest_interops_with_wire_host() {
     );
     assert_eq!(prompts[0].1, PROMPT_TEXT, "prompt text byte-exact");
     assert_eq!(
-        backend.prompts.lock().unwrap().clone(),
+        backend.prompts.lock().clone(),
         vec![(PROMPT_TEXT.to_string(), Vec::<Value>::new())],
         "backend injection records the guest prompt"
     );
     assert_eq!(
-        log.transcript_requests.lock().unwrap().len(),
+        log.transcript_requests.lock().len(),
         1,
         "one fetch-transcript request"
     );

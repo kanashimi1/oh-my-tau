@@ -1734,6 +1734,8 @@ where
     }
 }
 
+// Internal rayon worker plumbing; the slots share one scope.
+#[allow(clippy::too_many_arguments)]
 fn walk_parallel_dir<'scope, E, S, H>(
     scope: &rayon::Scope<'scope>,
     context: &'scope ParallelWalkContext,
@@ -3145,6 +3147,8 @@ impl<H> WalkContext<'_, H> {
         Ok(false)
     }
 
+    // Recursive walker carrying the per-depth state slots.
+    #[allow(clippy::too_many_arguments)]
     fn walk_current_entry<V>(
         &mut self,
         name: &OsStr,
@@ -4872,6 +4876,8 @@ mod platform {
         if bytes.len() < size_of::<u16>() {
             return Err(invalid_data("truncated u16"));
         }
+        // invariant: slice length checked above.
+        #[allow(clippy::expect_used)]
         Ok(u16::from_ne_bytes(
             bytes[..size_of::<u16>()]
                 .try_into()

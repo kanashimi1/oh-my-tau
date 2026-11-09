@@ -6,9 +6,10 @@
 //! `eval/js/tool-bridge.ts`; agent-family ops (`__agent__`, `__wait__`, …)
 //! are delegated to [`super::eval_agents`] unchanged.
 
+use parking_lot::{Mutex, RwLock};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
 use pa_agent::abort::{race_with_abort, AbortSignal};
 use pa_agent::agent_loop::{AfterToolCallFn, BeforeToolCallFn};
@@ -24,7 +25,7 @@ use super::Env;
 
 /// Per-cell execution context handed down from the `eval` tool: the cell's
 /// abort signal (a bridged tool call dies with its cell), the partial-result
-/// callback, and the parent tool_call_id child calls derive their ids from.
+/// callback, and the parent `tool_call_id` child calls derive their ids from.
 pub struct OpCtx {
     pub cwd: PathBuf,
     pub signal: AbortSignal,
@@ -34,12 +35,11 @@ pub struct OpCtx {
 
 /// The host half of the cell↔host wire protocol: one instance per running
 /// cell, passed to [`omp_eval::HostBridge`]. `call` runs on the kernel's
-/// spawn-blocking thread and drives async tool work through the stored tokio
-/// Handle (`rt.block_on`), so tools observe a normal multi-thread runtime.
+/// spawn-blocking thread and drives async tool work through
+/// [`crate::sync_bridge`], so tools observe a normal multi-thread runtime.
 pub struct EvalBridge {
     env: Arc<Env>,
     ctx: OpCtx,
-    rt: tokio::runtime::Handle,
     policy: BridgePolicy,
 }
 
@@ -54,12 +54,12 @@ static SESSION_TOOLS: OnceLock<RwLock<Vec<Arc<dyn AgentTool>>>> = OnceLock::new(
 /// bridge's `entry.toolSession` resolves against).
 pub fn set_session_tools(tools: Vec<Arc<dyn AgentTool>>) {
     let slot = SESSION_TOOLS.get_or_init(|| RwLock::new(Vec::new()));
-    *slot.write().expect("session tools lock") = tools;
+    *slot.write() = tools;
 }
 
 fn session_tools(env: &Env) -> Vec<Arc<dyn AgentTool>> {
     if let Some(slot) = SESSION_TOOLS.get() {
-        let tools = slot.read().expect("session tools lock").clone();
+        let tools = slot.read().clone();
         if !tools.is_empty() {
             return tools;
         }
@@ -76,7 +76,7 @@ static SESSION_HOOKS: RwLock<SessionHooks> = RwLock::new((None, None));
 
 /// Install the process-global tool-call hooks the bridge applies.
 pub fn set_session_hooks(before: Option<BeforeToolCallFn>, after: Option<AfterToolCallFn>) {
-    *SESSION_HOOKS.write().expect("session hooks lock") = (before, after);
+    *SESSION_HOOKS.write() = (before, after);
 }
 
 /// Tools a cell may never call through the bridge. `checkpoint`/`rewind`
@@ -109,7 +109,7 @@ impl BridgePolicy {
     /// The process session's policy (see [`set_session_tools`] /
     /// [`set_session_hooks`]).
     fn session(env: &Env) -> Self {
-        let (before, after) = SESSION_HOOKS.read().expect("session hooks lock").clone();
+        let (before, after) = SESSION_HOOKS.read().clone();
         Self {
             tools: session_tools(env),
             before,
@@ -170,17 +170,13 @@ const AGENT_OPS: [&str; 9] = [
 
 impl EvalBridge {
     #[must_use]
-    pub fn new(env: Arc<Env>, ctx: OpCtx, rt: tokio::runtime::Handle) -> Self {
+    pub fn new(env: Arc<Env>, ctx: OpCtx) -> Self {
         let policy = BridgePolicy::session(&env);
-        Self {
-            env,
-            ctx,
-            rt,
-            policy,
-        }
+        Self { env, ctx, policy }
     }
 
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     pub(crate) fn with_policy(mut self, policy: BridgePolicy) -> Self {
         self.policy = policy;
         self
@@ -189,7 +185,7 @@ impl EvalBridge {
     /// Publish one structured status event (TS `_emit_status` /
     /// `JsStatusEvent`) as a partial tool result, in the TS display-mime
     /// bundle shape the TUI already renders.
-    fn emit_status(&self, event: Value) {
+    fn emit_status(&self, event: &Value) {
         let Some(on_update) = self.ctx.on_update.as_ref() else {
             return;
         };
@@ -221,7 +217,7 @@ impl EvalBridge {
         match op {
             "read" => self.read_helper(args).await,
             "write" => self.write_helper(args).await,
-            "output" => self.output_helper(&args),
+            "output" => Self::output_helper(&args),
             "env" => env_helper(&args),
             "tool.list" => Ok(Value::Array(
                 self.policy.callable().map(tool_descriptor).collect(),
@@ -317,7 +313,11 @@ impl EvalBridge {
     /// `output` host op: read recorded task/agent outputs (`<id>.md` files in
     /// the session artifacts dir) — TS `output()` in `py/prelude.py`, moved
     /// host-side so both preludes share one implementation.
-    fn output_helper(&self, args: &Value) -> Result<Value, String> {
+    #[allow(clippy::too_many_lines)]
+    // one host op: id lookup, offset/limit slicing, reply shape
+    // invariant: results.len() == 1 was checked above, so pop yields Some.
+    #[allow(clippy::expect_used)]
+    fn output_helper(args: &Value) -> Result<Value, String> {
         let ids: Vec<String> = match args.get("ids") {
             Some(Value::String(s)) => vec![s.clone()],
             Some(Value::Array(items)) => items
@@ -370,7 +370,7 @@ impl EvalBridge {
                 };
             } else if offset.is_some() || limit.is_some() {
                 let start = offset.unwrap_or(1).max(1);
-                let total = total_lines as i64;
+                let total = i64::try_from(total_lines).unwrap_or(i64::MAX);
                 if start > total.max(1) {
                     return Err(format!(
                         "offset {start} is beyond end of output ({total_lines} lines) for {id}"
@@ -378,8 +378,10 @@ impl EvalBridge {
                 }
                 let effective = limit.map_or(total - start + 1, |l| l.max(0));
                 let end = total.min(start + effective - 1).max(0);
+                let lo = usize::try_from((start - 1).max(0)).unwrap_or(usize::MAX);
+                let hi = usize::try_from(end).unwrap_or(0);
                 selected = raw_lines
-                    .get((start - 1).max(0) as usize..end as usize)
+                    .get(lo..hi)
                     .map_or_else(String::new, |ls| ls.join("\n"));
                 range = Some(json!({
                     "start_line": start,
@@ -451,6 +453,7 @@ impl EvalBridge {
     /// under the cell's abort signal, run the `tool_result` hook (result
     /// rewrite), and convert to the TS bridge value shape
     /// (`bridgeValueFromToolResult`).
+    #[allow(clippy::too_many_lines)] // one host tool call: validate, hooks, dispatch, shape the reply
     async fn call_tool(&self, name: &str, args: Value) -> Result<Value, String> {
         if let Some(reason) = refused_reason(name) {
             return Err(reason);
@@ -465,8 +468,7 @@ impl EvalBridge {
             // The model-facing intent field is not part of the tool schema.
             obj.remove("i");
         }
-        let mut params = validate_tool_arguments(tool.name(), tool.parameters(), &params)
-            .map_err(|e| e.to_string())?;
+        let mut params = validate_tool_arguments(tool.name(), tool.parameters(), &params)?;
         let signal = &self.ctx.signal;
         let mut call = ToolCall {
             id: format!("{}:{name}", self.ctx.tool_call_id),
@@ -501,8 +503,7 @@ impl EvalBridge {
                 }
                 if let Some(revised) = outcome.args {
                     // Hook revisions are untrusted input to the tool schema.
-                    params = validate_tool_arguments(tool.name(), tool.parameters(), &revised)
-                        .map_err(|e| e.to_string())?;
+                    params = validate_tool_arguments(tool.name(), tool.parameters(), &revised)?;
                     call.arguments = revised;
                 }
             }
@@ -565,16 +566,17 @@ impl EvalBridge {
         if let Some(message) = failure {
             return Err(message);
         }
-        self.emit_status(json!({"op": name}));
+        self.emit_status(&json!({"op": name}));
         Ok(bridge_value(&result))
     }
 }
 
 impl omp_eval::HostBridge for EvalBridge {
     fn call(&self, op: &str, args: Value) -> Result<Value, String> {
-        // The kernel invokes this from its spawn-blocking cell loop; drive
-        // the async tool graph on the stored runtime handle.
-        self.rt.block_on(self.dispatch(op, args))
+        // The kernel invokes this from its spawn-blocking cell loop, so it
+        // may park this thread while the runtime drives the async tool
+        // graph (see `crate::sync_bridge`).
+        crate::sync_bridge::block_on(self.dispatch(op, args))
     }
 
     fn notify(&self, op: &str, args: Value) {
@@ -604,7 +606,7 @@ impl omp_eval::HostBridge for EvalBridge {
             });
             return;
         }
-        self.emit_status(Value::Object(event));
+        self.emit_status(&Value::Object(event));
     }
 }
 
@@ -635,8 +637,11 @@ fn bridge_value(result: &AgentToolResult) -> Value {
             })),
         }
     }
-    let details_empty =
-        result.details.is_null() || result.details.as_object().is_some_and(|o| o.is_empty());
+    let details_empty = result.details.is_null()
+        || result
+            .details
+            .as_object()
+            .is_some_and(serde_json::Map::is_empty);
     if result.is_error != Some(true) && images.is_empty() && details_empty {
         return Value::String(text);
     }
@@ -674,7 +679,6 @@ static ENV_OVERLAY: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new()
 pub(crate) fn env_overlay() -> Vec<(String, String)> {
     ENV_OVERLAY
         .lock()
-        .expect("env overlay lock")
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
@@ -686,7 +690,7 @@ pub(crate) fn env_overlay() -> Vec<(String, String)> {
 fn env_helper(args: &Value) -> Result<Value, String> {
     let key = args.get("key").and_then(Value::as_str);
     let value = args.get("value").and_then(Value::as_str);
-    let mut overlay = ENV_OVERLAY.lock().expect("env overlay lock");
+    let mut overlay = ENV_OVERLAY.lock();
     Ok(match (key, value) {
         (None, _) => {
             let mut merged: BTreeMap<String, String> = std::env::vars().collect();
@@ -759,7 +763,7 @@ fn apply_query(value: &Value, query: &str) -> Option<Value> {
                 let index: usize = num.trim().parse().ok()?;
                 current = current.get(index)?.clone();
             }
-            Some(c) if c.is_whitespace() => continue,
+            Some(c) if c.is_whitespace() => {}
             _ => return None,
         }
     }
@@ -796,6 +800,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use pa_agent::types::{AfterToolCallResult, BeforeToolCallResult};
@@ -814,7 +819,7 @@ mod tests {
             on_update: None,
             tool_call_id: "cell".into(),
         };
-        EvalBridge::new(Arc::clone(env), ctx, tokio::runtime::Handle::current()).with_policy(policy)
+        EvalBridge::new(Arc::clone(env), ctx).with_policy(policy)
     }
 
     fn all_tools(env: &Env) -> Vec<Arc<dyn AgentTool>> {

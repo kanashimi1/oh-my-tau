@@ -233,7 +233,7 @@ fn bar(
 /// Render a bordered card with one column of content padding per side.
 /// `header` rides in the top bar.
 pub(crate) fn framed_card(
-    header: Option<Line<'static>>,
+    header: Option<&Line<'static>>,
     sections: Vec<CardSection>,
     width: usize,
     border_color: Color,
@@ -244,7 +244,7 @@ pub(crate) fn framed_card(
 /// [`framed_card`] with explicit left/right content padding (`0` = flush
 /// borders, as the edit diff card draws them).
 pub(crate) fn framed_card_padded(
-    header: Option<Line<'static>>,
+    header: Option<&Line<'static>>,
     sections: Vec<CardSection>,
     width: usize,
     border_color: Color,
@@ -254,7 +254,7 @@ pub(crate) fn framed_card_padded(
     let border = Style::default().fg(border_color);
     let inner = width.saturating_sub(2 + 2 * pad).max(1);
     let gap = " ".repeat(pad);
-    let mut out = vec![bar("╭", "╮", header.as_ref(), width, border)];
+    let mut out = vec![bar("╭", "╮", header, width, border)];
     for section in sections {
         if let Some(label) = &section.label {
             out.push(bar("├", "┤", Some(label), width, border));
@@ -295,7 +295,7 @@ mod tests {
     fn frames_header_labelled_sections() {
         let theme = Theme::default();
         let lines = framed_card(
-            Some(Line::from("✎ Write: a.txt")),
+            Some(&Line::from("✎ Write: a.txt")),
             vec![
                 CardSection::plain(vec![Line::from("$ echo hi")]),
                 CardSection::labelled(&theme, "Output", vec![Line::from("hi")]),

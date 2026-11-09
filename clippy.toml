@@ -1,0 +1,8 @@
+disallowed-methods = [
+    { path = "futures::executor::block_on", reason = "sync→async bridges are forbidden in library code; make the caller async, or use crate::sync_bridge::block_on from a non-runtime thread (entry points and tests may #[allow] with a reason)" },
+    { path = "tokio::runtime::Handle::block_on", reason = "sync→async bridges are forbidden in library code; make the caller async, or use crate::sync_bridge::block_on from a non-runtime thread (entry points and tests may #[allow] with a reason)" },
+    { path = "tokio::runtime::Runtime::block_on", reason = "sync→async bridges are forbidden in library code; make the caller async, or use crate::sync_bridge::block_on from a non-runtime thread (entry points and tests may #[allow] with a reason)" },
+]
+# Tests may unwrap/expect freely; library code may not (see [workspace.lints.clippy]).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn placeholder_grid_shape_and_diacritics() {
         let p = KittyPlacement {
-            image_id: 0x010203,
+            image_id: 0x0001_0203,
             placement_id: Some(2),
             columns: 3,
             rows: 2,

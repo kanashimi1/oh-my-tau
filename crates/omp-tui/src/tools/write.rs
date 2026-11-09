@@ -260,7 +260,7 @@ pub fn build_card_lines(
     } else {
         vec![CardSection::plain(body)]
     };
-    framed_card(Some(header), sections, width.max(8), border)
+    framed_card(Some(&header), sections, width.max(8), border)
 }
 
 #[cfg(test)]
@@ -268,7 +268,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn rows(lines: Vec<Line<'static>>) -> Vec<String> {
+    fn rows(lines: &[Line<'static>]) -> Vec<String> {
         lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -285,11 +285,13 @@ mod tests {
     fn pending_card_streams_tail_with_gutter() {
         let mut content = String::new();
         for i in 1..=20 {
-            content.push_str(&format!("line {i}\n"));
+            content.push_str("line ");
+            content.push_str(&i.to_string());
+            content.push('\n');
         }
         let call = json!({"name":"write","arguments":{"path":"out.txt","content":content}});
         let theme = Theme::default();
-        let text = rows(build_card_lines(&call, None, false, 40, &theme)).join("\n");
+        let text = rows(&build_card_lines(&call, None, false, 40, &theme)).join("\n");
         assert!(
             text.starts_with("╭─── Write: "),
             "no status icon while pending:\n{text}"
@@ -309,7 +311,7 @@ mod tests {
             json!({"name":"write","arguments":{"path":"e2e-new.txt","content":"alpha\nbeta\n"}});
         let result = json!({"isError": false, "content":[{"type":"text","text":"Successfully wrote 11 bytes"}]});
         let theme = Theme::default();
-        let t = rows(build_card_lines(&call, Some(&result), false, 60, &theme));
+        let t = rows(&build_card_lines(&call, Some(&result), false, 60, &theme));
         assert!(
             t[0].starts_with("╭─── ✎ Write: ◦ e2e-new.txt · 3 lines "),
             "{:?}",
@@ -327,7 +329,7 @@ mod tests {
         let call = json!({"name":"write","arguments":{"path":"a.txt","content":"x"}});
         let result = json!({"isError": true, "text": "Tool call denied by user: write"});
         let theme = Theme::default();
-        let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
+        let text = rows(&build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
         assert!(
             text.contains("Tool call denied by user: write"),
             "got:\n{text}"
@@ -341,13 +343,13 @@ mod tests {
         let call = json!({"name":"write","arguments":{"path":"out.txt","content":content}});
         let result = json!({"isError": false, "content":[{"type":"text","text":"ok"}]});
         let theme = Theme::default();
-        let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
+        let text = rows(&build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
         assert!(text.contains("· 9 lines"), "got:\n{text}");
         assert!(
             text.contains("… 3 more lines ⟦ctrl+o: Expand⟧"),
             "got:\n{text}"
         );
-        let expanded = rows(build_card_lines(&call, Some(&result), true, 60, &theme)).join("\n");
+        let expanded = rows(&build_card_lines(&call, Some(&result), true, 60, &theme)).join("\n");
         assert!(!expanded.contains("more line"), "got:\n{expanded}");
         assert!(expanded.contains("  9 "), "got:\n{expanded}");
     }
@@ -358,7 +360,7 @@ mod tests {
         let result = json!({"isError": false, "details": {"madeExecutable": true},
                             "content":[{"type":"text","text":"ok"}]});
         let theme = Theme::default();
-        let text = rows(build_card_lines(&call, Some(&result), false, 70, &theme)).join("\n");
+        let text = rows(&build_card_lines(&call, Some(&result), false, 70, &theme)).join("\n");
         assert!(text.contains("made executable!"), "got:\n{text}");
     }
 
@@ -368,7 +370,7 @@ mod tests {
         let result = json!({"isError": true,
             "content":[{"type":"text","text":"Error: permission denied"}]});
         let theme = Theme::default();
-        let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
+        let text = rows(&build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
         assert!(text.contains("permission denied"), "got:\n{text}");
         assert!(
             !text.contains("Error: permission denied"),

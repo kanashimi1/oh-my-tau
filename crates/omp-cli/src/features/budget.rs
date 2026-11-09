@@ -7,6 +7,9 @@
 //! limit is raised or cleared. The live state lives in module-level statics so
 //! the `runtime.rs` hook stays a two-line call.
 
+// Ported from the omt lineage: spend enforcement hooks (is_armed/prompt_refusal/exceeds) are wired into the turn loop in the omt lineage; omp-rs loop integration pending.
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -45,8 +48,11 @@ pub fn parse_action(arg: &str) -> Result<BudgetAction, String> {
     if arg.is_empty() {
         return Ok(BudgetAction::Status);
     }
-    if arg.eq_ignore_ascii_case("off") {
+    if arg.eq_ignore_ascii_case("off") || arg.eq_ignore_ascii_case("clear") {
         return Ok(BudgetAction::Off);
+    }
+    if arg.eq_ignore_ascii_case("status") || arg.eq_ignore_ascii_case("show") {
+        return Ok(BudgetAction::Status);
     }
     parse_limit(arg).map(BudgetAction::Set)
 }
@@ -211,6 +217,15 @@ fn format_spent(limit: &Limit, cost: f64, tokens: u64) -> String {
 
 /// Slash-command entry point.
 pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
+    command_inner(rt, args).await
+}
+
+async fn command_inner(rt: &Arc<Runtime>, args: &str) -> Outcome {
+    // UI surfaces get the TS goal-menu style selector (show/adjust/clear) or a
+    // limit input when none is set; print/JSON keep the status text.
+    if args.trim().is_empty() && crate::slash_extra::dialog::has_ui() {
+        return interactive(rt).await;
+    }
     let action = match parse_action(args) {
         Ok(a) => a,
         Err(e) => {
@@ -251,13 +266,68 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
                     format!("Budget: {}.", format_spent(&limit, cost, tokens))
                 }
             }
-            None => "Budget: no limit set. Usage: /budget $2.50 | /budget 200k | /budget off"
+            None => "Budget: no limit set. Usage: /budget $2.50 | /budget 200k | /budget status | /budget off"
                 .to_string(),
         },
     };
     rt.send(json!({"type": "command_output", "text": text}));
     Outcome::Handled {
         agent_invoked: false,
+    }
+}
+
+/// Bare `/budget` with a UI (TS `#openGoalMenu` surfaces: show details,
+/// adjust the limit, drop). Without a limit it asks for one directly.
+async fn interactive(rt: &Arc<Runtime>) -> Outcome {
+    use crate::slash_extra::dialog::{input, select_with, Choice, SelectStyle};
+    let handled = || Outcome::Handled {
+        agent_invoked: false,
+    };
+    let Some(limit) = current_limit() else {
+        let Some(value) = input(
+            rt,
+            "Budget limit",
+            Some("$2.50 (cost), 200k or 1.5m (tokens)"),
+        )
+        .await
+        else {
+            return handled();
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            return handled();
+        }
+        return Box::pin(command_inner(rt, value)).await;
+    };
+    let choices = vec![
+        Choice::with("Show details", "current spend against the limit"),
+        Choice::with("Adjust limit…", "set a new cost or token limit"),
+        Choice::with("Clear budget", "remove the limit"),
+    ];
+    let Some(index) = select_with(
+        rt,
+        &format!("Budget: {limit}"),
+        &choices,
+        SelectStyle::default(),
+    )
+    .await
+    else {
+        return handled();
+    };
+    match index {
+        0 => Box::pin(command_inner(rt, "status")).await,
+        1 => {
+            let prefill = limit.to_string();
+            let Some(value) = input(rt, "Budget limit", Some(&prefill)).await else {
+                return handled();
+            };
+            let value = value.trim();
+            if value.is_empty() {
+                return handled();
+            }
+            Box::pin(command_inner(rt, value)).await
+        }
+        _ => Box::pin(command_inner(rt, "off")).await,
     }
 }
 
@@ -291,6 +361,13 @@ mod tests {
         assert_eq!(parse_action("  "), Ok(BudgetAction::Status));
         assert_eq!(parse_action("off"), Ok(BudgetAction::Off));
         assert_eq!(parse_action("OFF"), Ok(BudgetAction::Off));
+        assert_eq!(parse_action("status"), Ok(BudgetAction::Status));
+        assert_eq!(parse_action("SHOW"), Ok(BudgetAction::Status));
+        assert_eq!(parse_action("clear"), Ok(BudgetAction::Off));
+        assert_eq!(
+            parse_action("200k"),
+            Ok(BudgetAction::Set(Limit::Tokens(200_000)))
+        );
         assert_eq!(parse_action("$3"), Ok(BudgetAction::Set(Limit::Cost(3.0))));
         assert!(parse_action("bogus").is_err());
     }

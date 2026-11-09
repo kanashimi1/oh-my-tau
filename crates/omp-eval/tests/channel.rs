@@ -1,8 +1,9 @@
 //! Protocol-channel isolation: cell code and the subprocesses it spawns must
 //! not be able to write NDJSON frames to the host or read host replies, and
 //! junk on the frame channel must never wedge the host reader.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use omp_eval::js::{default_runtime, JsKernel};
@@ -19,14 +20,11 @@ struct Recorder {
 
 impl HostBridge for Recorder {
     fn call(&self, op: &str, args: Value) -> Result<Value, String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((op.to_string(), args.clone()));
+        self.calls.lock().push((op.to_string(), args.clone()));
         Ok(json!({ "echo": args }))
     }
     fn notify(&self, op: &str, args: Value) {
-        self.notes.lock().unwrap().push((op.to_string(), args));
+        self.notes.lock().push((op.to_string(), args));
     }
 }
 
@@ -53,14 +51,14 @@ fn js(tag: &str) -> JsKernel {
 
 fn assert_no_bridge_traffic(b: &Recorder) {
     assert!(
-        b.calls.lock().unwrap().is_empty(),
+        b.calls.lock().is_empty(),
         "forged calls reached the bridge: {:?}",
-        b.calls.lock().unwrap()
+        b.calls.lock()
     );
     assert!(
-        b.notes.lock().unwrap().is_empty(),
+        b.notes.lock().is_empty(),
         "forged notifies reached the bridge: {:?}",
-        b.notes.lock().unwrap()
+        b.notes.lock()
     );
 }
 
@@ -145,7 +143,7 @@ fn py_cell_stdin_is_not_the_control_channel() {
     let r = k.execute_with(code, opts(&b)).expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{r:?}");
     assert_eq!(r.output, "''\nb''\n{'echo': {'k': 2}}\n");
-    assert_eq!(b.calls.lock().unwrap().len(), 1);
+    assert_eq!(b.calls.lock().len(), 1);
 }
 
 /// In-process code can reach the private frame fd; junk lines there must be
@@ -286,5 +284,5 @@ fn js_cell_stdin_is_not_the_control_channel() {
     let r = k.execute_with(code, opts(&b)).expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{r:?}");
     assert_eq!(r.output, "\"\" null\n{\"echo\":{\"k\":2}}\n");
-    assert_eq!(b.calls.lock().unwrap().len(), 1);
+    assert_eq!(b.calls.lock().len(), 1);
 }

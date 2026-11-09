@@ -244,6 +244,8 @@ struct ClassRanks {
     revision: Option<String>,
 }
 
+// invariant: class_id came from the same taxonomy_rules().classes list being searched.
+#[allow(clippy::expect_used)]
 fn classify_ranks(model: &str, lenient: bool) -> Result<ClassRanks> {
     let lower = model.trim().to_lowercase();
     let bare = bare_of(&lower);
@@ -406,9 +408,9 @@ fn rank_pattern_overrides(
         if !glob_match(pattern.glob, bare_model) {
             continue;
         }
-        if let Some((specificity, _)) = winner {
+        if let Some((specificity, current)) = winner {
             if specificity == pattern.specificity {
-                tied = Some((winner.unwrap().1, pattern.override_ref));
+                tied = Some((current, pattern.override_ref));
             } else if specificity < pattern.specificity {
                 winner = Some((pattern.specificity, pattern.override_ref));
                 tied = None;
@@ -552,9 +554,9 @@ pub fn classify_model(
     let opts = opts.unwrap_or_default();
     if opts.observed_at_ms.is_none() {
         let key = classify_memo_key(provider, model_id, opts.lenient);
-        static MEMO: std::sync::Mutex<Option<HashMap<String, ModelIdentity>>> =
-            std::sync::Mutex::new(None);
-        let mut memo = MEMO.lock().expect("memo lock poisoned");
+        static MEMO: parking_lot::Mutex<Option<HashMap<String, ModelIdentity>>> =
+            parking_lot::Mutex::new(None);
+        let mut memo = MEMO.lock();
         let memo = memo.get_or_insert_with(HashMap::new);
         if let Some(cached) = memo.get(&key) {
             return Ok(cached.clone());

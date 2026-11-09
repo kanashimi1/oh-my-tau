@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // vendored third-party tests: the sync-bridge rule applies to omp-rs first-party crates only
 //! Fetch-layer verifiers over a scripted local HTTP server: timeout
 //! bounds, the 8 MiB cap (header AND streaming), redirect refusal, `ETag`
 //! round-trip, and the 304 path.

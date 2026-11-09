@@ -25,7 +25,7 @@ const CURSOR_FILE: &str = "cursor.json";
 const INGEST_BATCH: i64 = 1_000;
 
 /// The `spelling.autocomplete` setting values (`off` disables ghost text;
-/// `smollm`/`apple` need weights / AppKit that omp-rs does not ship and fall
+/// `smollm`/`apple` need weights / `AppKit` that omp-rs does not ship and fall
 /// back to the n-gram engine).
 #[must_use]
 pub fn method_for_setting(value: &str) -> Option<Method> {
@@ -108,10 +108,10 @@ impl WordHost {
         let spawned = std::thread::Builder::new()
             .name("word-completion-load".into())
             .spawn(move || {
-                let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     loader.load(&agent_dir, method, &foreign)
                 }));
-                if loaded.is_err() || loaded.is_ok_and(|ok| !ok) {
+                if outcome.is_err() || outcome.is_ok_and(|ok| !ok) {
                     *loader.slot.lock() = Slot::Failed;
                 }
             });
@@ -220,18 +220,17 @@ impl WordHost {
         } else {
             None
         };
-        let mut engine = match pi_predict::open(method, &config) {
-            Ok(engine) => engine,
-            Err(_) => {
-                // Unloadable state (corrupt, or an incompatible engine
-                // version): rebuild it like a fresh install (TS `#open`).
-                let _ = std::fs::remove_file(dir.join(SNAPSHOT_FILE));
-                let _ = std::fs::remove_file(dir.join(CURSOR_FILE));
-                cursor = None;
-                match pi_predict::open(method, &config) {
-                    Ok(engine) => engine,
-                    Err(_) => return false,
-                }
+        let mut engine = if let Ok(engine) = pi_predict::open(method, &config) {
+            engine
+        } else {
+            // Unloadable state (corrupt, or an incompatible engine
+            // version): rebuild it like a fresh install (TS `#open`).
+            let _ = std::fs::remove_file(dir.join(SNAPSHOT_FILE));
+            let _ = std::fs::remove_file(dir.join(CURSOR_FILE));
+            cursor = None;
+            match pi_predict::open(method, &config) {
+                Ok(engine) => engine,
+                Err(_) => return false,
             }
         };
         let mut changed = false;
@@ -246,10 +245,8 @@ impl WordHost {
         let (after, ingested) = ingest_history(&mut *engine, &history, cursor.unwrap_or(0));
         changed |= ingested > 0 || cursor.is_none();
         self.cursor.store(after, Ordering::Relaxed);
-        if changed {
-            if engine.persist().is_err() || write_cursor(&dir, after).is_err() {
-                self.dirty.store(true, Ordering::Relaxed);
-            }
+        if changed && (engine.persist().is_err() || write_cursor(&dir, after).is_err()) {
+            self.dirty.store(true, Ordering::Relaxed);
         }
         let mut slot = self.slot.lock();
         if let Slot::Loading { pending } = &mut *slot {
@@ -358,6 +355,8 @@ fn foreign_history_files() -> Vec<PathBuf> {
 /// Prompts a fresh engine learns once from other coding agents' histories:
 /// slash commands are not prose, Claude's paste and image placeholders are not
 /// words the user typed.
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 fn read_foreign_prompts(files: &[PathBuf]) -> Vec<String> {
     let placeholder =
         regex::Regex::new(r"\[(?:Pasted text|Image) #\d+[^\]]*\]").expect("static regex");

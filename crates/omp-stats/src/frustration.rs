@@ -135,6 +135,8 @@ fn to_question(id: &str, spec: QuestionSpec) -> Result<Question> {
 }
 
 /// `FRUSTRATION_QUESTIONS`: parsed once from the compiled-in question file.
+// invariant: the bundled frustration.json question file parses at compile-time shape.
+#[allow(clippy::expect_used)]
 pub static FRUSTRATION_QUESTIONS: LazyLock<Questions> =
     LazyLock::new(|| judge_questions(QUESTION_FILE).expect("bundled frustration.json is valid"));
 

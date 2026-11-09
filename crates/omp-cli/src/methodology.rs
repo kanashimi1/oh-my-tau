@@ -3,10 +3,11 @@
 //! `LlmContext` is filtered, so deferred tools remain executable without changing
 //! the registered tool set or schemas between requests.
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use pa_agent::stream::{LlmContext, StreamFn, ToolDefinition};
 use pa_agent::types::Model;
@@ -16,6 +17,22 @@ use sha2::{Digest, Sha256};
 const CORE_TOOLS: &[&str] = &[
     "read", "bash", "edit", "write", "glob", "grep", "eval", "wait",
 ];
+const CODE_MODE_TOOLS: &[&str] = &[
+    "eval",
+    "ask",
+    "todo",
+    "yield",
+    "think",
+    "checkpoint",
+    "rewind",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolProjection {
+    Full,
+    Core,
+    CodeMode,
+}
 
 #[derive(Default)]
 struct AuditState {
@@ -42,8 +59,17 @@ pub fn is_core_tool(name: &str) -> bool {
     CORE_TOOLS.contains(&name)
 }
 
+#[must_use]
+pub fn is_code_mode_tool(name: &str) -> bool {
+    CODE_MODE_TOOLS.contains(&name)
+}
+
 fn project_core(tools: &mut Vec<ToolDefinition>) {
     tools.retain(|tool| is_core_tool(&tool.name));
+}
+
+fn project_code_mode(tools: &mut Vec<ToolDefinition>) {
+    tools.retain(|tool| is_code_mode_tool(&tool.name));
 }
 
 fn hash(value: &str) -> String {
@@ -54,9 +80,7 @@ fn audit(context: &LlmContext) {
     let Ok(path) = std::env::var("METHOD_AUDIT_LOG") else {
         return;
     };
-    let mut guard = AUDIT
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = AUDIT.lock();
     let state = guard.get_or_insert_with(AuditState::default);
     let messages: Vec<String> = context
         .messages
@@ -96,6 +120,7 @@ fn audit(context: &LlmContext) {
         "divergence": divergence,
         "system_hash": hash(&system),
         "tools_hash": hash(&tools),
+        "message_chars": messages.iter().map(String::len).sum::<usize>(),
         "extra": extra,
     });
     state.previous_messages = messages;
@@ -107,19 +132,21 @@ fn audit(context: &LlmContext) {
     }
 }
 
-/// Apply the provider-only core projection and then audit the exact LLM context.
+/// Apply the provider-only tool projection and then audit the exact LLM context.
 #[must_use]
 pub fn wrap_stream(
     base: StreamFn,
-    core: bool,
+    projection: ToolProjection,
     extensions: Option<Arc<crate::ext::Extensions>>,
 ) -> StreamFn {
     Arc::new(move |model: Model, mut context: LlmContext, options| {
         let extensions = extensions.clone();
         let base = base.clone();
         Box::pin(async move {
-            if core {
-                project_core(&mut context.tools);
+            match projection {
+                ToolProjection::Full => {}
+                ToolProjection::Core => project_core(&mut context.tools),
+                ToolProjection::CodeMode => project_code_mode(&mut context.tools),
             }
             audit(&context);
             if std::env::var("METHOD_PROVIDER_EVENTS").is_ok_and(|v| v == "1") {
@@ -153,6 +180,45 @@ mod tests {
         assert_eq!(
             tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
             ["read", "eval", "wait"]
+        );
+    }
+
+    #[test]
+    fn code_mode_exposes_only_eval_and_session_control_tools() {
+        let mut tools = [
+            "read",
+            "bash",
+            "edit",
+            "eval",
+            "ask",
+            "todo",
+            "yield",
+            "think",
+            "checkpoint",
+            "rewind",
+            "task",
+            "web_search",
+            "wait",
+        ]
+        .into_iter()
+        .map(|name| ToolDefinition {
+            name: name.into(),
+            description: String::new(),
+            parameters: json!({"type":"object"}),
+        })
+        .collect();
+        project_code_mode(&mut tools);
+        assert_eq!(
+            tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            [
+                "eval",
+                "ask",
+                "todo",
+                "yield",
+                "think",
+                "checkpoint",
+                "rewind"
+            ]
         );
     }
 }

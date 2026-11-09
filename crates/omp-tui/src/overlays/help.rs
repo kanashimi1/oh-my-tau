@@ -170,7 +170,6 @@ impl Component for Help {
             // Close keys (`?`/q/esc/ctrl+c per the TS sheet): intentionally
             // ignored so they bubble to the host, which owns open/close
             // state. Esc/q/? are unmodified; `c` requires ctrl.
-            KeyCode::Esc | KeyCode::Char('q' | '?') => EventOutcome::Ignored,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 EventOutcome::Ignored
             }
@@ -221,7 +220,7 @@ mod tests {
     fn renders_bordered_sheet_with_groups() {
         let rows = render_help(&Help::default(), 80, 24);
         let body = rows.join("\n");
-        assert!(body.contains("keyboard shortcuts"), "title in {:?}", body);
+        assert!(body.contains("keyboard shortcuts"), "title in {body:?}");
         assert!(body.contains("General"), "group header");
         assert!(body.contains("enter"), "keys column");
         assert!(body.contains("send prompt"), "action column");
@@ -232,7 +231,7 @@ mod tests {
             .find(|r| r.contains('┌'))
             .cloned()
             .unwrap_or_default();
-        assert!(!popup_top.is_empty(), "border drawn: {:?}", rows);
+        assert!(!popup_top.is_empty(), "border drawn: {rows:?}");
     }
 
     #[test]

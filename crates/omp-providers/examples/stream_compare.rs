@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! `cargo run -p omp-providers --example stream_compare [-- <model_ref> [<reasoning>]]`
 //! One short prompt; prints the normalized event sequence (kinds, no text) in the
 //! same format as `stream_compare_ts.ts`.

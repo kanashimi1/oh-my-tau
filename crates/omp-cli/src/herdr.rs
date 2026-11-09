@@ -16,10 +16,11 @@
 //! never overwrite newer state. Only the latest queued state is sent: while a
 //! report is in flight, older pending states are dropped.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Stable, unique integration id (never `herdr:*` — that prefix is Herdr's own).
@@ -29,7 +30,7 @@ pub const AGENT: &str = "omt";
 
 /// Per-report wall-clock budget. Herdr's socket answers in milliseconds; if
 /// the binary hangs, the child is killed after this and the report is dropped.
-const REPORT_TIMEOUT: Duration = Duration::from_millis(2000);
+const REPORT_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
@@ -80,7 +81,8 @@ pub struct Herdr {
     /// only the last queued one of the same kind (so a pending session
     /// identity is never clobbered by a state change, per the docs' "report
     /// it again whenever your agent switches sessions").
-    pending: Mutex<Vec<Pending>>,
+    /// std, not `parking_lot`: paired with `cv`, whose `wait_timeout` needs std's guard.
+    pending: std::sync::Mutex<Vec<Pending>>,
     cv: Condvar,
 }
 
@@ -89,8 +91,7 @@ impl Herdr {
     pub fn new(bin: PathBuf, pane: String) -> Arc<Self> {
         let base = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let this = Arc::new(Self {
             bin,
             pane,
@@ -98,14 +99,18 @@ impl Herdr {
             resume: Mutex::new(Vec::new()),
             session_path: Mutex::new(None),
             last: Mutex::new((None, None)),
-            pending: Mutex::new(Vec::new()),
+            pending: std::sync::Mutex::new(Vec::new()),
             cv: Condvar::new(),
         });
         let weak = Arc::downgrade(&this);
-        std::thread::Builder::new()
+        // A failed spawn (OS resource exhaustion) leaves reporting disabled
+        // rather than crashing the session.
+        if let Err(error) = std::thread::Builder::new()
             .name("herdr-report".into())
-            .spawn(move || worker(weak))
-            .expect("herdr report thread");
+            .spawn(move || worker(&weak))
+        {
+            eprintln!("herdr report thread unavailable: {error}");
+        }
         this
     }
 
@@ -140,7 +145,7 @@ impl Herdr {
         model_ref: Option<&str>,
         start_source: &str,
     ) {
-        let mut resume = lock(&self.resume);
+        let mut resume = self.resume.lock();
         *resume = Vec::new();
         if let Some(f) = session_file {
             resume.push("omt".to_string());
@@ -152,7 +157,7 @@ impl Herdr {
             }
         }
         drop(resume);
-        *lock(&self.session_path) = session_file.map(|f| f.display().to_string());
+        *self.session_path.lock() = session_file.map(|f| f.display().to_string());
         self.enqueue(Pending::Session {
             start_source: start_source.to_string(),
             seq: self.next_seq(),
@@ -168,7 +173,7 @@ impl Herdr {
             (!t.is_empty()).then(|| t.chars().take(240).collect())
         });
         {
-            let mut last = lock(&self.last);
+            let mut last = self.last.lock();
             if *last == (Some(state), message.clone()) {
                 return;
             }
@@ -191,7 +196,7 @@ impl Herdr {
     }
 
     fn clear_last(&self) {
-        *lock(&self.last) = (None, None);
+        *self.last.lock() = (None, None);
     }
 
     fn next_seq(&self) -> u64 {
@@ -215,11 +220,11 @@ impl Herdr {
     }
 
     fn session_path(&self) -> Option<String> {
-        lock(&self.session_path).clone()
+        self.session_path.lock().clone()
     }
 
     fn resume_argv(&self) -> Vec<String> {
-        lock(&self.resume).clone()
+        self.resume.lock().clone()
     }
 
     /// Assemble the full argv for one report (unit tests assert on this).
@@ -287,20 +292,19 @@ impl Herdr {
 
     /// Run one report with a hard wall-clock budget; every failure is dropped.
     fn run(&self, job: &Pending) {
-        let mut child = match Command::new(&self.bin)
+        let Ok(mut child) = Command::new(&self.bin)
             .args(self.argv(job))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => return,
+        else {
+            return;
         };
         let deadline = std::time::Instant::now() + REPORT_TIMEOUT;
         loop {
             match child.try_wait() {
-                Ok(Some(_)) => return,
+                Ok(Some(_)) | Err(_) => return,
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
                         let _ = child.kill();
@@ -309,25 +313,24 @@ impl Herdr {
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                Err(_) => return,
             }
         }
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Single delivery thread: drains the whole queue, then waits again. While a
 /// delivery is in flight, `enqueue` coalesces same-kind reports, so at most a
 /// few stale states wait — older duplicates are dropped per the docs.
-fn worker(weak: std::sync::Weak<Herdr>) {
+fn worker(weak: &std::sync::Weak<Herdr>) {
     loop {
         let jobs = {
-            let this = match weak.upgrade() {
-                Some(t) => t,
-                None => return, // reporter dropped: nothing left to send
+            // reporter dropped: nothing left to send
+            let Some(this) = weak.upgrade() else {
+                return;
             };
             let mut q = lock(&this.pending);
             loop {
@@ -357,15 +360,14 @@ static GLOBAL: std::sync::LazyLock<Option<Arc<Herdr>>> = std::sync::LazyLock::ne
 /// integration). Any failure (spawn, timeout, parse) returns false so the
 /// reporter keeps its previous behaviour outside that one known-conflict case.
 fn pane_foreground_is_ts_omp(bin: &Path, pane: &str) -> bool {
-    let mut child = match Command::new(bin)
+    let Ok(mut child) = Command::new(bin)
         .args(["pane", "process-info", "--pane", pane])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
+    else {
+        return false;
     };
     let deadline = std::time::Instant::now() + Duration::from_millis(1500);
     loop {
@@ -470,7 +472,7 @@ mod tests {
 
     #[test]
     fn disabled_outside_herdr_env() {
-        let _g = lock(&ENV_LOCK);
+        let _g = ENV_LOCK.lock();
         let dir = tmp("disabled");
         for (k, v) in [
             ("HERDR_ENV", None),
@@ -493,7 +495,7 @@ mod tests {
 
     #[test]
     fn enabled_inside_herdr_env() {
-        let _g = lock(&ENV_LOCK);
+        let _g = ENV_LOCK.lock();
         let dir = tmp("enabled");
         let bin = stub_bin(&dir);
         std::env::set_var("HERDR_ENV", "1");

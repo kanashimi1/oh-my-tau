@@ -1,4 +1,5 @@
 //! Behavior tests for the layered settings model.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use omp_settings::{lookup, Provenance, ServiceTier, SettingType, Settings, SETTINGS};
 use std::collections::BTreeMap;
@@ -18,10 +19,13 @@ fn schema_covers_ts_registry() {
     // settings only the TS panel (`createSettingsHost`) lists, plus the omp-rs
     // gates `magicKeywords.ultracode`, `systemPrompt.compact` and
     // `sandbox.enabled`.
-    assert_eq!(SETTINGS.len(), 548);
+    assert_eq!(SETTINGS.len(), 549);
     assert!(lookup("magicKeywords.ultracode").is_some());
     assert!(lookup("sandbox.enabled").is_some());
     assert!(lookup("systemPrompt.compact").is_some());
+    assert!(
+        matches!(lookup("tools.codeMode"), Some(def) if matches!(def.ty, SettingType::Boolean))
+    );
     assert!(lookup("modelRoles").is_some());
     assert!(lookup("cycleOrder").is_some());
     assert!(lookup("workspace.additionalDirectories").is_some());

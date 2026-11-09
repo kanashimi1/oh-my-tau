@@ -8,7 +8,8 @@ use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
 use pa_agent::agent_loop::ConvertToLlmFn;
 use pa_agent::types::{AgentMessage, AgentTool, DeveloperMessage, Message, UserContent, UserPart};
 
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use crate::adapter::{json_round_trip, switchable_stream_fn, ProviderTarget};
 use crate::model::Selected;
@@ -116,8 +117,8 @@ pub fn system_prompt(
         .join("\n\n")
 }
 
-/// One-line pointer to the deferred tools (`tools.profile: core`): names
-/// only; schemas come from `tool.describe` on demand.
+/// One-line pointer to tools deferred by `tools.profile: core` or
+/// `tools.codeMode`; schemas come from `tool.describe` on demand.
 #[must_use]
 pub fn deferred_tools_note(deferred: &[String]) -> String {
     format!(
@@ -126,20 +127,40 @@ pub fn deferred_tools_note(deferred: &[String]) -> String {
     )
 }
 
+const CODE_MODE_PROMPT: &str = r#"Code mode is enabled. Use eval for file, shell, search, and platform operations. Batch independent calls with Promise.all in JavaScript; filter or slice raw results inside the cell and return only a small digest (2-4 fields), never raw files or full test/build output.
+
+Common JS calls; do not rediscover these schemas:
+- `const listing = await tool.glob({path: "logs/*.txt", limit: 200})`; paths are `listing.details.files` (glob uses `path`, not `pattern`).
+- `const text = await tool.read({path})` returns the file text directly (not `{text}`). Use line selectors such as `path: "src/a.rs:40-90"` for partial reads.
+- `await tool.write({path, content})` writes a complete file. Prefer `tool.edit` for changes to existing files.
+- `const run = await tool.bash({command: "python3 verify.py", cwd: "."})`; shell output is `run.text`.
+
+Reliable batch template:
+```js
+const listing = await tool.glob({path: "logs/*.txt", limit: 200});
+const files = listing.details.files.sort();
+const texts = await Promise.all(files.map(path => tool.read({path})));
+const records = texts.map((text, i) => ({path: files[i], match: text.match(/RECORD[^\n]*value=(-?\d+)/}));
+// Compute locally; keep raw results out of the returned value.
+return {files: files.length, parsed: records.filter(r => r.match).length};
+```
+Only parallelize independent calls. Use `tool.describe({name})` once for other tools. Finish with a trailing expression or top-level `return`; both publish the value."#;
+
 /// Build an agent for `cwd` using the selected model, plus the provider
 /// target slot a live `set_model` swaps. `extra_tools` (extension tools) are
 /// appended to the built-ins; `ext_hooks`, when present, wires the extension
 /// host into context transformation and tool call/result interception.
 ///
-/// Returns the agent, the target and the *deferred* tools: under
-/// `tools.profile: core` every enabled tool outside [`crate::tools::CORE_TOOLS`]
-/// (built-ins, MCP, extension tools) stays off the model's tool list and is
-/// reachable only through the eval bridge; the caller registers them there.
-/// An explicit `--tools <csv>` list wins over the profile (nothing deferred).
+/// Returns the agent and target. Under `tools.profile: core` or
+/// `tools.codeMode`, enabled tools outside the active projection (built-ins,
+/// MCP, extension tools) stay off the model's tool list and remain reachable
+/// through the eval bridge. An explicit `--tools <csv>` list wins over both
+/// profiles (nothing deferred).
 ///
 /// # Errors
 /// Fails when the model cannot cross the pa-ai/pa-agent boundary.
-pub fn build_agent(
+#[allow(clippy::too_many_lines)] // linear assembly of the agent from its parts; each step reads the previous one
+pub async fn build_agent(
     cwd: &Path,
     selected: Selected,
     extra_tools: Vec<Arc<dyn AgentTool>>,
@@ -153,7 +174,10 @@ pub fn build_agent(
     let mut tools =
         crate::tools::session_builtin_tools(cwd, edit_mode_for(&selected.model.id), &settings);
     let session_jobs = crate::tools::take_last_jobs();
-    tools.extend(crate::tools::mcp::mcp_tools(cwd));
+    if let Some(csv) = sysprompt_opts.tools_csv.as_deref() {
+        crate::tools::mcp::set_requested_tools(csv);
+    }
+    tools.extend(crate::tools::mcp::mcp_tools(cwd).await);
     tools.extend(crate::tools::wasm::wasm_tools(cwd));
     // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
     // after the built-ins; a `--tools <csv>` list admits hidden names too
@@ -185,14 +209,25 @@ pub fn build_agent(
     let mut prompt = system_prompt(cwd, sysprompt_opts, &hidden);
     crate::tools::set_session_jobs(session_jobs);
     tools.extend(hidden);
-    let core_profile =
-        sysprompt_opts.tools_csv.is_none() && crate::methodology::core_profile_requested();
-    if core_profile {
+    let explicit_tools = sysprompt_opts.tools_csv.is_some();
+    let code_mode = !explicit_tools && settings.get_bool("tools.codeMode").unwrap_or(true);
+    let core_profile = !explicit_tools && crate::methodology::core_profile_requested();
+    if code_mode || core_profile {
         let deferred: Vec<String> = tools
             .iter()
-            .filter(|tool| !crate::methodology::is_core_tool(tool.name()))
+            .filter(|tool| {
+                if code_mode {
+                    !crate::methodology::is_code_mode_tool(tool.name())
+                } else {
+                    !crate::methodology::is_core_tool(tool.name())
+                }
+            })
             .map(|tool| tool.name().to_string())
             .collect();
+        if code_mode {
+            prompt.push_str("\n\n");
+            prompt.push_str(CODE_MODE_PROMPT);
+        }
         if !deferred.is_empty() {
             prompt.push_str("\n\n");
             prompt.push_str(&deferred_tools_note(&deferred));
@@ -272,7 +307,13 @@ pub fn build_agent(
         }),
         stream_fn: Some(crate::methodology::wrap_stream(
             switchable_stream_fn(target.clone()),
-            core_profile,
+            if code_mode {
+                crate::methodology::ToolProjection::CodeMode
+            } else if core_profile {
+                crate::methodology::ToolProjection::Core
+            } else {
+                crate::methodology::ToolProjection::Full
+            },
             ext_hooks.cloned(),
         )),
         transform_context,

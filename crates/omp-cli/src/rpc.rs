@@ -19,19 +19,21 @@
 //! - `{"type":"clipboard_copy","text":…}` — `/copy` picked `text`; the client puts it on its
 //!   clipboard (omp-rs extension; the TUI host copies itself).
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use pa_agent::abort::AbortController;
 use pa_agent::agent::{Agent, QueueMode};
 use pa_agent::types::ThinkingLevel;
 use pa_agent::BoxFut;
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 use crate::agent::Target;
@@ -49,8 +51,8 @@ pub mod slash;
 
 const MAX_FRAME_BYTES: u64 = 1_048_576;
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
+    m.lock()
 }
 
 /// Resolve a pending ask-UI dialog (`RpcAskUi` waiter) by frame id; no-op
@@ -133,6 +135,23 @@ impl RpcAskUi {
 
 /// Internal end-of-stream frame: the stdout writer stops after the frames queued before it.
 const FLUSH_MARKER: &str = "__omt_flush";
+
+/// `OMP_RPC_SOCKET`, taken out of the environment at startup (see
+/// [`take_detached_socket_env`]).
+static DETACHED_SOCKET: std::sync::OnceLock<Option<std::ffi::OsString>> =
+    std::sync::OnceLock::new();
+
+/// Move `OMP_RPC_SOCKET` (set by `omt web` for the agent it spawns) out of the
+/// environment before any thread starts. Left in place it is inherited by
+/// every subprocess — a `task` child `omt --mode rpc` would rebind the
+/// parent's control socket path and swallow the frames meant for the parent.
+pub fn take_detached_socket_env() {
+    let value = std::env::var_os("OMP_RPC_SOCKET");
+    if value.is_some() {
+        std::env::remove_var("OMP_RPC_SOCKET");
+    }
+    let _ = DETACHED_SOCKET.set(value);
+}
 
 thread_local! {
     /// Frame channel of the active RPC loop (set in `run_with`).
@@ -441,6 +460,44 @@ fn none() -> CmdResult {
     Ok(None)
 }
 
+/// Conservative profile for agents that predate `get_capabilities` (they reject
+/// it as an unknown command): the web frontend must assume these bounds
+/// instead of requiring an agent restart. The legacy page limit is deliberately
+/// below the current [`crate::paging::MAX_LIMIT`] so requests stay valid on
+/// both old and new agents.
+pub const LEGACY_MAX_GET_MESSAGES_PAGE_SIZE: usize = 256;
+
+/// Versioned capability payload. `maxPageSize` is injected so tests (and the
+/// legacy profile) can pin it independently of the live paging limit.
+fn capabilities_payload(max_get_messages_page_size: usize) -> Value {
+    json!({
+        "protocolVersion": 1,
+        "supportedProtocolVersions": [1, 2],
+        "maxFrameBytes": MAX_FRAME_BYTES,
+        "maxReassembledFrameBytes": MAX_REASSEMBLED_BYTES,
+        "limits": {
+            "getMessages": {
+                "defaultPageSize": crate::paging::DEFAULT_LIMIT,
+                "maxPageSize": max_get_messages_page_size,
+                "maxPageBytes": crate::paging::MAX_PAGE_BYTES,
+                "maxCursorChars": crate::paging::MAX_CURSOR_CHARS,
+            },
+        },
+        "features": {
+            "messagesBackwardPaging": true,
+        }
+    })
+}
+
+/// Payload a frontend should assume when `get_capabilities` fails (older
+/// detached agent that answers "Unknown command").
+pub fn legacy_capabilities_payload() -> Value {
+    let mut capabilities = capabilities_payload(LEGACY_MAX_GET_MESSAGES_PAGE_SIZE);
+    capabilities["supportedProtocolVersions"] = json!([1]);
+    capabilities["features"]["messagesBackwardPaging"] = json!(false);
+    capabilities
+}
+
 async fn cycle_model(rt: &Runtime) -> CmdResult {
     let info = rt.model_info();
     let models = available_models(None).await;
@@ -500,8 +557,13 @@ fn tree(entries: &[Value]) -> Vec<Value> {
                 }
             })
             .map(|e| {
-                let id = e.get("id").and_then(Value::as_str);
-                json!({"entry": e, "children": build(entries, id, known)})
+                // An id-less entry (e.g. the `title` header) has no children; recursing with
+                // `parent: None` would rebuild the roots forever and overflow the stack.
+                let children = e
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map_or_else(Vec::new, |id| build(entries, Some(id), known));
+                json!({"entry": e, "children": children})
             })
             .collect()
     }
@@ -590,6 +652,7 @@ async fn input_gate(text: &str) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one arm per RPC command; a flat table keeps the protocol readable
 async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
     match kind {
         "negotiate_protocol" => match cmd.get("protocolVersion").and_then(Value::as_i64) {
@@ -868,14 +931,14 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "steer_subagent" => {
             let id = subagent_id(cmd, "steer_subagent")?;
-            if cmd
-                .get("message")
-                .and_then(Value::as_str)
-                .is_none_or(|m| m.trim().is_empty())
-            {
+            let message = str_field(cmd, "message")?;
+            if message.trim().is_empty() {
                 return Err(CmdError::new("`message` is required for steer_subagent."));
             }
-            Err(CmdError::new(format!("Subagent not running: {id}")))
+            let receipt = crate::tools::eval_agents::send_to_agent(id, message)
+                .await
+                .map_err(CmdError::new)?;
+            ok(json!({"delivered": true, "receipt": receipt}))
         }
         "live_start" => Err(unsupported("Live voice")),
         "live_stop" => none(),
@@ -901,10 +964,10 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             .await
             .unwrap_or_default();
             let mut models: Vec<Value> = catalog
-                    .iter()
-                    .filter(|b| b.available && b.kind.is_empty() && !b.model.id.is_empty())
-                    .map(|b| model_info(&b.model))
-                    .collect();
+                .iter()
+                .filter(|b| b.available && b.kind.is_empty() && !b.model.id.is_empty())
+                .map(|b| model_info(&b.model))
+                .collect();
             if let Some((p, i)) = current {
                 if !models
                     .iter()
@@ -917,6 +980,10 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "set_thinking_level" => {
             let level = str_field(cmd, "level")?;
+            if level == "auto" {
+                rt.set_auto_thinking().await;
+                return none();
+            }
             if let Some(mode) = crate::runtime::parse_ultra_name(level) {
                 rt.set_ultra(Some(mode)).await;
                 return none();
@@ -991,7 +1058,23 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             rt.abort_retry();
             none()
         }
+        // Attached-TUI parity (`omt attach`): the panels and actions the local
+        // TUI port computes in-process, answered as response data so only the
+        // asking client renders them.
+        "get_session_info_panel" => ok(crate::tui::session_info_frame(rt).await),
+        "get_usage_panel" => ok(slash::usage_panel_frame(rt).await),
+        "navigate_tree" => {
+            let entry = str_field(cmd, "entryId")?;
+            crate::tree::navigate_tree(rt, entry, &json!({}), None).await
+        }
+        "enable_context_usage" => {
+            rt.enable_context_usage_frames();
+            rt.publish_context_usage();
+            none()
+        }
         "abort_bash" => {
+            #[allow(clippy::redundant_closure_for_method_calls)]
+            // fn-item form breaks: `set` passes `&mut SettingsView`
             rt.set(|s| s.abort_bash());
             none()
         }
@@ -1028,8 +1111,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             Err(unsupported("Handoff"))
         }
         "get_messages" => ok(json!({"messages": rt.messages().await})),
+        "get_capabilities" => ok(capabilities_payload(crate::paging::MAX_LIMIT)),
         "get_messages_page" => {
-            if rt.agent.is_streaming().await {
+            let direction = cmd
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("forward");
+            if rt.agent.is_streaming().await && direction != "backward" {
                 return Err(CmdError::coded(
                     "Cannot page messages while the session is changing",
                     "session_busy",
@@ -1054,12 +1142,16 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                 Some(n) if n.fract() == 0.0 && n >= 0.0 => Some(n as usize),
                 Some(_) => Some(0),
             };
-            paging::page(
-                &messages,
-                &snapshot,
-                cmd.get("cursor").and_then(Value::as_str),
-                limit,
-            )
+            let cursor = cmd.get("cursor").and_then(Value::as_str);
+            match direction {
+                "forward" => paging::page(&messages, &snapshot, cursor, limit),
+                "backward" => paging::page_backward(&messages, &snapshot, cursor, limit),
+                _ => {
+                    return Err(CmdError::new(
+                        "RPC message page direction must be forward or backward",
+                    ));
+                }
+            }
             .map(Some)
             .map_err(|e| CmdError {
                 message: e.message,
@@ -1096,6 +1188,54 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
 }
 
 const RPC_CHUNK_PAYLOAD_BYTES: usize = 256 * 1024;
+
+/// Client-side reassembly of protocol-v2 `rpc_chunk` sequences (the web hub
+/// and `omt attach` both read the same agent log).
+#[derive(Default)]
+pub struct ChunkAssembler {
+    parts: HashMap<String, Vec<Option<Vec<u8>>>>,
+}
+
+impl ChunkAssembler {
+    /// Store one `rpc_chunk`; returns the reassembled frame text once every
+    /// part arrived. A malformed chunk drops its whole sequence.
+    pub fn push(&mut self, chunk: &Value) -> Option<String> {
+        use base64::Engine as _;
+        let id = chunk.get("chunkId")?.as_str()?.to_owned();
+        let parsed = (|| {
+            let index = usize::try_from(chunk.get("index")?.as_u64()?).ok()?;
+            let count = usize::try_from(chunk.get("count")?.as_u64()?).ok()?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(chunk.get("data")?.as_str()?)
+                .ok()?;
+            (index < count).then_some((index, count, data))
+        })();
+        let Some((index, count, data)) = parsed else {
+            self.parts.remove(&id);
+            return None;
+        };
+        let parts = self
+            .parts
+            .entry(id.clone())
+            .or_insert_with(|| vec![None; count]);
+        if parts.len() != count {
+            self.parts.remove(&id);
+            return None;
+        }
+        parts[index] = Some(data);
+        if parts.iter().any(Option::is_none) {
+            return None;
+        }
+        let bytes: Vec<u8> = self
+            .parts
+            .remove(&id)?
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
+        String::from_utf8(bytes).ok()
+    }
+}
 const METADATA_STRING_CAP: usize = 1024;
 const STRING_ELISION_RESERVE: usize = 80;
 /// `(stringCap, arrayLimit, objectLimit)` per shrink pass, as omp's `SHRINK_PASSES`.
@@ -1228,6 +1368,8 @@ struct FrameEncoder {
     version: u8,
     streamed: Vec<Value>,
     chunks: u64,
+    /// `Some` for a detached child (stdout is the agent log): see [`UpdateCompactor`].
+    compact: Option<UpdateCompactor>,
 }
 
 impl FrameEncoder {
@@ -1236,7 +1378,14 @@ impl FrameEncoder {
             version: 1,
             streamed: Vec::new(),
             chunks: 0,
+            compact: None,
         }
+    }
+
+    /// Write `message_update` frames as deltas (detached-log mode).
+    fn compacting(mut self) -> Self {
+        self.compact = Some(UpdateCompactor::default());
+        self
     }
 
     fn fits(json: &str) -> bool {
@@ -1287,6 +1436,8 @@ impl FrameEncoder {
 
     /// Physical JSONL lines (without newlines) for one logical frame.
     fn encode(&mut self, frame: &Value) -> Vec<String> {
+        let compacted = self.compact.as_mut().and_then(|c| c.compact(frame));
+        let frame = compacted.as_ref().unwrap_or(frame);
         let kind = frame.get("type").and_then(Value::as_str);
         let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
         if trace {
@@ -1352,16 +1503,312 @@ impl FrameEncoder {
     }
 }
 
+/// Byte length of the common prefix of `a` and `b`, at a char boundary of both.
+fn common_prefix(a: &str, b: &str) -> usize {
+    let mut p = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    while !(a.is_char_boundary(p) && b.is_char_boundary(p)) {
+        p -= 1;
+    }
+    p
+}
+
+/// Byte length of the common suffix of `a` and `b`, at a char boundary of both.
+fn common_suffix(a: &str, b: &str) -> usize {
+    let mut q = a
+        .bytes()
+        .rev()
+        .zip(b.bytes().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    while !(a.is_char_boundary(a.len() - q) && b.is_char_boundary(b.len() - q)) {
+        q -= 1;
+    }
+    q
+}
+
+/// Detached-log `message_update` compaction. Every `message_update` carries
+/// the whole partial message — twice: `message` and
+/// `assistantMessageEvent.partial` — so a log written verbatim grows
+/// O(reply²) (one real log reached 1.3 GB). In the log, an update whose
+/// serializations differ from the previous update's only by a small middle
+/// part is written with `message` replaced (in place) by
+/// `messageDelta: {n, p, q, s}` — the previous JSON (`n` bytes long) with the
+/// bytes between its first `p` and its last `q` replaced by `s` — and
+/// `assistantMessageEvent.partial` likewise by `partialDelta`. A full frame
+/// (keyframe) goes out for a message's first update and whenever the message
+/// has doubled since the last keyframe, so the log stays O(output) and a
+/// reader joining mid-stream resyncs. Readers rebuild the full frames,
+/// byte for byte, with [`UpdateExpander`].
+#[derive(Default)]
+struct UpdateCompactor {
+    /// Serialized `message` of the previous update of the current message.
+    prev_message: Option<String>,
+    /// Serialized `assistantMessageEvent.partial` of that update.
+    prev_partial: Option<String>,
+    /// Length of the message JSON at the last keyframe.
+    key_len: usize,
+}
+
+/// Field replacing `message` in a delta-encoded `message_update`.
+const MESSAGE_DELTA_KEY: &str = "messageDelta";
+/// Field replacing `assistantMessageEvent.partial` there.
+const PARTIAL_DELTA_KEY: &str = "partialDelta";
+const EVENT_KEY: &str = "assistantMessageEvent";
+
+/// `{n, p, q, s}` turning `prev` into `json`, unless the change is most of `json`.
+fn text_delta(prev: &str, json: &str) -> Option<Value> {
+    let p = common_prefix(prev, json);
+    let q = common_suffix(&prev[p..], &json[p..]);
+    let s = &json[p..json.len() - q];
+    (s.len() * 2 < json.len()).then(|| json!({"n": prev.len(), "p": p, "q": q, "s": s}))
+}
+
+/// Apply a [`text_delta`] to `base`.
+fn apply_text_delta(base: &str, delta: &Value) -> Option<String> {
+    let int = |k: &str| usize::try_from(delta.get(k)?.as_u64()?).ok();
+    let (n, p, q) = (int("n")?, int("p")?, int("q")?);
+    let s = delta.get("s")?.as_str()?;
+    let tail = n.checked_sub(q)?;
+    if base.len() != n || p > tail || !base.is_char_boundary(p) || !base.is_char_boundary(tail) {
+        return None;
+    }
+    let mut out = String::with_capacity(p + s.len() + q);
+    out.push_str(&base[..p]);
+    out.push_str(s);
+    out.push_str(&base[tail..]);
+    Some(out)
+}
+
+/// `obj` with the value under `from` swapped for `value`, renamed `to`
+/// (key order kept).
+fn swap_field(obj: &Map<String, Value>, from: &str, to: &str, value: Value) -> Value {
+    let mut value = Some(value);
+    let mut m = Map::with_capacity(obj.len());
+    for (k, v) in obj {
+        match value.take_if(|_| k == from) {
+            Some(value) => m.insert(to.to_owned(), value),
+            None => m.insert(k.clone(), v.clone()),
+        };
+    }
+    Value::Object(m)
+}
+
+impl UpdateCompactor {
+    /// The delta frame replacing `frame`, or `None` to write `frame` as is.
+    fn compact(&mut self, frame: &Value) -> Option<Value> {
+        match frame.get("type").and_then(Value::as_str) {
+            Some("message_update") => {
+                let (Some(obj), Some(message)) = (frame.as_object(), frame.get("message")) else {
+                    self.prev_message = None;
+                    return None;
+                };
+                let event = frame.get(EVENT_KEY).and_then(Value::as_object);
+                let message_json = message.to_string();
+                let partial_json = event.and_then(|e| e.get("partial")).map(Value::to_string);
+                // A keyframe on doubling lets a reader joining mid-stream resync.
+                let keyframe = message_json.len() >= self.key_len.saturating_mul(2);
+                let message_delta = self
+                    .prev_message
+                    .as_deref()
+                    .filter(|_| !keyframe)
+                    .and_then(|prev| text_delta(prev, &message_json));
+                let partial_delta = match (&partial_json, &self.prev_partial) {
+                    (None, _) => Some(None),
+                    (Some(json), Some(prev)) => text_delta(prev, json).map(Some),
+                    (Some(_), None) => None,
+                };
+                let out = message_delta.zip(partial_delta).map(|(md, pd)| {
+                    let mut out = swap_field(obj, "message", MESSAGE_DELTA_KEY, md);
+                    if let (Some(pd), Some(event)) = (pd, event) {
+                        out[EVENT_KEY] = swap_field(event, "partial", PARTIAL_DELTA_KEY, pd);
+                    }
+                    out
+                });
+                if out.is_none() {
+                    self.key_len = message_json.len();
+                }
+                self.prev_message = Some(message_json);
+                self.prev_partial = partial_json;
+                out
+            }
+            Some("message_start" | "message_end" | "agent_start" | "agent_end") => {
+                self.prev_message = None;
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+/// What the expander last saw of the current partial message.
+enum UpdateBase {
+    /// A full `message_update` line; its parts are extracted on demand.
+    Line(String),
+    /// The exact serialized `message` and `assistantMessageEvent.partial`.
+    Parts {
+        message: String,
+        partial: Option<String>,
+    },
+}
+
+/// What [`UpdateExpander::expand`] did with a log frame.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Expansion {
+    /// Pass the line on as is.
+    Unchanged,
+    /// A delta `message_update` rebuilt into the full frame line.
+    Expanded(String),
+    /// A delta whose base is unknown (reader joined mid-stream or lost
+    /// sync): drop it; the next keyframe or `message_end` resyncs.
+    Unsynced,
+}
+
+/// Reader side of [`UpdateCompactor`]: rebuilds full `message_update` lines
+/// (byte-identical to what a non-compacting child writes) from a detached
+/// agent log. Feed it every frame of the log in order.
+#[derive(Default)]
+pub struct UpdateExpander {
+    base: Option<UpdateBase>,
+}
+
+/// Serialize `obj` compactly, writing raw JSON `raw` as `to` in place of `from`.
+fn splice_object(out: &mut String, obj: &Map<String, Value>, from: &str, to: &str, raw: &str) {
+    out.push('{');
+    for (i, (k, v)) in obj.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        if k == from {
+            out.push_str(&Value::String(to.to_owned()).to_string());
+            out.push(':');
+            out.push_str(raw);
+        } else {
+            out.push_str(&Value::String(k.clone()).to_string());
+            out.push(':');
+            out.push_str(&v.to_string());
+        }
+    }
+    out.push('}');
+}
+
+impl UpdateExpander {
+    /// `line` is the frame's JSON text (after `rpc_chunk` reassembly), `frame` its parse.
+    pub fn expand(&mut self, line: &str, frame: &Value) -> Expansion {
+        match frame.get("type").and_then(Value::as_str) {
+            Some("message_update") => {
+                let Some(delta) = frame.get(MESSAGE_DELTA_KEY) else {
+                    self.base = frame
+                        .get("message")
+                        .map(|_| UpdateBase::Line(line.to_owned()));
+                    return Expansion::Unchanged;
+                };
+                let partial_delta = frame.get(EVENT_KEY).and_then(|e| e.get(PARTIAL_DELTA_KEY));
+                let rebuilt = self.base_parts().and_then(|(message, partial)| {
+                    let message = apply_text_delta(message, delta)?;
+                    let partial = match partial_delta {
+                        Some(d) => Some(apply_text_delta(partial?, d)?),
+                        None => None,
+                    };
+                    Some((message, partial))
+                });
+                let (Some((message, partial)), Some(obj)) = (rebuilt, frame.as_object()) else {
+                    self.base = None;
+                    return Expansion::Unsynced;
+                };
+                let event = match (&partial, obj.get(EVENT_KEY).and_then(Value::as_object)) {
+                    (Some(partial), Some(event)) => {
+                        let mut s = String::with_capacity(partial.len() + 128);
+                        splice_object(&mut s, event, PARTIAL_DELTA_KEY, "partial", partial);
+                        Some(s)
+                    }
+                    _ => None,
+                };
+                let mut out = String::with_capacity(
+                    message.len() + event.as_ref().map_or(0, String::len) + 64,
+                );
+                out.push('{');
+                for (i, (k, v)) in obj.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    if k == MESSAGE_DELTA_KEY {
+                        out.push_str("\"message\":");
+                        out.push_str(&message);
+                        continue;
+                    }
+                    out.push_str(&Value::String(k.clone()).to_string());
+                    out.push(':');
+                    match (&event, k == EVENT_KEY) {
+                        (Some(event), true) => out.push_str(event),
+                        _ => out.push_str(&v.to_string()),
+                    }
+                }
+                out.push('}');
+                self.base = Some(UpdateBase::Parts { message, partial });
+                Expansion::Expanded(out)
+            }
+            Some("message_start" | "message_end" | "agent_start" | "agent_end") => {
+                self.base = None;
+                Expansion::Unchanged
+            }
+            _ => Expansion::Unchanged,
+        }
+    }
+
+    /// The exact serialized base parts, extracted from a full line on first use.
+    fn base_parts(&mut self) -> Option<(&str, Option<&str>)> {
+        #[derive(serde::Deserialize)]
+        struct Event<'a> {
+            #[serde(borrow, default)]
+            partial: Option<&'a serde_json::value::RawValue>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Full<'a> {
+            #[serde(borrow)]
+            message: &'a serde_json::value::RawValue,
+            #[serde(borrow, default, rename = "assistantMessageEvent")]
+            event: Option<Event<'a>>,
+        }
+        if let Some(UpdateBase::Line(line)) = &self.base {
+            let parts = serde_json::from_str::<Full<'_>>(line)
+                .ok()
+                .map(|f| UpdateBase::Parts {
+                    message: f.message.get().to_owned(),
+                    partial: f.event.and_then(|e| e.partial).map(|p| p.get().to_owned()),
+                });
+            self.base = parts;
+        }
+        match &self.base {
+            Some(UpdateBase::Parts { message, partial }) => Some((message, partial.as_deref())),
+            _ => None,
+        }
+    }
+}
+
+/// Test hook: the physical log lines a child writes for `frames` after the
+/// hub negotiated protocol v2, with (`compact`, detached mode) or without
+/// `message_update` compaction.
+#[cfg(test)]
+pub(crate) fn encode_log(frames: &[Value], compact: bool) -> Vec<String> {
+    let mut encoder = FrameEncoder::new();
+    encoder.version = 2;
+    if compact {
+        encoder = encoder.compacting();
+    }
+    frames.iter().flat_map(|f| encoder.encode(f)).collect()
+}
+
 /// Hook run once the runtime exists, before the `ready` frame (extension host start-up).
 pub type OnStart = Box<
     dyn FnOnce(Arc<Runtime>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send,
 >;
 
-/// Run the RPC loop until stdin closes.
+/// Run the RPC loop until stdin closes — or, with `OMP_RPC_SOCKET` set, until
+/// the process is signalled (detached mode; see [`serve_detached`]).
 ///
 /// # Errors
-/// Fails on stdin read errors.
+/// Fails on stdin read errors or a failed control-socket bind.
 pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistence) -> Result<()> {
     run_with(agent, target, cwd, persist, None).await
 }
@@ -1369,7 +1816,7 @@ pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistenc
 /// [`run`] with a start-up hook (see [`OnStart`]).
 ///
 /// # Errors
-/// Fails on stdin read errors.
+/// Fails on stdin read errors or a failed control-socket bind.
 #[allow(clippy::too_many_lines)] // the RPC dispatch loop; one branch per wire frame type, mirrors omp's handler table
 pub async fn run_with(
     agent: Agent,
@@ -1378,6 +1825,14 @@ pub async fn run_with(
     persist: Persistence,
     on_start: Option<OnStart>,
 ) -> Result<()> {
+    // `OMP_RPC_SOCKET` (set by `omp-rs web`'s spawn): serve frames on a
+    // per-agent Unix socket and outlive the hub. Binding before the runtime
+    // warms up lets a restarting hub connect immediately; connections queue
+    // in the listener backlog until `serve_detached` below starts.
+    let detached = match DETACHED_SOCKET.get().cloned().flatten() {
+        Some(path) => Some(bind_detached(Path::new(&path))?),
+        None => None,
+    };
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     let agent = Arc::new(agent);
     RUNTIME_TX.with(|slot| *slot.borrow_mut() = Some(tx.clone()));
@@ -1395,13 +1850,23 @@ pub async fn run_with(
             rt.agent.set_tools(tools).await;
         }
     }
+    // A detached child's stdout is the agent log the hub tails and replays.
+    let compact_log = detached.is_some();
     let writer = tokio::spawn(async move {
         let mut out = tokio::io::stdout();
         let mut encoder = FrameEncoder::new();
+        if compact_log {
+            encoder = encoder.compacting();
+        }
         while let Some(v) = rx.recv().await {
             if v.get(FLUSH_MARKER).is_some() {
                 break;
             }
+            let collect = matches!(
+                v.get("type").and_then(Value::as_str),
+                Some("session_settled")
+            ) || (v.get("type").and_then(Value::as_str) == Some("agent_end")
+                && v.get("willContinue") != Some(&json!(true)));
             let mut buf = String::new();
             for line in encoder.encode(&v) {
                 buf.push_str(&line);
@@ -1409,6 +1874,10 @@ pub async fn run_with(
             }
             if out.write_all(buf.as_bytes()).await.is_err() || out.flush().await.is_err() {
                 break;
+            }
+            drop(buf);
+            if collect {
+                crate::collect_retained_memory();
             }
         }
     });
@@ -1431,7 +1900,9 @@ pub async fn run_with(
     }
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut background = tokio::task::JoinSet::new();
+    // Drained on the stdio exit path; detached mode keeps it `Some` forever
+    // (a detached child has no voluntary exit to drain for).
+    let mut background: Option<tokio::task::JoinSet<()>> = Some(tokio::task::JoinSet::new());
     // Commands run one at a time, in arrival order, on a worker task, so the read loop keeps
     // routing `extension_ui_response` (and `abort`) while a command awaits a dialog answer
     // (interactive slash commands, extension `ui.select`): handling inline deadlocked.
@@ -1448,69 +1919,23 @@ pub async fn run_with(
             }
         })
     };
+    if let Some(listener) = detached {
+        // Detached: stdin frames still work until EOF, but EOF no longer ends
+        // the process — the control socket keeps it alive for the hub; only a
+        // process-group SIGTERM (web DELETE) does.
+        return serve_detached(&rt, listener, &cmd_tx, &busy).await;
+    }
     while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
+        if let Some(cmd) = parse_line(&rt, &line) {
+            route_frame(&rt, cmd, &cmd_tx, &busy, &mut background).await;
         }
-        let cmd = match serde_json::from_str::<Value>(&line) {
-            Ok(v) if v.is_object() => v,
-            Ok(_) => {
-                rt.send(response(
-                    None,
-                    "parse",
-                    Err(CmdError::new(
-                        "Failed to parse command: expected a JSON object",
-                    )),
-                ));
-                continue;
-            }
-            Err(e) => {
-                rt.send(response(
-                    None,
-                    "parse",
-                    Err(CmdError::new(format!("Failed to parse command: {e}"))),
-                ));
-                continue;
-            }
-        };
-        let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
-        if kind == "extension_ui_response" {
-            // Resolve a pending ask-UI dialog (see `RpcAskUi`).
-            if let Some(id) = cmd.get("id").and_then(Value::as_str) {
-                resolve_pending_ui_request(id, cmd.clone());
-            }
-            continue;
-        }
-        if matches!(
-            kind,
-            "host_tool_result" | "host_tool_update" | "host_uri_result"
-        ) {
-            continue; // side-channel frames for sub-protocols this server never opens
-        }
-        if kind == "bash" {
-            let rt = rt.clone();
-            background.spawn(async move {
-                let result = match str_field(&cmd, "command") {
-                    Ok(c) => run_bash(&rt, c).await,
-                    Err(e) => Err(e),
-                };
-                rt.send(response(cmd.get("id"), "bash", result));
-            });
-            continue;
-        }
-        if kind == "abort" && busy.load(std::sync::atomic::Ordering::SeqCst) {
-            // A command is in flight (possibly waiting on a dialog): abort the run now
-            // instead of queueing behind it.
-            let reply = handle(&rt, &cmd).await;
-            rt.send(reply);
-            continue;
-        }
-        let _ = cmd_tx.send(cmd);
     }
     // stdin closed: let accepted work finish and flush its frames.
     drop(cmd_tx);
     let _ = worker.await;
-    while background.join_next().await.is_some() {}
+    if let Some(mut background) = background.take() {
+        while background.join_next().await.is_some() {}
+    }
     agent.wait_for_idle().await;
     // `prompt_result` / `session_settled` land a tick after the final `agent_end`.
     rt.wait_settled().await;
@@ -1528,9 +1953,215 @@ pub async fn run_with(
     Ok(())
 }
 
+/// Bind the detached control socket, replacing a stale file left by an
+/// earlier incarnation of the same agent id.
+fn bind_detached(sock_path: &Path) -> Result<UnixListener> {
+    if let Some(dir) = sock_path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    let _ = std::fs::remove_file(sock_path);
+    UnixListener::bind(sock_path).with_context(|| format!("bind {}", sock_path.display()))
+}
+
+/// Serve frames on the control socket until the process is signalled. The
+/// socket is inbound-only: replies flow to stdout (the per-agent log the hub
+/// tails). A client's EOF just ends its reader; the process itself never
+/// exits here, so nothing is drained or flushed — a detached child only dies
+/// by signal.
+async fn serve_detached(
+    rt: &Arc<Runtime>,
+    listener: UnixListener,
+    cmd_tx: &mpsc::UnboundedSender<Value>,
+    busy: &Arc<AtomicBool>,
+) -> Result<()> {
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let (rt, cmd_tx, busy) = (rt.clone(), cmd_tx.clone(), busy.clone());
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stream).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(cmd) = parse_line(&rt, &line) {
+                    route_frame(&rt, cmd, &cmd_tx, &busy, &mut None).await;
+                }
+            }
+        });
+    }
+}
+
+/// Decode one input line for either transport: blank lines are skipped and
+/// parse errors are answered, byte-for-byte the rules the stdio loop had.
+fn parse_line(rt: &Runtime, line: &str) -> Option<Value> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<Value>(line) {
+        Ok(v) if v.is_object() => Some(v),
+        Ok(_) => {
+            rt.send(response(
+                None,
+                "parse",
+                Err(CmdError::new(
+                    "Failed to parse command: expected a JSON object",
+                )),
+            ));
+            None
+        }
+        Err(e) => {
+            rt.send(response(
+                None,
+                "parse",
+                Err(CmdError::new(format!("Failed to parse command: {e}"))),
+            ));
+            None
+        }
+    }
+}
+
+/// Route one decoded frame: dialog answers resolve their waiter, `bash` runs
+/// concurrently with command dispatch, an `abort` interrupts an in-flight
+/// command, everything else queues for the ordered worker. `background` is
+/// the stdio-mode drain set; `None` (detached mode) detaches `bash` jobs.
+async fn route_frame(
+    rt: &Arc<Runtime>,
+    cmd: Value,
+    cmd_tx: &mpsc::UnboundedSender<Value>,
+    busy: &Arc<AtomicBool>,
+    background: &mut Option<tokio::task::JoinSet<()>>,
+) {
+    let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
+    if kind == "extension_ui_response" {
+        // Resolve a pending ask-UI dialog (see `RpcAskUi`).
+        if let Some(id) = cmd.get("id").and_then(Value::as_str) {
+            resolve_pending_ui_request(id, cmd.clone());
+        }
+        return;
+    }
+    if matches!(
+        kind,
+        "host_tool_result" | "host_tool_update" | "host_uri_result"
+    ) {
+        return; // side-channel frames for sub-protocols this server never opens
+    }
+    if kind == "bash" {
+        let rt = rt.clone();
+        let job = async move {
+            let result = match str_field(&cmd, "command") {
+                Ok(c) => run_bash(&rt, c).await,
+                Err(e) => Err(e),
+            };
+            rt.send(response(cmd.get("id"), "bash", result));
+        };
+        match background {
+            Some(set) => {
+                set.spawn(job);
+            }
+            None => {
+                tokio::spawn(job);
+            }
+        }
+        return;
+    }
+    if kind == "abort" && busy.load(Ordering::SeqCst) {
+        // A command is in flight (possibly waiting on a dialog): abort the run now
+        // instead of queueing behind it.
+        let reply = handle(rt, &cmd).await;
+        rt.send(reply);
+        return;
+    }
+    let _ = cmd_tx.send(cmd);
+}
+
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_capabilities_reports_version_and_page_limits() {
+        let caps = capabilities_payload(crate::paging::MAX_LIMIT);
+        assert_eq!(caps["protocolVersion"], 1);
+        assert_eq!(caps["supportedProtocolVersions"], json!([1, 2]));
+        assert_eq!(caps["features"]["messagesBackwardPaging"], json!(true));
+        assert_eq!(caps["maxFrameBytes"], MAX_FRAME_BYTES);
+        assert_eq!(
+            caps["limits"]["getMessages"]["maxPageSize"],
+            crate::paging::MAX_LIMIT
+        );
+        assert_eq!(
+            caps["limits"]["getMessages"]["defaultPageSize"],
+            crate::paging::DEFAULT_LIMIT
+        );
+        assert_eq!(
+            caps["limits"]["getMessages"]["maxPageBytes"],
+            crate::paging::MAX_PAGE_BYTES
+        );
+        assert_eq!(
+            caps["limits"]["getMessages"]["maxCursorChars"],
+            crate::paging::MAX_CURSOR_CHARS
+        );
+    }
+
+    #[test]
+    fn legacy_profile_page_limit_is_within_both_agent_generations_bounds() {
+        let caps = legacy_capabilities_payload();
+        assert_eq!(caps["supportedProtocolVersions"], json!([1]));
+        assert_eq!(caps["features"]["messagesBackwardPaging"], json!(false));
+        // Same shape as the live payload (frontend needs one parser).
+        assert_eq!(
+            caps["limits"]["getMessages"]["defaultPageSize"],
+            capabilities_payload(crate::paging::MAX_LIMIT)["limits"]["getMessages"]
+                ["defaultPageSize"]
+        );
+        let legacy = caps["limits"]["getMessages"]["maxPageSize"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(legacy, LEGACY_MAX_GET_MESSAGES_PAGE_SIZE as u64);
+        assert!(legacy <= crate::paging::MAX_LIMIT as u64);
+        assert!(legacy >= 1);
+    }
+
+    #[test]
+    fn page_accepts_legacy_limit_and_rejects_over_limit() {
+        let m = vec![json!({"role": "user", "content": "hi"}); 300];
+        let snap = paging::Snapshot {
+            session_id: "s",
+            leaf_id: None,
+            message_count: 300,
+        };
+        // A page minted at the legacy limit must still be valid on a new agent.
+        let paged = crate::paging::page(&m, &snap, None, Some(LEGACY_MAX_GET_MESSAGES_PAGE_SIZE))
+            .expect("legacy limit accepted");
+        assert_eq!(
+            paged["messages"].as_array().unwrap().len(),
+            LEGACY_MAX_GET_MESSAGES_PAGE_SIZE
+        );
+        assert!(paged["nextCursor"].is_string());
+        let err =
+            crate::paging::page(&m, &snap, None, Some(crate::paging::MAX_LIMIT + 1)).unwrap_err();
+        assert_eq!(err.code, None);
+        assert!(err.message.contains("between 1 and 512"));
+    }
+
+    #[test]
+    fn tree_with_id_less_header_terminates() {
+        // A real session journal starts with an id-less `title` entry; get_tree used to recurse
+        // on it with `parent: None` until the agent died of a stack overflow.
+        let entries = vec![
+            json!({"type": "title"}),
+            json!({"type": "session", "id": "s"}),
+            json!({"type": "message", "id": "m1", "parentId": "s"}),
+            json!({"type": "message", "id": "m2", "parentId": "m1"}),
+        ];
+        let t = tree(&entries);
+        assert_eq!(t.len(), 2, "two roots: the title header and the session");
+        assert_eq!(t[0]["children"], json!([]));
+        assert_eq!(
+            t[1]["children"][0]["children"][0]["entry"]["id"],
+            json!("m2")
+        );
+    }
 
     fn big_response(id: &str) -> Value {
         json!({"id": id, "type": "response", "command": "get_available_models", "success": true,
@@ -1697,6 +2328,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod ask_ui_tests {
     use super::*;
 

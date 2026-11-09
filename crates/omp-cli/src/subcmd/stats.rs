@@ -7,9 +7,9 @@
 
 #![allow(clippy::cast_precision_loss)]
 
+use parking_lot::Mutex;
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write as _};
-use std::sync::Mutex;
 
 use anyhow::{bail, Context as _, Result};
 use omp_stats::server::{
@@ -65,17 +65,17 @@ pub fn parse_args(args: &[String]) -> Result<StatsArgs> {
             "-j" | "--json" => parsed.json = true,
             "-s" | "--summary" | "--sync" => parsed.summary = true,
             "-p" | "--port" => {
-                parsed.port = parse_port(it.next().context("--port needs a value")?)?
+                parsed.port = parse_port(it.next().context("--port needs a value")?)?;
             }
             "--host" => it
                 .next()
                 .context("--host needs a value")?
                 .clone_into(&mut parsed.host),
             other if other.starts_with("--port=") => {
-                parsed.port = parse_port(&other["--port=".len()..])?
+                parsed.port = parse_port(&other["--port=".len()..])?;
             }
             other if other.starts_with("--host=") => {
-                parsed.host = other["--host=".len()..].to_string()
+                parsed.host = other["--host=".len()..].to_string();
             }
             // node `parseArgs` short clusters: `-js`, `-jp3000`, `-sp 4000`.
             other if other.len() > 2 && other.starts_with('-') && !other.starts_with("--") => {
@@ -109,6 +109,7 @@ pub fn parse_args(args: &[String]) -> Result<StatsArgs> {
 ///
 /// # Errors
 /// Sync, db, or server start failure.
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 pub fn run(args: &[String]) -> Result<i32> {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
@@ -470,9 +471,7 @@ pub fn launch_dashboard(port: u16, host: &str) -> Result<(String, String)> {
     // and the broker usage source.
     super::stats_judge::register();
     super::usage_broker::register();
-    let mut active = ACTIVE_SERVER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut active = ACTIVE_SERVER.lock();
     let mut ignored = false;
     let handle = if let Some(handle) = active.as_ref() {
         ignored = port != handle.port || host != handle.hostname;

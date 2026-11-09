@@ -25,6 +25,8 @@ use serde_json::json;
 
 /// Smallest block `rlm_offload` will move (shorter blocks are not worth a reference line).
 pub const OFFLOAD_MIN_CHARS: usize = 2_000;
+/// Maximum full-text chars re-inlined by an explicit Laya `rlm_recall` decision.
+pub const POLICY_RECALL_CHARS: usize = 100_000;
 
 /// Per-turn maintenance instruction sent by the host (same wording the bench used for `clm`).
 pub const MAINT_NOTICE: &str =
@@ -63,6 +65,7 @@ pub enum Action {
     Noop,
     ClmEdit,
     RlmOffload,
+    RlmRecall,
 }
 
 impl Action {
@@ -72,6 +75,7 @@ impl Action {
             Self::Noop => "noop",
             Self::ClmEdit => "clm_edit",
             Self::RlmOffload => "rlm_offload",
+            Self::RlmRecall => "rlm_recall",
         }
     }
 }
@@ -98,6 +102,9 @@ pub struct State {
     pub offloads_total: usize,
     /// Tool calls whose arguments open an offloaded block file.
     pub offload_reads: usize,
+    /// % of the newest user message's distinctive tokens that identify an offloaded block
+    /// (present in 1..=2 of them, like `recall_matches`; 0 when nothing is offloaded).
+    pub offload_match_pct: usize,
     pub cache_hit_pct: usize,
     /// Last 300 chars of the newest user message, whitespace-collapsed.
     pub excerpt: String,
@@ -120,6 +127,33 @@ impl State {
             self.offloads_total, self.offload_reads, self.cache_hit_pct, self.excerpt
         )
     }
+
+    /// v2 state: render() plus `offload_match_pct` between `offload_reads` and `cache_hit_pct`.
+    /// The recall signal the offload index can compute but the raw excerpt does not expose;
+    /// selected by `OMP_CONTEXT_STATE_V2=1` so v1 checkpoints keep their exact input format.
+    #[must_use]
+    pub fn render_v2(&self) -> String {
+        let since = self
+            .steps_since_edit
+            .map_or_else(|| "none".to_owned(), |n| n.to_string());
+        format!(
+            "context controller\nstep: {}\nhistory_tokens: {}\nslots_chars: {} ({} slots)\nsteps_since_last_edit: {}\n\
+             edits_so_far: {}\nlargest_old_block_chars: {}\nblock_age_turns: {}\nblock_restated_pct: {}\n\
+             block_since_ref_turns: {}\noffloads_so_far: {}\noffload_reads: {}\noffload_match_pct: {}\ncache_hit_pct: {}\n\
+             next_instruction: {}",
+            self.step, self.history_tokens, self.slots_chars, self.slots_count, since, self.edits_total,
+            self.largest_block_chars, self.block_age_turns, self.block_restated_pct, self.block_since_ref_turns,
+            self.offloads_total, self.offload_reads, self.offload_match_pct, self.cache_hit_pct, self.excerpt
+        )
+    }
+}
+
+/// Float setting to `usize` with `as` semantics made explicit: NaN and negatives become 0,
+/// overflow saturates. Settings are user-facing numbers, so this is the intended clamp.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // saturating `as` is the contract
+pub fn saturating_usize(v: f64) -> usize {
+    v as usize
 }
 
 /// Last 300 chars of `text`, whitespace collapsed to single spaces.
@@ -149,6 +183,17 @@ pub struct Policy {
     pub rule_offload_restated: usize,
     /// `rule`: do not offload while the whole history is below this many tokens (0 = no gate).
     pub rule_offload_hist: usize,
+    /// `rule`, cache-aligned batch eviction: once history reaches this many tokens, evict old
+    /// blocks oldest-first in ONE turn until it is at most [`Self::rule_offload_low`] (0 = off,
+    /// the per-turn single-block offload above applies). One prompt-cache break per cycle.
+    pub rule_offload_high: usize,
+    /// Target history size (tokens) of a batch eviction.
+    pub rule_offload_low: usize,
+    /// Recall-on-miss budget: offloaded blocks matching the new user turn are re-inlined, at
+    /// most this many chars per turn (0 = off).
+    pub recall_chars: usize,
+    /// Render v2 controller states (adds `offload_match_pct`) for v2 checkpoints.
+    pub state_v2: bool,
     pub schedule: Vec<u8>,
     laya_paths: Option<LayaPaths>,
     laya: Mutex<Option<Result<omp_judge::policy::PolicyScorer, ()>>>,
@@ -175,6 +220,10 @@ impl Policy {
             rule_offload_age: 0,
             rule_offload_restated: 0,
             rule_offload_hist: 0,
+            rule_offload_high: 0,
+            rule_offload_low: 0,
+            recall_chars: 0,
+            state_v2: false,
             schedule: Vec::new(),
             laya_paths: None,
             laya: Mutex::new(None),
@@ -206,7 +255,7 @@ impl Policy {
         let num = |envk: &str, id: &str, d: usize| {
             env(envk)
                 .and_then(|v| v.parse().ok())
-                .or_else(|| settings.get_number(id).map(|v| v as usize))
+                .or_else(|| settings.get_number(id).map(saturating_usize))
                 .unwrap_or(d)
         };
         p.rule_tokens = num(
@@ -239,6 +288,25 @@ impl Policy {
             "context.policy.ruleOffloadHist",
             p.rule_offload_hist,
         );
+        p.rule_offload_high = num(
+            "OMP_CONTEXT_POLICY_RULE_HIGH",
+            "context.policy.ruleOffloadHigh",
+            p.rule_offload_high,
+        );
+        p.rule_offload_low = num(
+            "OMP_CONTEXT_POLICY_RULE_LOW",
+            "context.policy.ruleOffloadLow",
+            p.rule_offload_high / 2,
+        );
+        p.recall_chars = num(
+            "OMP_CONTEXT_POLICY_RECALL",
+            "context.policy.recallChars",
+            p.recall_chars,
+        );
+        p.state_v2 = matches!(
+            env("OMP_CONTEXT_STATE_V2").as_deref(),
+            Some("1" | "true" | "yes")
+        );
         p.schedule = env("OMP_CONTEXT_POLICY_SCRIPT")
             .map(|s| {
                 s.split(',')
@@ -266,6 +334,14 @@ impl Policy {
         Ok(Some(p))
     }
 
+    /// Batch-eviction plan: `Some((low_tokens, min_age_turns))` when `rule` runs in
+    /// cache-aligned batch mode (see [`Self::rule_offload_high`]).
+    #[must_use]
+    pub fn batch_target(&self) -> Option<(usize, usize)> {
+        (self.kind == Kind::Rule && self.rule_offload_high > 0)
+            .then_some((self.rule_offload_low, self.rule_offload_age))
+    }
+
     /// Rule decision (pure).
     #[must_use]
     pub fn rule(&self, st: &State) -> bool {
@@ -291,7 +367,12 @@ impl Policy {
         let Ok(scorer) = scorer else {
             return Action::ClmEdit;
         };
-        match scorer.probs(&st.render()) {
+        let state = if self.state_v2 {
+            st.render_v2()
+        } else {
+            st.render()
+        };
+        match scorer.probs(&state) {
             Ok(probs) => {
                 let best = probs
                     .iter()
@@ -300,6 +381,7 @@ impl Policy {
                 match best {
                     Some("noop") => Action::Noop,
                     Some("rlm_offload") => Action::RlmOffload,
+                    Some("rlm_recall") => Action::RlmRecall,
                     _ => Action::ClmEdit,
                 }
             }
@@ -320,7 +402,18 @@ impl Policy {
         let action = match self.kind {
             Kind::Always => Action::ClmEdit,
             Kind::Rule => {
-                if self.rule_offload_chars > 0
+                if self.rule_offload_high > 0 {
+                    // Batch mode: the trigger is the history size, not one block.
+                    if st.history_tokens >= self.rule_offload_high
+                        && st.largest_block_chars >= OFFLOAD_MIN_CHARS
+                    {
+                        Action::RlmOffload
+                    } else if self.rule(st) {
+                        Action::ClmEdit
+                    } else {
+                        Action::Noop
+                    }
+                } else if self.rule_offload_chars > 0
                     && st.largest_block_chars >= self.rule_offload_chars.max(OFFLOAD_MIN_CHARS)
                     && st.block_age_turns >= self.rule_offload_age
                     && st.block_restated_pct >= self.rule_offload_restated
@@ -335,8 +428,10 @@ impl Policy {
             }
             Kind::Laya => {
                 let a = self.laya_action(st);
-                // nothing to offload: the host cannot do it, so it is a noop
+                // Actions are legal only when their public preconditions hold.
                 if a == Action::RlmOffload && st.largest_block_chars < OFFLOAD_MIN_CHARS {
+                    Action::Noop
+                } else if a == Action::RlmRecall && st.offloads_total == 0 {
                     Action::Noop
                 } else {
                     a
@@ -345,6 +440,7 @@ impl Policy {
             Kind::Schedule => match self.schedule.get(st.step).copied().unwrap_or(0) {
                 1 => Action::ClmEdit,
                 2 => Action::RlmOffload,
+                3 => Action::RlmRecall,
                 _ => Action::Noop,
             },
         };
@@ -352,7 +448,8 @@ impl Policy {
         self.memo.lock().insert(st.step, (action, edit));
         if let Some(path) = &self.log {
             let line = json!({"step": st.step, "policy": format!("{:?}", self.kind).to_lowercase(),
-                              "action": action.as_str(), "edit": edit, "state": st.render()});
+                              "action": action.as_str(), "edit": edit,
+                              "state": if self.state_v2 { st.render_v2() } else { st.render() }});
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -445,7 +542,7 @@ mod tests {
     #[test]
     fn decide_is_memoized_per_turn_and_schedule_replays() {
         let mut p = Policy::new(Kind::Schedule);
-        p.schedule = vec![0, 1, 2];
+        p.schedule = vec![0, 1, 2, 3];
         assert_eq!(p.decide(&st(0, 0, None)), (Action::Noop, true));
         assert_eq!(p.decide(&st(1, 0, None)), (Action::ClmEdit, true));
         assert_eq!(
@@ -454,6 +551,7 @@ mod tests {
             "same turn: memoized, not fresh"
         );
         assert_eq!(p.decide(&st(2, 0, None)).0, Action::RlmOffload);
+        assert_eq!(p.decide(&st(3, 0, None)).0, Action::RlmRecall);
         assert_eq!(
             p.decide(&st(7, 0, None)).0,
             Action::Noop,
@@ -497,6 +595,7 @@ mod tests {
             block_since_ref_turns: 2,
             offloads_total: 0,
             offload_reads: 1,
+            offload_match_pct: 40,
             cache_hit_pct: 91,
             excerpt: excerpt_of("a\n  b"),
         };
@@ -510,6 +609,22 @@ mod tests {
         let e = excerpt_of(&long);
         assert_eq!(e.chars().count(), 300);
         assert!(e.ends_with("END"));
+    }
+
+    #[test]
+    fn render_v2_adds_offload_match_pct_line() {
+        let mut s = State::default();
+        s.step = 2;
+        s.offloads_total = 1;
+        s.offload_reads = 3;
+        s.offload_match_pct = 75;
+        s.cache_hit_pct = 90;
+        s.excerpt = "read proj/mod_07.py".to_owned();
+        let r = s.render_v2();
+        assert!(r.contains("\noffload_reads: 3\noffload_match_pct: 75\ncache_hit_pct: 90\n"));
+        assert!(r.ends_with("next_instruction: read proj/mod_07.py"));
+        assert_eq!(s.render().matches('\n').count() + 1, 14, "v1 render unchanged");
+        assert_eq!(r.matches('\n').count() + 1, 15, "v2 adds exactly one line");
     }
 
     #[test]

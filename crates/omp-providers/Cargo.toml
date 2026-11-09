@@ -20,6 +20,7 @@ libc = "0.2"
 base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 omp-stats = { path = "../omp-stats" }
+parking_lot = "0.12"
 
 [build-dependencies]
 serde_json = { workspace = true }
@@ -28,4 +29,10 @@ omp-stats = { path = "../omp-stats" }
 [dev-dependencies]
 futures = { workspace = true }
 tempfile = "3"
-parking_lot = "0.12"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+# Lock convention: see the workspace root manifest.
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"

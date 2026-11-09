@@ -11,6 +11,7 @@
 //! must map the golden row's `sessionFile` + `entryId` to the Rust id). For
 //! relative ranges (`range=1h|24h|7d|30d|90d`, "now"-dependent) only the shape
 //! (key sets and JSON types) is compared.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::Path;
 
@@ -19,8 +20,7 @@ use serde_json::Value;
 use super::TestHome;
 
 /// The fixture `HOME` the goldens were recorded against.
-pub(crate) const FIXTURE_HOME: &str =
-    "/home/user/omrs-fixtures/stats/fixture/home";
+pub(crate) const FIXTURE_HOME: &str = "/home/user/omrs-fixtures/stats/fixture/home";
 /// `golden/_index.json` + `NNN.json` (`{request, status, body}`).
 pub(crate) const GOLDEN_DIR: &str = "/home/user/omrs-fixtures/stats/golden";
 

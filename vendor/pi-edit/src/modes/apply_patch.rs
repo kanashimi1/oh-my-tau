@@ -1,6 +1,8 @@
 //! `apply_patch` mode: Codex `*** Begin Patch` envelopes expanded to per-file
 //! patch entries. Port of `packages/coding-agent/src/edit/apply-patch/*` and
 //! `modes/apply-patch.ts`.
+// invariant: all regexes in this module are literals verified by tests.
+#![allow(clippy::expect_used)]
 
 use std::{
     collections::{HashMap, HashSet},
@@ -374,8 +376,9 @@ fn natural_order_previews(input: &str) -> Vec<PreviewFile> {
         }
         if let Some(path) = &current
             && (matches!(raw.as_bytes().first(), Some(b'+' | b'-' | b' ')) || raw.starts_with("@@"))
+            && let Some(group) = groups.get_mut(path)
         {
-            groups.get_mut(path).unwrap().push(raw.to_owned());
+            group.push(raw.to_owned());
         }
     }
     order
@@ -433,7 +436,7 @@ fn inspect_entries(input: &str) -> (Vec<String>, Vec<(String, String)>, Vec<File
     }
     let matcher_entries = order
         .into_iter()
-        .map(|path| (path.clone(), digests.remove(&path).unwrap()))
+        .filter_map(|path| digests.remove(&path).map(|digest| (path.clone(), digest)))
         .collect();
     (paths, matcher_entries, file_ops)
 }

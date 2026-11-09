@@ -106,9 +106,11 @@ pub struct LayaTokenizer {
 
 impl LayaTokenizer {
     pub fn from_dir(dir: &Path) -> Result<Self> {
-        let tok = Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|e| anyhow::anyhow!("tokenizer load: {e}"))?;
+        let tok = Tokenizer::from_file(dir.join("tokenizer.json"))
+            .map_err(|e| anyhow::anyhow!("tokenizer load: {e}"))?;
         let cfg: Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("tokenizer_config.json")).context("tokenizer_config.json")?,
+            &std::fs::read_to_string(dir.join("tokenizer_config.json"))
+                .context("tokenizer_config.json")?,
         )?;
         let s = |k: &str| -> Result<String> {
             cfg[k]
@@ -158,14 +160,22 @@ impl LayaTokenizer {
             .iter()
             .map(|o| {
                 let mut v = vec![self.mask_id];
-                v.extend(self.encode_no_special(&format!(" {}", o.replace(mask_tok, " "))).iter().take(48));
+                v.extend(
+                    self.encode_no_special(&format!(" {}", o.replace(mask_tok, " ")))
+                        .iter()
+                        .take(48),
+                );
                 v
             })
             .collect();
-        let mut opt_budget = head_max_len as i64 - opt_ids.iter().map(|o| o.len() as i64).sum::<i64>();
+        let mut opt_budget =
+            head_max_len as i64 - opt_ids.iter().map(|o| o.len() as i64).sum::<i64>();
         if opt_budget < 16 {
             let per = ((head_max_len as i64 - 16) / opt_ids.len().max(1) as i64).max(4) as usize;
-            opt_ids = opt_ids.iter().map(|o| o[..per.min(o.len())].to_vec()).collect();
+            opt_ids = opt_ids
+                .iter()
+                .map(|o| o[..per.min(o.len())].to_vec())
+                .collect();
             opt_budget = head_max_len as i64 - opt_ids.iter().map(|o| o.len() as i64).sum::<i64>();
         }
         let head_keep = (opt_budget.max(8)) as usize;
@@ -230,7 +240,10 @@ pub struct Temperatures {
 impl Temperatures {
     pub fn from_config(cfg: &Value) -> Self {
         let mut by_options = HashMap::new();
-        if let Some(m) = cfg.get("temperature_by_options").and_then(|v| v.as_object()) {
+        if let Some(m) = cfg
+            .get("temperature_by_options")
+            .and_then(|v| v.as_object())
+        {
             for (k, v) in m {
                 if let Some(t) = v.as_f64() {
                     by_options.insert(k.clone(), t);
@@ -256,7 +269,11 @@ pub struct QuestionProbs {
 }
 
 fn qtype_of(t: &str) -> i64 {
-    QTYPES.iter().find(|(n, _)| *n == t).map(|(_, v)| *v).unwrap_or(0)
+    QTYPES
+        .iter()
+        .find(|(n, _)| *n == t)
+        .map(|(_, v)| *v)
+        .unwrap_or(0)
 }
 
 /// Load rl_agent_config.json + tokenizer.json + model.onnx from a checkpoint dir.
@@ -272,17 +289,32 @@ pub struct Judge {
 impl Judge {
     pub fn load(ckpt: &Path, onnx_path: &Path, threads: usize) -> Result<Self> {
         let cfg: Value = serde_json::from_str(
-            &std::fs::read_to_string(ckpt.join("rl_agent_config.json")).context("rl_agent_config.json")?,
+            &std::fs::read_to_string(ckpt.join("rl_agent_config.json"))
+                .context("rl_agent_config.json")?,
         )?;
         let max_len = cfg["max_len"].as_u64().unwrap_or(1024) as usize;
         let head_max_len = cfg["head_max_len"].as_u64().unwrap_or(192) as usize;
         let env = ort::init().with_name("laya-ort").build().map_err(ort_err)?;
-        let session = Session::builder(&env)
+        let mut session = Session::builder(&env)
             .map_err(ort_err)?
             .with_intra_threads(threads)
-            .map_err(ort_err)?
-            .commit_from_file(onnx_path)
             .map_err(ort_err)?;
+        // Opt-in memory experiments for the shared judge. Defaults remain identical to upstream ORT.
+        if std::env::var_os("OMP_CONTEXT_LAYA_DISABLE_PREPACKING").is_some() {
+            session = session.with_prepacking(false).map_err(ort_err)?;
+        }
+        if std::env::var_os("OMP_CONTEXT_LAYA_ENV_ALLOCATORS").is_some() {
+            session = session.with_env_allocators().map_err(ort_err)?;
+        }
+        if std::env::var_os("OMP_CONTEXT_LAYA_DISABLE_MEMORY_PATTERN").is_some() {
+            session = session.with_memory_pattern(false).map_err(ort_err)?;
+        }
+        if std::env::var_os("OMP_CONTEXT_LAYA_DISABLE_ARENA").is_some() {
+            session = session
+                .with_config_entry("session.enable_cpu_mem_arena", "0")
+                .map_err(ort_err)?;
+        }
+        let session = session.commit_from_file(onnx_path).map_err(ort_err)?;
         Ok(Self {
             env,
             session,
@@ -321,9 +353,15 @@ impl Judge {
                     .map(|a| (0..a.len()).map(|i| i.to_string()).collect())
                     .unwrap_or_default(),
             };
-            let seq = self.tok.build_sequence(state, &internal, self.max_len, self.head_max_len, false);
+            let seq =
+                self.tok
+                    .build_sequence(state, &internal, self.max_len, self.head_max_len, false);
             if seq.markers.len() != options.len() {
-                eprintln!("skip {qid}: {} markers vs {} options", seq.markers.len(), options.len());
+                eprintln!(
+                    "skip {qid}: {} markers vs {} options",
+                    seq.markers.len(),
+                    options.len()
+                );
                 continue;
             }
             let qt = qtype_of(internal["t"].as_str().unwrap_or(""));
@@ -331,7 +369,8 @@ impl Judge {
         }
         // Simple batching: process in chunks with a token budget, like train.py batches().
         let mut start = 0;
-        let mut results: Vec<Option<(String, Vec<String>, Vec<f32>)>> = vec![None; items.len()];
+        type ItemResult = (String, Vec<String>, Vec<f32>);
+        let mut results: Vec<Option<ItemResult>> = vec![None; items.len()];
         let mut order: Vec<usize> = (0..items.len()).collect();
         order.sort_by_key(|&i| items[i].3.ids.len());
         while start < order.len() {
@@ -348,8 +387,15 @@ impl Judge {
             let batch = &order[start..end];
             start = end;
             let bsz = batch.len();
+            // invariant: batch is non-empty, so max() over it always yields a value.
+            #[allow(clippy::unwrap_used)]
             let l = batch.iter().map(|&i| items[i].3.ids.len()).max().unwrap();
-            let m = batch.iter().map(|&i| items[i].3.markers.len()).max().unwrap();
+            #[allow(clippy::unwrap_used)]
+            let m = batch
+                .iter()
+                .map(|&i| items[i].3.markers.len())
+                .max()
+                .unwrap();
             let mut ids = vec![self.tok.pad_id; bsz * l];
             let mut attn = vec![0i64; bsz * l];
             let mut mpos = vec![0i64; bsz * m];
@@ -368,7 +414,17 @@ impl Judge {
                 }
                 qtype[r] = *qt;
             }
-            let logits = run_batch(&mut self.session, &ids, &attn, &mpos, &mmask, &qtype, bsz, l, m)?;
+            let logits = run_batch(
+                &mut self.session,
+                &ids,
+                &attn,
+                &mpos,
+                &mmask,
+                &qtype,
+                bsz,
+                l,
+                m,
+            )?;
             for (r, &i) in batch.iter().enumerate() {
                 let (qid, options, qt, _, k) = &items[i];
                 let z: Vec<f32> = logits[r * m..r * m + *k].to_vec();
@@ -378,7 +434,11 @@ impl Judge {
             }
         }
         for r in results.into_iter().flatten() {
-            out.push(QuestionProbs { qid: r.0, options: r.1, probs: r.2 });
+            out.push(QuestionProbs {
+                qid: r.0,
+                options: r.1,
+                probs: r.2,
+            });
         }
         Ok(out)
     }
@@ -392,6 +452,8 @@ fn ort_err(e: impl std::fmt::Debug) -> anyhow::Error {
     anyhow::anyhow!("ort error: {e:?}")
 }
 
+// Mirrors the ONNX session input layout (ids/attn/mpos/mmask/qtype + shape dims).
+#[allow(clippy::too_many_arguments)]
 fn run_batch(
     session: &mut Session,
     ids: &[i64],

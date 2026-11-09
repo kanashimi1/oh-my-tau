@@ -24,6 +24,8 @@ pub const HANDOFF_SUMMARY_CONTEXT: &str = include_str!("../prompts/handoff-summa
 pub const HANDOFF_DOCUMENT: &str = include_str!("../prompts/handoff-document.md");
 pub const CONTEXT_NOTES: &str = include_str!("../prompts/context-notes.md");
 
+// invariant: callers pass fixed regex literals that always compile.
+#[allow(clippy::expect_used)]
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("static regex"))
 }

@@ -3574,6 +3574,13 @@ pub static SETTINGS: &[SettingDef] = &[
         credential: false,
     },
     SettingDef {
+        id: "tools.codeMode",
+        ty: crate::SettingType::Boolean,
+        env: None,
+        default_yaml: Some("true"),
+        credential: false,
+    },
+    SettingDef {
         id: "tools.format",
         ty: crate::SettingType::Enum(&[
             "auto",

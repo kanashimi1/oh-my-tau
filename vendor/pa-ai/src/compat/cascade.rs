@@ -14,7 +14,9 @@ use super::taxonomy::glob_match;
 use super::Rules;
 
 #[derive(Debug, thiserror::Error)]
-#[error("ambiguous overlap for `{provider}/{model}` on axis `{axis}`: rules `{first}` and `{second}` tie; add an explicit priority")]
+#[error(
+    "ambiguous overlap for `{provider}/{model}` on axis `{axis}`: rules `{first}` and `{second}` tie; add an explicit priority"
+)]
 pub struct AmbiguousOverlap {
     pub provider: String,
     pub model: String,
@@ -59,11 +61,11 @@ pub struct Rule {
     pub apis: Option<Vec<String>>,
     pub upstreams: Option<Vec<String>>,
     pub family: Option<String>,
-    revision: Option<Vec<RevisionTerm>>,
+    revisions: Option<Vec<RevisionTerm>>,
     pub models: Option<Vec<Selector>>,
     priority: i64,
     dimensions: i64,
-    has_exact_efforts_rule: bool,
+    has_exact_efforts: bool,
     pub wire: Option<Map<String, Value>>,
     pub thinking: Option<Map<String, Value>>,
     pub catalog: Option<Map<String, Value>>,
@@ -107,7 +109,7 @@ impl TryFrom<RawCascade> for Cascade {
                 + i64::from(r.family.is_some())
                 + i64::from(r.revision.is_some())
                 + i64::from(r.models.is_some());
-            let has_exact_efforts_rule = r
+            let has_exact_efforts = r
                 .thinking
                 .as_ref()
                 .is_some_and(|t| t.contains_key("efforts"));
@@ -118,11 +120,11 @@ impl TryFrom<RawCascade> for Cascade {
                 apis: r.apis,
                 upstreams: r.upstreams,
                 family: r.family,
-                revision,
+                revisions: revision,
                 models: r.models,
                 priority: r.priority.unwrap_or(0),
                 dimensions,
-                has_exact_efforts_rule,
+                has_exact_efforts,
                 wire: r.wire,
                 thinking: r.thinking,
                 catalog: r.catalog,
@@ -180,7 +182,7 @@ fn selector_matches(s: &Selector, p: &Prepared<'_>) -> bool {
     match s.kind.as_str() {
         "exact" => s.value == p.target.model,
         "glob" => glob_match(&s.value, &p.model_lower),
-        "token" => p.model_tokens.iter().any(|t| *t == s.value),
+        "token" => p.model_tokens.contains(&s.value),
         _ => false,
     }
 }
@@ -213,7 +215,7 @@ fn rank_rule(rule: &Rule, p: &Prepared<'_>) -> Option<Rank> {
     {
         return None;
     }
-    if let Some(terms) = &rule.revision {
+    if let Some(terms) = &rule.revisions {
         match &p.revision {
             Some(r) if revision_satisfies(r, terms) => {}
             _ => return None,
@@ -265,7 +267,7 @@ fn contest_axis<'a>(
                     axis: axis.into(),
                     first: held_rule.source.clone(),
                     second: rule.source.clone(),
-                })
+                });
             }
             std::cmp::Ordering::Greater => return Ok(()),
             std::cmp::Ordering::Less => {}
@@ -306,11 +308,14 @@ fn collect(
 fn identity_scoped(rule: &Rule) -> bool {
     rule.class.as_ref().is_some_and(|c| c != "unknown")
         || rule.family.is_some()
-        || rule.revision.is_some()
+        || rule.revisions.is_some()
         || rule.models.is_some()
 }
 
 /// Resolve wire, thinking, and catalog assignments for one structured target.
+///
+/// # Errors
+/// When several rules overlap ambiguously for the target ([`AmbiguousOverlap`]).
 pub fn resolve_cascade(rules: &Rules, target: &Target) -> Result<ResolvedAxes, AmbiguousOverlap> {
     let cascade = &rules.cascade;
     let prepared = prepare(target);
@@ -329,7 +334,7 @@ pub fn resolve_cascade(rules: &Rules, target: &Target) -> Result<ResolvedAxes, A
             if thinking.contains_key("efforts") {
                 has_efforts = true;
             }
-            if rule.has_exact_efforts_rule && rank.0 == 2 {
+            if rule.has_exact_efforts && rank.0 == 2 {
                 reasoning = true;
             }
         }
@@ -364,6 +369,9 @@ pub fn resolve_cascade(rules: &Rules, target: &Target) -> Result<ResolvedAxes, A
 }
 
 /// Whether the effort ladder a target resolves to comes from a rule scoped to the model's identity.
+///
+/// # Errors
+/// When several rules overlap ambiguously for the target ([`AmbiguousOverlap`]).
 pub fn has_model_scoped_efforts_rule(
     rules: &Rules,
     target: &Target,

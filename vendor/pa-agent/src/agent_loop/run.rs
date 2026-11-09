@@ -168,6 +168,28 @@ pub(crate) async fn run_loop(
                 }
                 tool_results.extend(executed_tool_batch.messages);
                 has_more_tool_calls = !executed_tool_batch.terminate;
+                // A steer sent while tools were running must be visible in the
+                // next provider request, not stranded until a later tool batch.
+                // Only terminate takes precedence over an explicit user message.
+                if !executed_tool_batch.terminate {
+                    let messages =
+                        poll_messages_unless_aborted(config.get_steering_messages.as_ref(), signal)
+                            .await?;
+                    if !messages.is_empty() {
+                        pending_messages.extend(messages);
+                        has_more_tool_calls = true;
+                    }
+                }
+
+                // Tool results precede a steer in model history. Defer the user
+                // event to the next TurnStart so it is emitted exactly once.
+                if !pending_messages.is_empty() {
+                    for message in pending_messages.drain(..) {
+                        current_context.messages.push(message.clone());
+                        new_messages.push(message.clone());
+                        turn_messages.push(message);
+                    }
+                }
 
                 for result in &tool_results {
                     current_context
@@ -214,7 +236,12 @@ pub(crate) async fn run_loop(
                 race_with_abort(
                     async {
                         match config.should_stop_after_turn.as_ref() {
-                            Some(hook) => hook(last_turn.clone().unwrap()).await,
+                            Some(hook) => {
+                                // invariant: last_turn was set to Some immediately above.
+                                #[allow(clippy::expect_used)]
+                                let turn = last_turn.clone().expect("last_turn set above");
+                                hook(turn).await
+                            }
                             None => Ok(false),
                         }
                     },
@@ -233,7 +260,9 @@ pub(crate) async fn run_loop(
                 }
                 PostTurnResult::Completed(false) => {}
             }
-            if should_stop_before_turn!() {
+            // Mid-tool steering already owns the next turn and was injected above.
+            // Do not skip it by leaving the loop on this post-turn hook check.
+            if pending_messages.is_empty() && should_stop_before_turn!() {
                 emit(AgentEvent::AgentEnd {
                     messages: new_messages.clone(),
                 })

@@ -327,6 +327,8 @@ impl TaskRunner {
     }
 }
 
+// invariant: the runner never closes its own semaphore, so acquiring never errors.
+#[allow(clippy::expect_used)]
 async fn run_controlled(
     runner: TaskRunner,
     id: String,
@@ -960,6 +962,7 @@ impl RpcRun {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::params::SchemaMode;
@@ -990,6 +993,8 @@ mod tests {
             tools: None,
             depth: 0,
             extra_args: Vec::new(),
+            env: Vec::new(),
+            worktree: false,
         }
     }
 

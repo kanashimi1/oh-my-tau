@@ -4,7 +4,7 @@
 //!
 //! Shape (spec §8.1): `π <separator> <label>` where the separator is `>`
 //! idle, `!` attention and a spinner frame while working. Under WSL (stdout
-//! crosses ConPTY at wslhost) and on Windows after a native-title failure the
+//! crosses `ConPTY` at wslhost) and on Windows after a native-title failure the
 //! working separator degrades to static `:`; this port targets WSL panes
 //! (herdr) and therefore defaults to the static separator there.
 //!
@@ -97,14 +97,13 @@ pub fn sanitize_title(raw: &str) -> String {
         .collect()
 }
 
-/// Whether stdout crosses a WSL ConPTY boundary (static `:` separator).
+/// Whether stdout crosses a WSL `ConPTY` boundary (static `:` separator).
 #[must_use]
 pub fn is_wsl() -> bool {
     std::env::var_os("WSL_DISTRO_NAME").is_some()
         || std::env::var_os("WSL_INTEROP").is_some()
         || std::fs::read_to_string("/proc/sys/kernel/osrelease")
-            .map(|v| v.to_ascii_lowercase().contains("microsoft"))
-            .unwrap_or(false)
+            .is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"))
 }
 
 /// Compose a run-state title (TS `buildTerminalTitleWithState`, :800).
@@ -373,10 +372,7 @@ mod tests {
             "π > Продолжить"
         );
         assert_eq!(build_terminal_title_with_state("!", None), "π !");
-        assert_eq!(
-            build_terminal_title_with_state("⠋", Some("omt")),
-            "π ⠋ omt"
-        );
+        assert_eq!(build_terminal_title_with_state("⠋", Some("omt")), "π ⠋ omt");
     }
 
     #[test]

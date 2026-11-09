@@ -1,11 +1,17 @@
 "use strict";
 // Themes and wallpapers: the palette (`data-theme` on <html>), a fixed
 // wallpaper layer behind glass panels, dim/blur/glass sliders, and user
-// wallpapers uploaded to the server (`/api/wallpapers`). Persisted in
+// wallpapers uploaded to the server (`/api/wallpapers`). Also the activity
+// glyph (`data-glyph` on <body>) shown by the transcript. Persisted in
 // localStorage; applied before first paint by `OMP.appearance.apply()`.
 (function (OMP) {
   const { el } = OMP;
   const KEY = "omt-appearance";
+
+  // Transcript activity glyph: collapse markers and the running spinner
+  // take their shape from `data-glyph` on <body> (see stream.css).
+  const GLYPH_KEY = "omp-activity-glyph";
+  const GLYPHS = ["brain", "triangle", "minimal"];
 
   const W = (file, name) => ({ url: `/wallpapers/${file}`, name });
   const BUILTIN_WALLPAPERS = [
@@ -17,18 +23,21 @@
     W("midnight.svg", "Midnight aurora"),
   ];
 
-  /** id, name, preview swatches [bg, panel, accent, fg], suggested wallpaper. */
   const THEMES = [
-    { id: "omt", name: "OMT", sw: ["#0f0b14", "#16111c", "#ed4abf", "#e6e3ea"], wall: "" },
-    { id: "midnight", name: "Midnight", sw: ["#050506", "#0c0c0f", "#ff5ca8", "#e8e8ec"], wall: "/wallpapers/midnight.svg" },
-    { id: "light", name: "Light", sw: ["#fbf9fc", "#ffffff", "#c42a95", "#2b2233"], wall: "" },
-    { id: "sakura", name: "Sakura", sw: ["#120f24", "#1a1630", "#ff8fc7", "#f3eaf6"], wall: "/wallpapers/anime-sakura.svg" },
-    { id: "tokyo-dusk", name: "Tokyo Dusk", sw: ["#141024", "#1d1730", "#ffa65c", "#f2e9f0"], wall: "/wallpapers/anime-city.svg" },
-    { id: "summer-sky", name: "Summer Sky", sw: ["#eef6ff", "#ffffff", "#2f7de1", "#1c2a3d"], wall: "/wallpapers/anime-sky.svg" },
-    { id: "vaporwave", name: "Vaporwave", sw: ["#1a0b2e", "#241040", "#ff71ce", "#f4e8ff"], wall: "/wallpapers/vaporwave-sunset.svg" },
-    { id: "synthwave", name: "Synthwave", sw: ["#0b0820", "#120e2e", "#01cdfe", "#e6f7ff"], wall: "/wallpapers/vaporwave-grid.svg" },
+    { id: "calm", name: "Graphite", sw: ["#181818", "#1f1f1f", "#1a88ff", "#d6d6d6"], wall: "" },
+    { id: "omt", name: "OMT", sw: ["#171024", "#1f1730", "#ff5cc8", "#ece8f4"], wall: "" },
+    { id: "midnight", name: "Midnight", sw: ["#0b0f16", "#121826", "#7fd4ff", "#e6edf6"], wall: "/wallpapers/midnight.svg" },
+    { id: "light", name: "Light", sw: ["#eef3f6", "#ffffff", "#119c95", "#19303f"], wall: "" },
+    { id: "sakura", name: "Sakura", sw: ["#1a1230", "#221a3c", "#ff9ec7", "#f5edf6"], wall: "/wallpapers/anime-sakura.svg" },
+    { id: "tokyo-dusk", name: "Tokyo Dusk", sw: ["#211a17", "#2a211d", "#ff8c42", "#f2e9e0"], wall: "/wallpapers/anime-city.svg" },
+    { id: "summer-sky", name: "Summer Sky", sw: ["#e9f2fb", "#ffffff", "#ffb020", "#16334f"], wall: "/wallpapers/anime-sky.svg" },
+    { id: "vaporwave", name: "Vaporwave", sw: ["#221739", "#2c2050", "#ff9ad5", "#f0e8fa"], wall: "/wallpapers/vaporwave-sunset.svg" },
+    { id: "synthwave", name: "Synthwave", sw: ["#0d0a24", "#161134", "#00e0ff", "#eef0ff"], wall: "/wallpapers/vaporwave-grid.svg" },
+    { id: "phosphor", name: "Phosphor", sw: ["#0a0f0c", "#111811", "#3df59a", "#ccf2d8"], wall: "" },
+    { id: "paper", name: "Paper", sw: ["#f6f3ec", "#ffffff", "#e23b23", "#191612"], wall: "" },
+    { id: "drafting", name: "Drafting", sw: ["#0e1c30", "#142542", "#5bd0ff", "#d9eaf5"], wall: "" },
   ];
-  const DEFAULTS = { theme: "omt", wallpaper: "", dim: 35, blur: 0, glass: 78 };
+  const DEFAULTS = { theme: "calm", wallpaper: "", dim: 35, blur: 0, glass: 78 };
 
   function load() {
     let saved = {};
@@ -42,6 +51,15 @@
   }
   let cfg = load();
   const save = () => localStorage.setItem(KEY, JSON.stringify(cfg));
+
+  function loadGlyph() {
+    try {
+      const saved = localStorage.getItem(GLYPH_KEY);
+      if (GLYPHS.includes(saved)) return saved;
+    } catch { /* storage can be unavailable in embedded previews */ }
+    return "brain";
+  }
+  let glyph = loadGlyph();
 
   /** Only same-origin wallpaper paths and http(s) URLs reach CSS. */
   function safeUrl(u) {
@@ -57,6 +75,7 @@
   function apply() {
     const root = document.documentElement;
     root.dataset.theme = cfg.theme;
+    document.body.dataset.glyph = glyph;
     const url = safeUrl(cfg.wallpaper);
     const layer = document.getElementById("wallpaper");
     if (layer) layer.style.backgroundImage = url ? cssUrl(url) : "";
@@ -69,6 +88,13 @@
   function set(patch) {
     Object.assign(cfg, patch);
     save();
+    apply();
+  }
+
+  function setGlyph(id) {
+    if (!GLYPHS.includes(id)) return;
+    glyph = id;
+    try { localStorage.setItem(GLYPH_KEY, id); } catch { /* non-persistent preview */ }
     apply();
   }
 
@@ -94,6 +120,7 @@
   async function open() {
     const themeGrid = el("div.ap-themes");
     const wallGrid = el("div.ap-walls");
+    const glyphGrid = el("div.ap-themes");
     const fileInput = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/avif", multiple: true, hidden: true });
     let custom = await customWallpapers();
 
@@ -120,7 +147,7 @@
       }, el("span.ap-wall-name", { text: w.name }));
       if (removable) {
         tile.append(el("button.ap-del", {
-          text: "✕",
+          html: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
           title: "Delete wallpaper",
           onclick: async (e) => {
             e.stopPropagation();
@@ -171,7 +198,22 @@
       );
       sliders.hidden = !cfg.wallpaper;
     }
-    function renderAll() { renderThemes(); renderWalls(); renderSliders(); }
+    function renderGlyphs() {
+      const labels = { brain: "Brain", triangle: "Triangle", minimal: "Minimal" };
+      const hints = { brain: "Brains on the markers (default)", triangle: "Classic arrows", minimal: "Plain dots" };
+      const swatch = {
+        brain: () => el("span", { style: "width:30px;height:24px;background:currentColor;-webkit-mask:var(--brain-glyph) center / contain no-repeat;mask:var(--brain-glyph) center / contain no-repeat" }),
+        triangle: () => el("span", { text: "\u25B8", style: "font-size:17px" }),
+        minimal: () => el("span", { style: "width:10px;height:10px;border-radius:50%;background:currentColor" }),
+      };
+      glyphGrid.replaceChildren(...GLYPHS.map((id) => el("button.ap-theme" + (glyph === id ? ".sel" : ""), {
+        title: hints[id],
+        onclick: () => { setGlyph(id); renderAll(); },
+      },
+      el("span.ap-preview", { style: "display:flex;align-items:center;justify-content:center;background:var(--bg-inset);color:var(--fg-muted)" }, swatch[id]()),
+      el("span.ap-name", { text: labels[id] }))));
+    }
+    function renderAll() { renderThemes(); renderWalls(); renderSliders(); renderGlyphs(); }
 
     fileInput.addEventListener("change", async () => {
       const added = await upload([...fileInput.files]);
@@ -183,8 +225,10 @@
 
     const body = el("div.ap", null,
       el("div.ap-title", { text: "Theme" }), themeGrid,
+      el("div.ap-title", { text: "Activity glyph" }), glyphGrid,
       el("div.ap-title", null, el("span", { text: "Wallpaper" }), el("span.faint.small", { text: "drop images here to add them" })), wallGrid,
       sliders, fileInput);
+    if (OMP.desktop && OMP.desktop.available) body.append(desktopSection());
     renderAll();
     const m = OMP.dialogs.modal({
       title: "Appearance",
@@ -206,6 +250,72 @@
     return m.promise;
   }
 
+  // ── Tau desktop settings: capture shortcut, DevTools port ──────────────
+  /** "Ctrl+Alt+S" from a keydown, or null while only modifiers are held. */
+  function comboOf(e) {
+    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return null;
+    const key = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3) : /^Digit\d$/.test(e.code) ? e.code.slice(5) : e.code;
+    const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super"].filter(Boolean);
+    return mods.length ? [...mods, key].join("+") : null;
+  }
+
+  function desktopSection() {
+    const status = el("span.ap-desk-status.small");
+    const keyBtn = el("button.chip.ap-key", { text: "…", title: "Click, then press the new shortcut (Esc cancels)" });
+    const portIn = el("input.ap-port", { type: "number", min: "1024", max: "65535", placeholder: "off" });
+    const portNote = el("span.faint.small");
+    let current = "";
+
+    async function load() {
+      const s = await OMP.desktop.settings();
+      current = s.captureShortcut;
+      keyBtn.textContent = current;
+      status.textContent = s.captureShortcutError ? "⚠ " + s.captureShortcutError : "active";
+      status.classList.toggle("err", !!s.captureShortcutError);
+      portIn.value = s.devtoolsPort ?? "";
+      portNote.textContent = s.devtoolsActive ? `running on 127.0.0.1:${s.devtoolsActive}` : "off in this run";
+    }
+
+    keyBtn.addEventListener("click", () => {
+      keyBtn.textContent = "press keys…";
+      keyBtn.classList.add("rec");
+      const onKey = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") { done(); keyBtn.textContent = current; return; }
+        const combo = comboOf(e);
+        if (!combo) return;
+        done();
+        try {
+          await OMP.desktop.setCaptureShortcut(combo);
+          OMP.toast(`Capture shortcut: ${combo}`, "success");
+        } catch (err) {
+          OMP.toast(String(err), "error", 7000);
+        }
+        load();
+      };
+      const done = () => { keyBtn.classList.remove("rec"); window.removeEventListener("keydown", onKey, true); };
+      window.addEventListener("keydown", onKey, true);
+    });
+
+    portIn.addEventListener("change", async () => {
+      const v = portIn.value.trim();
+      try {
+        await OMP.desktop.setDevtoolsPort(v ? Number(v) : null);
+        OMP.toast(v ? `DevTools port ${v}: restart Tau (tray → Quit) to apply` : "DevTools port off after restart", "info", 6000);
+      } catch (err) {
+        OMP.toast(String(err), "error");
+      }
+      load();
+    });
+
+    load().catch((e) => { status.textContent = "⚠ " + e; });
+    return el("div.ap-desk", null,
+      el("div.ap-title", { text: "Desktop (Tau)" }),
+      el("label.ap-desk-row", null, el("span", { text: "Screen capture shortcut" }), keyBtn, status),
+      el("label.ap-desk-row", null, el("span", { text: "DevTools port (automation, 127.0.0.1)" }), portIn, portNote));
+  }
+
   apply();
-  OMP.appearance = { apply, open, set, get: () => ({ ...cfg }), THEMES, BUILTIN_WALLPAPERS };
+  OMP.appearance = { apply, open, set, setGlyph, get: () => ({ ...cfg, glyph }), THEMES, BUILTIN_WALLPAPERS };
 })(window.OMP);

@@ -14,6 +14,7 @@ use super::run::clone_context;
 use super::tool_call::{
     create_tool_result_message, emit_tool_execution_end, emit_tool_result_message,
     execute_prepared_tool_call, finalize_executed_tool_call, is_non_blank, prepare_tool_call,
+    ExecutedToolCallOutcome,
 };
 use super::{AgentEventSink, AgentLoopConfig};
 
@@ -44,12 +45,22 @@ fn join_additional_context<'a>(values: impl Iterator<Item = &'a String>) -> Opti
     (!kept.is_empty()).then(|| kept.join("\n\n"))
 }
 
+/// One call's preparation, and whether the stream loop already emitted its
+/// `tool_execution_start` (the call was started early). An early-started call
+/// whose preparation fell back (hook block, pipeline gone) must not get a
+/// second start: consumers would show the same call twice, one copy forever
+/// pending.
+pub(crate) struct PreparedDispatch {
+    pub(crate) preparation: Preparation,
+    pub(crate) start_emitted: bool,
+}
+
 /// Per-call preparations in source order: those computed before the assistant `message_end`
 /// (TS `prepareToolCallDispatch`), else prepared on demand.
-struct PreparedCalls(std::vec::IntoIter<Preparation>);
+struct PreparedCalls(std::vec::IntoIter<PreparedDispatch>);
 
 impl PreparedCalls {
-    fn new(prepared: Vec<Preparation>, calls: usize) -> Option<Self> {
+    fn new(prepared: Vec<PreparedDispatch>, calls: usize) -> Option<Self> {
         (prepared.len() == calls).then(|| Self(prepared.into_iter()))
     }
 }
@@ -61,19 +72,20 @@ async fn preparation_for(
     tool_call: &ToolCall,
     config: &AgentLoopConfig,
     signal: Option<&AbortSignal>,
-) -> Preparation {
+) -> PreparedDispatch {
     match pre.as_mut().and_then(|p| p.0.next()) {
         Some(p) => p,
-        None => {
-            prepare_tool_call(
+        None => PreparedDispatch {
+            preparation: prepare_tool_call(
                 current_context,
                 assistant_message,
                 tool_call,
                 config,
                 signal,
             )
-            .await
-        }
+            .await,
+            start_emitted: false,
+        },
     }
 }
 
@@ -83,7 +95,7 @@ pub(crate) async fn execute_tool_calls(
     config: &AgentLoopConfig,
     signal: Option<&AbortSignal>,
     emit: &AgentEventSink,
-    prepared: Vec<Preparation>,
+    prepared: Vec<PreparedDispatch>,
 ) -> anyhow::Result<ExecutedToolCallBatch> {
     let tool_calls = assistant_message
         .tool_calls()
@@ -141,14 +153,10 @@ async fn execute_tool_calls_sequential(
             break;
         }
 
-        emit(AgentEvent::ToolExecutionStart {
-            tool_call_id: tool_call.id.clone(),
-            tool_name: tool_call.name.clone(),
-            args: tool_call.arguments.clone(),
-        })
-        .await?;
-
-        let preparation = preparation_for(
+        let PreparedDispatch {
+            preparation,
+            start_emitted,
+        } = preparation_for(
             &mut pre,
             current_context,
             assistant_message,
@@ -157,6 +165,18 @@ async fn execute_tool_calls_sequential(
             signal,
         )
         .await;
+
+        // Early read-only executions began when their arguments completed, so
+        // their `tool_execution_start` was already emitted by the stream loop.
+        if !start_emitted {
+            emit(AgentEvent::ToolExecutionStart {
+                tool_call_id: tool_call.id.clone(),
+                tool_name: tool_call.name.clone(),
+                args: tool_call.arguments.clone(),
+            })
+            .await?;
+        }
+
         let finalized = match preparation {
             Preparation::Immediate { result, is_error } => FinalizedToolCallOutcome {
                 tool_call: tool_call.clone(),
@@ -166,6 +186,20 @@ async fn execute_tool_calls_sequential(
             },
             Preparation::Prepared(prepared) => {
                 let executed = execute_prepared_tool_call(&prepared, signal, emit).await;
+                finalize_executed_tool_call(
+                    current_context,
+                    assistant_message,
+                    &prepared,
+                    executed,
+                    config,
+                    signal,
+                )
+                .await?
+            }
+            Preparation::Early { prepared: _, exec } => {
+                let (prepared, executed) = exec.await.map_err(|error| {
+                    anyhow::anyhow!("Early tool execution task failed: {error}")
+                })?;
                 finalize_executed_tool_call(
                     current_context,
                     assistant_message,
@@ -205,6 +239,7 @@ async fn execute_tool_calls_sequential(
 /// `tool_execution_end` is emitted in completion order (from inside the
 /// concurrent tasks), while tool-result message events are emitted afterwards
 /// in assistant source order, matching the TS reference.
+#[allow(clippy::too_many_lines)]
 async fn execute_tool_calls_parallel(
     current_context: &AgentContext,
     assistant_message: &AssistantMessage,
@@ -225,14 +260,10 @@ async fn execute_tool_calls_parallel(
     let mut entries: Vec<TaskOrOutcome> = Vec::new();
 
     for tool_call in tool_calls {
-        emit(AgentEvent::ToolExecutionStart {
-            tool_call_id: tool_call.id.clone(),
-            tool_name: tool_call.name.clone(),
-            args: tool_call.arguments.clone(),
-        })
-        .await?;
-
-        let preparation = preparation_for(
+        let PreparedDispatch {
+            preparation,
+            start_emitted,
+        } = preparation_for(
             &mut pre,
             current_context,
             assistant_message,
@@ -242,31 +273,19 @@ async fn execute_tool_calls_parallel(
         )
         .await;
         match preparation {
-            Preparation::Immediate { result, is_error } => {
-                let finalized = FinalizedToolCallOutcome {
-                    tool_call: tool_call.clone(),
-                    result,
-                    is_error,
-                    additional_context: Vec::new(),
-                };
-                emit_tool_execution_end(&finalized, emit).await?;
-                entries.push(TaskOrOutcome::Outcome(Box::new(finalized)));
-            }
-            Preparation::Prepared(prepared) => {
+            Preparation::Early { prepared: _, exec } => {
+                // `tool_execution_start` was already emitted when the
+                // call's arguments completed; collect the in-flight
+                // execution and finalize it like any parallel task.
                 let sink = Arc::clone(emit);
                 let assistant_message = assistant_message.clone();
                 let context = clone_context(current_context);
                 let config = config.clone();
                 let signal = signal.cloned().unwrap_or_default();
-                let prepared = PreparedToolCall {
-                    tool_call: prepared.tool_call.clone(),
-                    tool: Arc::clone(&prepared.tool),
-                    args: prepared.args.clone(),
-                    additional_context: prepared.additional_context.clone(),
-                };
                 let handle = tokio::spawn(async move {
-                    let executed =
-                        execute_prepared_tool_call(&prepared, Some(&signal), &sink).await;
+                    let (prepared, executed) = exec.await.map_err(|error| {
+                        anyhow::anyhow!("Early tool execution task failed: {error}")
+                    })?;
                     let finalized = finalize_executed_tool_call(
                         &context,
                         &assistant_message,
@@ -280,6 +299,60 @@ async fn execute_tool_calls_parallel(
                     Ok(finalized)
                 });
                 entries.push(TaskOrOutcome::Task(handle));
+            }
+            preparation => {
+                if !start_emitted {
+                    emit(AgentEvent::ToolExecutionStart {
+                        tool_call_id: tool_call.id.clone(),
+                        tool_name: tool_call.name.clone(),
+                        args: tool_call.arguments.clone(),
+                    })
+                    .await?;
+                }
+
+                match preparation {
+                    Preparation::Immediate { result, is_error } => {
+                        let finalized = FinalizedToolCallOutcome {
+                            tool_call: tool_call.clone(),
+                            result,
+                            is_error,
+                            additional_context: Vec::new(),
+                        };
+                        emit_tool_execution_end(&finalized, emit).await?;
+                        entries.push(TaskOrOutcome::Outcome(Box::new(finalized)));
+                    }
+                    Preparation::Prepared(prepared) => {
+                        let sink = Arc::clone(emit);
+                        let assistant_message = assistant_message.clone();
+                        let context = clone_context(current_context);
+                        let config = config.clone();
+                        let signal = signal.cloned().unwrap_or_default();
+                        let prepared = PreparedToolCall {
+                            tool_call: prepared.tool_call.clone(),
+                            tool: Arc::clone(&prepared.tool),
+                            args: prepared.args.clone(),
+                            additional_context: prepared.additional_context.clone(),
+                        };
+                        let handle = tokio::spawn(async move {
+                            let executed =
+                                execute_prepared_tool_call(&prepared, Some(&signal), &sink).await;
+                            let finalized = finalize_executed_tool_call(
+                                &context,
+                                &assistant_message,
+                                &prepared,
+                                executed,
+                                &config,
+                                Some(&signal),
+                            )
+                            .await?;
+                            emit_tool_execution_end(&finalized, &sink).await?;
+                            Ok(finalized)
+                        });
+                        entries.push(TaskOrOutcome::Task(handle));
+                    }
+                    // The `Early` arm above already consumed every early call.
+                    Preparation::Early { .. } => unreachable!("early calls handled above"),
+                }
             }
         }
     }
@@ -326,8 +399,17 @@ pub(crate) enum Preparation {
         result: AgentToolResult,
         is_error: bool,
     },
+    /// A read-only call the stream loop prepared and started executing before
+    /// the assistant stream ended. `tool_execution_start` was already emitted
+    /// when the call's arguments completed; the batch only collects the
+    /// in-flight execution and runs the `afterToolCall` hook.
+    Early {
+        prepared: PreparedToolCall,
+        exec: tokio::task::JoinHandle<(PreparedToolCall, ExecutedToolCallOutcome)>,
+    },
 }
 
+#[derive(Clone)]
 pub(crate) struct PreparedToolCall {
     pub(crate) tool_call: ToolCall,
     pub(crate) tool: Arc<dyn AgentTool>,

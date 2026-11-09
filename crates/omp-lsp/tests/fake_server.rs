@@ -1,9 +1,11 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration test driving `omp-lsp` against the `fake_lsp` fixture binary
 //! (a minimal stdio JSON-RPC server built via `CARGO_BIN_EXE_fake_lsp`).
 //!
 //! Covers the full acceptance path: config discovery, initialize handshake,
 //! didOpen → publishDiagnostics (exactly one diagnostic echoing the document
 //! version), definition, hover, and clean termination via `shutdown`/`exit`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::PathBuf;
 use std::time::Duration;

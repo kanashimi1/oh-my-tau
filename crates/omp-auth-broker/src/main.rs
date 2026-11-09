@@ -10,11 +10,12 @@
 
 mod store;
 
+use parking_lot::Mutex;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -85,10 +86,7 @@ impl State {
         let Ok(revision) = self.store.revision() else {
             return;
         };
-        let mut last = self
-            .last_revision
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = self.last_revision.lock();
         if *last != revision {
             *last = revision;
             self.generation.send_modify(|g| *g += 1);
@@ -229,6 +227,8 @@ fn compare_blocks(a: &Value, b: &Value) -> std::cmp::Ordering {
 // ------------------------------------------------------------------ refresh
 
 /// TS `isDefinitiveOAuthFailure` (`error/flags.ts isOAuthExpiry`).
+// invariant: all three regexes are fixed literals that always compile.
+#[allow(clippy::expect_used)]
 fn is_definitive_oauth_failure(message: &str) -> bool {
     use std::sync::LazyLock;
     static DEFINITIVE: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -248,6 +248,7 @@ fn is_definitive_oauth_failure(message: &str) -> bool {
 
 /// TS `oauth.refresh(id)` → the refreshed snapshot entry. A definitive provider failure
 /// disables the row (TS `refreshStored` `disabledCause`).
+#[allow(clippy::disallowed_methods)] // bin: block_on runs on a spawn_blocking thread
 async fn refresh_entry(state: &State, id: i64, auth_recovery: bool) -> Result<Map<String, Value>> {
     // The omp-providers refresh holds a (!Sync) rusqlite connection across awaits, so its future
     // is !Send: drive it on a blocking-pool thread instead of a runtime worker.
@@ -969,6 +970,7 @@ fn parse_args() -> Result<String> {
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::disallowed_methods)] // entry point
 async fn main() -> Result<()> {
     let bind = parse_args()?;
     let addr: SocketAddr = bind
@@ -1024,11 +1026,20 @@ async fn main() -> Result<()> {
 
     #[cfg(unix)]
     let shutdown = async {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => "SIGINT",
-            _ = term.recv() => "SIGTERM",
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => "SIGINT",
+                    _ = term.recv() => "SIGTERM",
+                }
+            }
+            // Signal registration failed (e.g. restricted sandbox): degrade to
+            // Ctrl-C only instead of crashing the broker.
+            Err(error) => {
+                eprintln!("SIGTERM handler unavailable ({error}); Ctrl-C only");
+                let _ = tokio::signal::ctrl_c().await;
+                "SIGINT"
+            }
         }
     };
     #[cfg(not(unix))]

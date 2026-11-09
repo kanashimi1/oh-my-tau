@@ -315,12 +315,11 @@ async fn judge_native_inner(
 const REJECTION_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 
 /// Skip-until instants keyed by candidate identity, process-wide (omp keeps them per registry).
-static REJECTIONS: std::sync::Mutex<Option<HashMap<String, Instant>>> = std::sync::Mutex::new(None);
+static REJECTIONS: parking_lot::Mutex<Option<HashMap<String, Instant>>> =
+    parking_lot::Mutex::new(None);
 
 fn rejection_map<R>(f: impl FnOnce(&mut HashMap<String, Instant>) -> R) -> R {
-    let mut guard = REJECTIONS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = REJECTIONS.lock();
     f(guard.get_or_insert_with(HashMap::new))
 }
 
@@ -488,7 +487,7 @@ pub struct CachedAnswers {
 /// tokio worker.
 #[derive(Clone)]
 pub struct JudgmentCache {
-    db: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+    db: std::sync::Arc<parking_lot::Mutex<rusqlite::Connection>>,
 }
 
 /// `$OMP_JUDGMENT_CACHE_DB`, else `<agent dir>/../cache/judgment-cache.db` (`~/.omp/cache/judgment-cache.db`).
@@ -596,7 +595,7 @@ impl JudgmentCache {
         db.pragma_update(None, "foreign_keys", "ON")?;
         db.execute_batch(CACHE_SCHEMA)?;
         Ok(Self {
-            db: std::sync::Arc::new(std::sync::Mutex::new(db)),
+            db: std::sync::Arc::new(parking_lot::Mutex::new(db)),
         })
     }
 
@@ -605,10 +604,7 @@ impl JudgmentCache {
     pub fn lookup(&self, model: &str, request: &JudgeRequest) -> CachedAnswers {
         let state = stable_json(&request.state);
         let state_id = sha256_hex(&state);
-        let db = self
-            .db
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let db = self.db.lock();
         let mut answers = Map::new();
         let found = (|| -> rusqlite::Result<()> {
             let mut stmt = db.prepare_cached(
@@ -677,10 +673,7 @@ impl JudgmentCache {
         questions: &Map<String, Value>,
         result: &JudgeResult,
     ) {
-        let mut db = self
-            .db
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut db = self.db.lock();
         let now = unix_seconds();
         let _ = (|| -> rusqlite::Result<()> {
             let tx = db.transaction()?;
@@ -1454,6 +1447,7 @@ pub async fn judge_online(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1698,6 +1692,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod online_live_tests {
     use super::*;
 

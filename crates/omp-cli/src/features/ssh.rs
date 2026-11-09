@@ -7,6 +7,9 @@
 //! `bash` tool call runs `ssh <host> -- bash -lc <script>` on the remote
 //! (see `tools/bash.rs`). `/ssh off` restores local execution.
 
+// Ported from the omt lineage: remote-argv helpers serve the ssh session transport, not yet wired on this side.
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::RwLock;

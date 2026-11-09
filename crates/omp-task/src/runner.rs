@@ -108,6 +108,15 @@ pub struct TaskSpec {
     /// Extra verbatim argv fragments appended to the child command, e.g.
     /// parent-policy passthrough (`--no-extensions`, `--extension <p>`).
     pub extra_args: Vec<String>,
+    /// Extra environment variables set on the child process (e.g. the
+    /// parent's a2a bus socket and the child's own agent id).
+    pub env: Vec<(String, String)>,
+    /// `worktree: true` (resolved by the caller: item > agent definition >
+    /// batch): the child runs in a fresh `git worktree` on branch
+    /// `agent/<id>` (created by the caller's spawner, which remaps
+    /// [`TaskSpec::cwd`] and appends the commit/trailer footer to the
+    /// prompt). See [`crate::worktree`].
+    pub worktree: bool,
 }
 
 impl TaskSpec {
@@ -142,6 +151,8 @@ impl TaskSpec {
             tools: item.tools.clone(),
             depth: current_task_depth() + 1,
             extra_args: Vec::new(),
+            env: Vec::new(),
+            worktree: item.worktree.unwrap_or(false),
         }
     }
 }
@@ -159,6 +170,13 @@ pub const TASK_DEPTH_ENV: &str = "PI_TASK_DEPTH";
 pub const MAX_RECURSION_ENV: &str = "OMP_TASK_MAX_RECURSION_DEPTH";
 /// TS `task.maxRecursionDepth` (`task/settings.ts`) protocol default.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 2;
+
+/// Env var carrying the parent's a2a bus socket path (set on task children by
+/// the parent; see `omp-cli`'s `tools/a2a.rs`). Cleared from every child first,
+/// so a grandchild never inherits a stale grandparent bus.
+pub const A2A_SOCK_ENV: &str = "OMP_A2A_SOCK";
+/// Env var carrying the child's own agent id on the a2a bus.
+pub const A2A_SELF_ENV: &str = "OMP_A2A_SELF";
 
 /// This process's task depth (`0` when the env var is absent or unparsable).
 #[must_use]
@@ -198,15 +216,21 @@ pub fn recursion_gate() -> Result<usize, String> {
 }
 
 /// Apply the child env/argv shared by every spawner: the no-title marker,
-/// the recursion-depth stamp and the caller's policy passthrough args.
+/// recursion-depth stamp, lightweight one-shot startup and policy passthrough.
 fn apply_child_policy(command: &mut Command, spec: &TaskSpec) {
     command
+        .env_remove(A2A_SOCK_ENV)
+        .env_remove(A2A_SELF_ENV)
         .env(SUBAGENT_NO_TITLE.0, SUBAGENT_NO_TITLE.1)
         .env(TASK_DEPTH_ENV, spec.depth.to_string());
-    // TS `executor.ts`: the parent task's approval is the authorization boundary, so subagents run
     // unattended in yolo mode (user `tools.approval` policies still apply).
     command.arg("--approval-mode").arg("yolo");
+    // Children are one-shot workers: avoid session persistence, title setup
+    // and repository prewalk. Keep tools, skills, rules and extensions intact
+    // so the selected agent's policy and output behavior do not change.
+    command.args(["--no-session", "--no-title", "--no-prewalk"]);
     command.args(&spec.extra_args);
+    command.envs(spec.env.iter().map(|(k, v)| (k, v)));
 }
 
 /// Spawns child agents as subprocesses of an `omp-rs -p`-style CLI binary.
@@ -283,6 +307,8 @@ impl TaskRunner {
     ///
     /// # Panics
     /// Panics if the runner's internal semaphore is unexpectedly closed.
+    // invariant: acquiring the permit only fails if the semaphore is closed, which the runner never does.
+    #[allow(clippy::expect_used)]
     pub async fn spawn(&self, spec: TaskSpec) -> RunOutput {
         let id = match &spec.id {
             Some(id) => id.clone(),
@@ -497,6 +523,7 @@ fn is_transient_spawn_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::params::SchemaMode;
@@ -531,6 +558,8 @@ mod tests {
             tools: None,
             depth: 0,
             extra_args: Vec::new(),
+            env: Vec::new(),
+            worktree: false,
         }
     }
 
@@ -550,6 +579,31 @@ mod tests {
         assert!(!out.truncated);
         let envelope = out.envelope();
         assert_eq!(envelope.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn lightweight_child_keeps_agent_policy_and_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(dir.path(), r#"printf '%s\n' "$@""#);
+        let runner = TaskRunner::new(&bin, 1);
+        let mut child = spec("scout-glm", "return this result", dir.path());
+        child.model = Some("provider/model".to_string());
+        child.tools = Some(vec!["read".to_string(), "grep".to_string()]);
+        child.extra_args = vec!["--no-extensions".to_string()];
+        let out = runner.spawn(child).await;
+        assert_eq!(out.status, RunStatus::Completed);
+        assert!(out.output.contains("return this result"));
+        for flag in ["--no-session", "--no-title", "--no-prewalk"] {
+            assert!(
+                out.output.lines().any(|line| line == flag),
+                "missing {flag}"
+            );
+        }
+        assert!(out.output.lines().any(|line| line == "--no-extensions"));
+        assert!(out.output.lines().any(|line| line == "--approval-mode"));
+        assert!(out.output.lines().any(|line| line == "provider/model"));
+        assert!(out.output.lines().any(|line| line == "read,grep"));
+        assert!(!out.output.lines().any(|line| line == "--no-tools"));
     }
 
     #[tokio::test]

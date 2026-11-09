@@ -5,24 +5,27 @@
 //! sessions, hashline mode included) and the file walks are `pi-walker`.
 //! Failures are returned as `Err` so the agent loop reports `isError: true`.
 
+pub(crate) mod a2a;
 pub mod ask;
 mod ast;
 pub mod bash;
 pub mod checkpoint;
 mod edit;
+mod edit_diagnostics;
 mod eval;
 pub(crate) mod eval_agents;
 pub(crate) mod eval_bridge;
 pub(crate) mod eval_journal;
 mod find;
 mod jobs;
+mod kill_guard;
 pub mod mcp;
 mod read;
 pub(crate) mod relevance;
 pub(crate) mod rlm;
 pub(crate) mod rlm_combinators;
 mod search;
-mod task;
+pub(crate) mod task;
 mod todo;
 pub mod wasm;
 pub use todo::{phases_from_entries, TodoPhase, TodoTool};
@@ -37,6 +40,7 @@ mod wait;
 mod web_search;
 mod yield_tool;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -48,34 +52,26 @@ use pi_edit::{EditMode, EditStore};
 use serde_json::{json, Value};
 
 /// Job registry of the most recently built tool set (see [`take_last_jobs`]).
-static LAST_JOBS: std::sync::Mutex<Option<jobs::JobRegistry>> = std::sync::Mutex::new(None);
+static LAST_JOBS: parking_lot::Mutex<Option<jobs::JobRegistry>> = parking_lot::Mutex::new(None);
 /// The agent session's job registry (see [`set_session_jobs`]).
-static SESSION_JOBS: std::sync::Mutex<Option<jobs::JobRegistry>> = std::sync::Mutex::new(None);
+static SESSION_JOBS: parking_lot::Mutex<Option<jobs::JobRegistry>> = parking_lot::Mutex::new(None);
 
 /// The registry of the tool set built last, for the caller that builds the session's tools to
 /// capture right after (before anything else builds a throwaway set).
 #[must_use]
 pub fn take_last_jobs() -> Option<jobs::JobRegistry> {
-    LAST_JOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    LAST_JOBS.lock().clone()
 }
 
 /// Publish the agent session's job registry (`ctx.getAsyncJobSnapshot()`).
 pub fn set_session_jobs(jobs: Option<jobs::JobRegistry>) {
-    *SESSION_JOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = jobs;
+    *SESSION_JOBS.lock() = jobs;
 }
 
 /// The agent session's job registry, once published.
 #[must_use]
 pub fn session_jobs() -> Option<jobs::JobRegistry> {
-    SESSION_JOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    SESSION_JOBS.lock().clone()
 }
 
 /// Per-session state shared by the tools: working directory, the hashline
@@ -92,6 +88,16 @@ pub struct Env {
     /// text), set per call from [`relevance::take`]; ranks the inline view of
     /// spilled `bash`/`read` output.
     pub query: parking_lot::Mutex<String>,
+    /// Escalation ledger for the post-write `edit`/`write` diagnostics gate:
+    /// maps a `(file, delta-hash)` to how many times that exact delta recurred.
+    pub diagnostics_ledger: parking_lot::Mutex<HashMap<(PathBuf, u64), usize>>,
+    /// The a2a session these tools belong to ([`a2a::Owner`]): the runtime
+    /// stamps its token here at session start, and `task`/`wait`/`agent()`
+    /// stamp and consume children/deliveries under it — so concurrent
+    /// sessions in one process (the unit-test suite) never see each other's
+    /// task children or deliveries. `None` = not stamped (bare tool tests
+    /// drive the bus with a private or unowned token).
+    pub a2a_owner: parking_lot::Mutex<a2a::Owner>,
 }
 
 impl Env {
@@ -104,7 +110,22 @@ impl Env {
             hashline: edit_mode == EditMode::Hashline,
             jobs: jobs::JobRegistry::default(),
             query: parking_lot::Mutex::default(),
+            diagnostics_ledger: parking_lot::Mutex::new(HashMap::new()),
+            a2a_owner: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Stamp this Env's a2a owner token (the owning runtime does this once
+    /// at session start; see [`Env::a2a_owner`]).
+    pub fn set_a2a_owner(&self, owner: Arc<str>) {
+        *self.a2a_owner.lock() = Some(owner);
+    }
+
+    /// The a2a owner stamped on this Env ([`a2a::Owner`]); `None` before a
+    /// runtime stamps it, matching unowned deliveries.
+    #[must_use]
+    pub fn a2a_owner(&self) -> a2a::Owner {
+        self.a2a_owner.lock().clone()
     }
 
     /// The current call's request text (see [`Env::query`]).
@@ -161,6 +182,7 @@ struct FnTool {
     schema: Value,
     env: Arc<Env>,
     run: Handler,
+    read_only: bool,
 }
 
 impl AgentTool for FnTool {
@@ -170,8 +192,17 @@ impl AgentTool for FnTool {
     fn description(&self) -> &str {
         &self.description
     }
-    fn parameters(&self) -> &Value {
+    fn parameters(&self) -> &serde_json::Value {
         &self.schema
+    }
+    fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        self.env.set_a2a_owner(owner.clone());
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.env.a2a_owner()
     }
     fn execute(
         self: Arc<Self>,
@@ -194,14 +225,83 @@ const GREP_DESCRIPTION: &str = "Regex: Rust, then PCRE2. `path`: `;`-separated f
 const WRITE_DESCRIPTION: &str = "SHOULD `edit` existing files; `write` for required new files or whole-file replacement. NEVER create docs or emojis unless requested.";
 const FIND_DESCRIPTION: &str = "Describe behavior, get implementing files and line ranges. MUST use first for unknown locations; known strings/regex/symbols → `grep`, names → `glob`.\n`query`: plain language, not regex; quoted phrases match whole. `grep_keywords`: likely verbatim terms, `[]` if unsure.\n`path`: one directory or file, host path or internal URL (`omp://`, `omp://<file>.md`, `skill://<name>`, `local://…`); omitted = workspace root. Scope known subsystem; batch related questions. Searches live files, no index; no `:start-end` selector (judges whole files).\nHits strongest first: `path:start-end score snippet` (workspace-relative, or URL under URL scope); read returned ranges. Scores: absolute comparable 0–1 probability; below ~0.4 = weak evidence, so widen query or use `grep` before concluding absence.";
 
+/// `OMT_TOOLS_DEDUP=1`: pure-read tools (read/grep/glob/lsp) answer an identical
+/// immediately-consecutive call from cache. Measured on frontier models: repeated
+/// back-to-back reads cost a full turn for the same bytes (gemini-3.8: 76 dup reads
+/// per 18 runs). Mutating tools (bash/edit/write) are never deduped — a repeat after
+/// an edit may legitimately observe different state.
+struct DedupTool {
+    inner: Arc<dyn AgentTool>,
+    last: tokio::sync::Mutex<Option<(String, AgentToolResult)>>,
+}
+
+impl AgentTool for DedupTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        self.inner.set_a2a_owner(owner);
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.inner.a2a_owner()
+    }
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+    fn parameters(&self) -> &serde_json::Value {
+        self.inner.parameters()
+    }
+    fn label(&self) -> &str {
+        self.inner.label()
+    }
+    fn prepare_arguments(&self, args: &serde_json::Value) -> Option<serde_json::Value> {
+        self.inner.prepare_arguments(args)
+    }
+    fn execution_mode(&self) -> Option<pa_agent::types::ToolExecutionMode> {
+        self.inner.execution_mode()
+    }
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+    fn execute(
+        self: Arc<Self>,
+        tool_call_id: String,
+        params: serde_json::Value,
+        signal: pa_agent::abort::AbortSignal,
+        on_update: pa_agent::types::AgentToolUpdateCallback,
+    ) -> BoxFut<'static, anyhow::Result<AgentToolResult>> {
+        Box::pin(async move {
+            let key = params.to_string();
+            // Serialize calls to this tool: identical calls issued in one
+            // parallel batch must land after the first has been cached.
+            let mut g = self.last.lock().await;
+            if let Some((k, res)) = g.as_ref() {
+                if *k == key {
+                    let mut cached = res.clone();
+                    cached.content.insert(
+                        0,
+                        pa_agent::types::ToolResultContent::text(
+                            "[dedup: identical consecutive call — cached result]",
+                        ),
+                    );
+                    return Ok(cached);
+                }
+            }
+            let res = Arc::clone(&self.inner)
+                .execute(tool_call_id, params, signal, on_update)
+                .await?;
+            *g = Some((key, res.clone()));
+            Ok(res)
+        })
+    }
+}
+
 /// All built-in tools, rooted at `cwd`.
 #[must_use]
 #[allow(clippy::too_many_lines)] // the tool registry table; order mirrors omp's builtinTools
 pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>> {
     let env = Arc::new(Env::with_mode(cwd, edit_mode));
-    *LAST_JOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(env.jobs.clone());
+    *LAST_JOBS.lock() = Some(env.jobs.clone());
     let mk = |name: &'static str,
               description: String,
               schema: Value,
@@ -213,6 +313,21 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             schema,
             env: env.clone(),
             run,
+            read_only: false,
+        })
+    };
+    let mk_read_only = |name: &'static str,
+                        description: String,
+                        schema: Value,
+                        run: Handler|
+     -> Arc<dyn AgentTool> {
+        Arc::new(FnTool {
+            name,
+            description,
+            schema,
+            env: env.clone(),
+            run,
+            read_only: true,
         })
     };
     // Blocking tools run on the `spawn_blocking` pool (safe under the
@@ -261,8 +376,8 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
                 })
             })
         };
-    vec![
-        mk(
+    let mut tools = vec![
+        mk_read_only(
             "read",
             READ_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"path":{"type":"string","description":"Local path, internal URI, or URL; selectors inline."}},"required":["path"],"additionalProperties":false}),
@@ -293,13 +408,13 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             edit::schema(edit_mode),
             Arc::new(|env, args, _| Box::pin(async move { edit::edit(&env, &args).await })),
         ),
-        mk(
+        mk_read_only(
             "glob",
             GLOB_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"path":{"type":"string"},"hidden":{"type":"boolean"},"gitignore":{"type":"boolean"},"limit":{"type":"number"}},"additionalProperties":false}),
             blocking(search::glob),
         ),
-        mk(
+        mk_read_only(
             "grep",
             GREP_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"gitignore":{"type":"boolean"},"skip":{"anyOf":[{"type":"number"},{"type":"null"}]}},"required":["pattern"],"additionalProperties":false}),
@@ -309,7 +424,7 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             "write",
             WRITE_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path"],"additionalProperties":false}),
-            blocking(edit::write),
+            Arc::new(|env, args, _| Box::pin(async move { edit::write(&env, &args).await })),
         ),
         mk(
             "find",
@@ -349,7 +464,41 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
         lsp::tool(env.clone()),
         checkpoint::checkpoint_tool(),
         checkpoint::rewind_tool(),
-    ]
+    ];
+    // `OMT_TOOLS_OFF=a,b`: drop listed tools from the advertised set (headless
+    // cost runs: a smaller schema is fewer tokens on every request).
+    if let Ok(off) = std::env::var("OMT_TOOLS_OFF") {
+        let drop: std::collections::HashSet<&str> = off
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !drop.is_empty() {
+            tools.retain(|t| {
+                let n = t.name();
+                let dashed = n.replace('_', "-");
+                !drop.contains(n) && !drop.contains(dashed.as_str())
+            });
+        }
+    }
+    // `OMT_TOOLS_DEDUP=1`: cache identical consecutive pure-tool calls.
+    if std::env::var("OMT_TOOLS_DEDUP").is_ok_and(|v| v != "0") {
+        let deduped: Vec<Arc<dyn AgentTool>> = tools
+            .into_iter()
+            .map(|t| {
+                if matches!(t.name(), "read" | "grep" | "glob" | "lsp") {
+                    Arc::new(DedupTool {
+                        inner: t,
+                        last: tokio::sync::Mutex::new(None),
+                    })
+                } else {
+                    t
+                }
+            })
+            .collect();
+        return deduped;
+    }
+    tools
 }
 
 /// TS `isToolAllowed` setting gates for the plain built-ins: a tool whose
@@ -387,7 +536,22 @@ pub fn session_builtin_tools(
 ) -> Vec<Arc<dyn AgentTool>> {
     let mut tools = builtin_tools(cwd, edit_mode);
     tools.retain(|t| enabled_by_settings(settings, t.name()));
+    // Session-start LSP autostart: warm the project's servers in the
+    // background so the first edit's diagnostics gate has a pre-edit
+    // baseline (see edit_diagnostics). No-op without a runtime or when no
+    // server is configured for the cwd.
+    edit_diagnostics::prewarm_project_spawn(cwd);
     tools
+}
+
+/// Stamp the session's a2a owner token on every tool that carries an `Env`
+/// (the built-ins). The runtime calls this at start (and after a model-swap
+/// tool rebuild) so `task`/`wait`/`agent()` stamp and consume children and
+/// deliveries under this session's token instead of a process-global one.
+pub async fn stamp_a2a_owner(agent: &pa_agent::agent::Agent, owner: &Arc<str>) {
+    for tool in agent.tools().await {
+        tool.set_a2a_owner(owner);
+    }
 }
 
 /// Active hidden tools for a session (TS `resolveBuiltinToolPlan`'s
@@ -438,6 +602,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn session_tools_carry_the_stamped_owner_through_wrappers() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = omp_settings::Settings::load(dir.path());
+        let tools = session_builtin_tools(dir.path(), EditMode::Hashline, &settings);
+        // Wrap like production: the approval gate wraps every tool, the
+        // dedup layer wraps the pure ones (`OMT_TOOLS_DEDUP`).
+        let gate = crate::approval::Gate::for_test(dir.path());
+        let tools = gate.wrap_tools(tools);
+        let tools: Vec<Arc<dyn AgentTool>> = tools
+            .into_iter()
+            .map(|t| {
+                if matches!(t.name(), "read" | "grep" | "glob" | "lsp") {
+                    Arc::new(DedupTool {
+                        inner: t,
+                        last: tokio::sync::Mutex::new(None),
+                    }) as Arc<dyn AgentTool>
+                } else {
+                    t
+                }
+            })
+            .collect();
+        let owner: Arc<str> = crate::persist::uuid_v7().into();
+        for tool in &tools {
+            tool.set_a2a_owner(&owner);
+        }
+        // Every Env-carrying tool sees the token through both wrapper layers.
+        let want = Some(owner);
+        for name in ["task", "wait", "eval", "read", "bash"] {
+            let tool = tools
+                .iter()
+                .find(|t| t.name() == name)
+                .unwrap_or_else(|| panic!("tool {name} in the session set"));
+            assert_eq!(
+                tool.a2a_owner(),
+                want,
+                "owner stamped through wrappers reaches the {name} tool's Env"
+            );
+        }
+    }
+
+    #[test]
     fn edit_mode_follows_omp_model_rule() {
         // PI_EDIT_VARIANT may be set by the harness; only assert the rule when unset.
         if std::env::var_os("PI_EDIT_VARIANT").is_some() {
@@ -469,7 +674,9 @@ mod tests {
         for on in ["read", "bash", "ast_edit", "lsp", "todo"] {
             assert!(defaults.iter().any(|n| n == on), "{on} off by default");
         }
-        let custom = names("lsp:\n  enabled: false\nastGrep:\n  enabled: true\ncheckpoint:\n  enabled: true\nfind:\n  enabled: \"off\"\n");
+        let custom = names(
+            "lsp:\n  enabled: false\nastGrep:\n  enabled: true\ncheckpoint:\n  enabled: true\nfind:\n  enabled: \"off\"\n",
+        );
         assert!(!custom.iter().any(|n| n == "lsp" || n == "find"));
         assert!(
             defaults.iter().any(|n| n == "find"),
@@ -551,7 +758,14 @@ mod tests {
             "Regex: Rust, then PCRE2. `path`: `;`-separated file/dir/glob/URL; default `.`. Default case-sensitive, gitignore respected; `skip` paginates files."
         );
         assert_eq!(
-            tools.iter().find(|t| t.name() == "glob").unwrap().description().lines().next().unwrap(),
+            tools
+                .iter()
+                .find(|t| t.name() == "glob")
+                .unwrap()
+                .description()
+                .lines()
+                .next()
+                .unwrap(),
             "Glob files/dirs: `;`-separated paths or internal URLs (`local://*.md`, `omp://**/*.md`); default workspace root."
         );
     }

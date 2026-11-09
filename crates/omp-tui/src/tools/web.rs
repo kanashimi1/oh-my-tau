@@ -389,6 +389,8 @@ fn truncate_str(s: &str, width: usize) -> String {
 }
 
 /// Clamp the final span so the line fits `width` columns.
+// invariant: spans.is_empty() returns early above.
+#[allow(clippy::expect_used)]
 fn truncate_spans(spans: &mut [Span<'static>], width: usize) {
     let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     if total <= width || spans.is_empty() {

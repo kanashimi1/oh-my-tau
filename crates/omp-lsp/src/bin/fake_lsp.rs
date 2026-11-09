@@ -37,100 +37,137 @@ fn read_message(reader: &mut impl BufRead) -> Option<serde_json::Value> {
     serde_json::from_slice(&body).ok()
 }
 
-fn write_message(value: &serde_json::Value) {
+fn write_message(value: &serde_json::Value) -> std::io::Result<()> {
+    // invariant: `value` is an in-memory serde_json::Value, serialization cannot fail.
+    #[allow(clippy::expect_used)]
     let body = serde_json::to_string(value).expect("serialize response");
     let mut out = std::io::stdout().lock();
-    write!(out, "Content-Length: {}\r\n\r\n{body}", body.len()).expect("write response");
-    out.flush().expect("flush response");
+    write!(out, "Content-Length: {}\r\n\r\n{body}", body.len())?;
+    out.flush()
 }
 
 fn main() {
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
     while let Some(msg) = read_message(&mut reader) {
-        let method = msg.get("method").and_then(serde_json::Value::as_str);
-        let id = msg.get("id").cloned();
-        match (method, id) {
-            (Some("initialize"), Some(id)) => {
-                write_message(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "capabilities": {
-                            "definitionProvider": true,
-                            "hoverProvider": true,
-                            "textDocumentSync": {
-                                "openClose": true,
-                                "change": 1
-                            }
-                        }
-                    }
-                }));
-            }
-            (Some("textDocument/didOpen"), None) => {
-                let uri = msg
-                    .pointer("/params/textDocument/uri")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("file:///unknown")
-                    .to_string();
-                let version = msg
-                    .pointer("/params/textDocument/version")
-                    .cloned()
-                    .unwrap_or(serde_json::json!(1));
-                write_message(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "textDocument/publishDiagnostics",
-                    "params": {
-                        "uri": uri,
-                        "version": version,
-                        "diagnostics": [{
-                            "range": {
-                                "start": { "line": 0, "character": 0 },
-                                "end": { "line": 0, "character": 1 }
-                            },
-                            "severity": 1,
-                            "source": "fake-lsp",
-                            "message": "fake error for tests"
-                        }]
-                    }
-                }));
-            }
-            (Some("textDocument/definition"), Some(id)) => {
-                let uri = msg
-                    .pointer("/params/textDocument/uri")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("file:///unknown")
-                    .to_string();
-                write_message(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": [{
-                        "uri": uri,
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 5 }
-                        }
-                    }]
-                }));
-            }
-            (Some("textDocument/hover"), Some(id)) => {
-                write_message(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "contents": { "kind": "markdown", "value": "fake hover" } }
-                }));
-            }
-            (Some("shutdown"), Some(id)) => {
-                write_message(&serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null }));
-            }
-            (_, Some(id)) => {
-                write_message(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32601, "message": "Method not found" }
-                }));
-            }
-            _ => {}
+        if !dispatch(&msg) {
+            return;
         }
     }
+}
+
+/// Answer one request/notification; `false` means the stdout pipe broke and
+/// the fake server should exit.
+fn dispatch(msg: &serde_json::Value) -> bool {
+    let method = msg.get("method").and_then(serde_json::Value::as_str);
+    let id = msg.get("id").cloned();
+    match (method, id) {
+        (Some("initialize"), Some(id)) => {
+            if write_message(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "capabilities": {
+                        "definitionProvider": true,
+                        "hoverProvider": true,
+                        "textDocumentSync": {
+                            "openClose": true,
+                            "change": 1
+                        }
+                    }
+                }
+            }))
+            .is_err()
+            {
+                return false;
+            }
+        }
+        (Some("textDocument/didOpen"), None) => {
+            let uri = msg
+                .pointer("/params/textDocument/uri")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("file:///unknown")
+                .to_string();
+            let version = msg
+                .pointer("/params/textDocument/version")
+                .cloned()
+                .unwrap_or(serde_json::json!(1));
+            if publish_diagnostics(&uri, &version).is_err() {
+                return false;
+            }
+        }
+        (Some("textDocument/definition"), Some(id)) => {
+            let uri = msg
+                .pointer("/params/textDocument/uri")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("file:///unknown")
+                .to_string();
+            if write_message(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": [{
+                    "uri": uri,
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 5 }
+                    }
+                }]
+            }))
+            .is_err()
+            {
+                return false;
+            }
+        }
+        (Some("textDocument/hover"), Some(id)) => {
+            if write_message(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "contents": { "kind": "markdown", "value": "fake hover" } }
+            }))
+            .is_err()
+            {
+                return false;
+            }
+        }
+        (Some("shutdown"), Some(id)) => {
+            if write_message(&serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null }))
+                .is_err()
+            {
+                return false;
+            }
+        }
+        (_, Some(id)) => {
+            let response = write_message(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": -32601, "message": "Method not found" }
+            }));
+            if response.is_err() {
+                return false;
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
+/// One always-present diagnostic on line 0 so tests have something to await.
+fn publish_diagnostics(uri: &str, version: &serde_json::Value) -> std::io::Result<()> {
+    write_message(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": uri,
+            "version": version,
+            "diagnostics": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "severity": 1,
+                "source": "fake-lsp",
+                "message": "fake error for tests"
+            }]
+        }
+    }))
 }

@@ -1,11 +1,12 @@
 //! Config loading tests: user config via `OMP_CONFIG_DIR`, project configs,
 //! disabled/forced servers. Env-mutating cases live in ONE test because
 //! cargo runs tests of a binary in parallel threads sharing the process env.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use omp_mcp::{load_configs, McpServerConfig, ServerKind};
+use omp_mcp::{load_configs, load_configs_for, McpServerConfig, ServerKind};
 
 fn write(dir: &std::path::Path, name: &str, body: &str) {
     std::fs::create_dir_all(dir).unwrap();
@@ -76,6 +77,33 @@ fn config_loading_matches_omp_rules() {
     assert!(!configs.contains_key("off"));
     assert!(configs.contains_key("forced"));
     assert!(configs.contains_key("on"));
+
+    // Case 2b: an `enabled: false` server loads for a run that names one of its
+    // tools (an agent's `tools:` list); other runs and `disabledServers` stay off.
+    write(
+        &user2.join(".omp").join("agent"),
+        "mcp.json",
+        r#"{
+            "disabledServers": ["off"],
+            "mcpServers": {
+                "off": {"command": "x"},
+                "Block-Bench": {"command": "y", "enabled": false},
+                "on": {"command": "z"}
+            }
+        }"#,
+    );
+    let agent_tools = vec![
+        "read".to_string(),
+        "mcp__block_bench_bb_inspect".to_string(),
+        "mcp__off_tool".to_string(),
+    ];
+    let configs = load_configs_for(&project, &agent_tools);
+    assert!(configs.contains_key("Block-Bench"));
+    assert!(configs.contains_key("on"));
+    assert!(!configs.contains_key("off"));
+    assert!(!load_configs(&project).contains_key("Block-Bench"));
+    let other = vec!["read".to_string(), "mcp__block_benchmark_x".to_string()];
+    assert!(!load_configs_for(&project, &other).contains_key("Block-Bench"));
 
     // Case 3: malformed user config is ignored, not fatal.
     let user3 = root.path().join("user3");

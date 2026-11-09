@@ -220,10 +220,10 @@ impl Completer for LiveCompleter {
                     headers: headers.map(|h| h.into_iter().collect()),
                     ..pa_ai::types::StreamOptions::default()
                 },
-                // `resolveCompactionEffort`: High by default, only for reasoning models.
+                // `resolveCompactionEffort`: Low (cheap summaries), only for reasoning models.
                 reasoning: model
                     .reasoning
-                    .then_some(pa_types::ai::ModelThinkingLevel::High),
+                    .then_some(pa_types::ai::ModelThinkingLevel::Low),
                 thinking_budgets: None,
                 disable_reasoning: false,
                 tool_choice: None,
@@ -243,7 +243,6 @@ impl LiveCompleter {
     pub fn from_target(target: &crate::agent::Target) -> Result<Self> {
         let t = target
             .read()
-            .map_err(|_| anyhow!("provider target lock poisoned"))?
             .clone()
             .ok_or_else(|| anyhow!("no provider target"))?;
         Ok(Self {
@@ -252,6 +251,32 @@ impl LiveCompleter {
             headers: t.headers,
             credential_id: t.credential_id,
         })
+    }
+
+    /// A resolved model selection (`crate::model::select`) as a completer.
+    #[must_use]
+    pub fn from_selected(selected: crate::model::Selected) -> Self {
+        Self {
+            model: selected.model,
+            api_key: selected.api_key,
+            headers: selected.headers,
+            credential_id: selected.credential_id,
+        }
+    }
+}
+
+/// The model reference compaction summaries run on: `OMP_COMPACTION_MODEL`
+/// when set, else a cheap low-effort model that is available in the current setup.
+#[must_use]
+pub fn compaction_model_ref() -> String {
+    compaction_model_ref_from(std::env::var("OMP_COMPACTION_MODEL").ok().as_deref()).to_owned()
+}
+
+/// [`compaction_model_ref`] over an injected env value (unit-testable).
+fn compaction_model_ref_from(env: Option<&str>) -> &str {
+    match env {
+        Some(m) if !m.trim().is_empty() => m.trim(),
+        _ => "zai/glm-5.3-flash:low",
     }
 }
 
@@ -409,6 +434,7 @@ pub struct CompactionSnapshot {
     /// Runtime switch generation (bumped by `new_session` / `load_session*`).
     pub generation: u64,
     /// Pending `/tree` leaf move (`Persistence::leaf_divergence`).
+    #[allow(clippy::option_option)] // tri-state `/tree` move: none / jump to root / leaf id
     pub nav_leaf: Option<Option<String>>,
     /// Last journaled entry id (the append point while no move is pending).
     pub file_leaf: Option<String>,
@@ -455,6 +481,7 @@ impl CommitGuard {
 
     /// Whether [`Self::cancel`] arrived.
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
@@ -475,7 +502,7 @@ impl CommitGuard {
 
     /// Resolves when [`Self::cancel`] fires (the select arm around the pass).
     pub async fn cancelled(&self) {
-        self.cancel.cancelled().await
+        self.cancel.cancelled().await;
     }
 
     /// Re-derive the live session state and refuse to commit when anything the
@@ -523,6 +550,7 @@ impl CompactionSnapshot {
 /// move and the next append the two differ, and cutting the file-order branch
 /// would summarize the abandoned branch while the `compaction` entry lands on
 /// the navigated one (bug-hunt #4).
+#[allow(clippy::option_option)] // tri-state navigation target: no move / jump to root / leaf id
 fn compact_branch(
     index: &omp_session::index::SessionIndex,
     nav_leaf: Option<Option<&str>>,
@@ -538,6 +566,7 @@ fn compact_branch(
 /// from `leaf_id` back to the root; indices into `index.refs`. `None` when the
 /// id is not an entry of this file (the caller falls back to the file-order
 /// branch, the pre-#4 behaviour).
+#[allow(clippy::cast_possible_truncation)] // refs positions are u32 by SessionIndex design (see SessionIndex::branch)
 fn branch_from_leaf(index: &omp_session::index::SessionIndex, leaf_id: &str) -> Option<Vec<u32>> {
     let is_structural = |i: usize| {
         let r = &index.refs[i];
@@ -583,6 +612,7 @@ fn branch_from_leaf(index: &omp_session::index::SessionIndex, leaf_id: &str) -> 
 /// # Errors
 /// Nothing to compact / already compacted (TS messages), summarization failure, unsupported
 /// previous compaction payload, or a write failure.
+#[allow(clippy::too_many_lines)] // one compaction pipeline (plan, summarize, commit) in order; the steps share locals
 pub async fn compact_now(
     persist: &Persistence,
     path: &Path,
@@ -871,6 +901,7 @@ fn seed_entry_dom(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -953,7 +984,7 @@ mod tests {
             None => crate::persist::attach_with(&agent, &cwd, true).await,
         }
         .expect("session");
-        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("k".into()),
             model,
             service_tier: None,
@@ -987,6 +1018,26 @@ mod tests {
             keep_recent_tokens: 100,
             ..CompactionSettings::default()
         }
+    }
+
+    #[test]
+    fn compaction_model_ref_defaults_to_fast_model_and_honors_override() {
+        assert_eq!(
+            super::compaction_model_ref_from(None),
+            "zai/glm-5.3-flash:low"
+        );
+        assert_eq!(
+            super::compaction_model_ref_from(Some("")),
+            "zai/glm-5.3-flash:low"
+        );
+        assert_eq!(
+            super::compaction_model_ref_from(Some("  ")),
+            "zai/glm-5.3-flash:low"
+        );
+        assert_eq!(
+            super::compaction_model_ref_from(Some("zai/glm-5.3-flash:low")),
+            "zai/glm-5.3-flash:low"
+        );
     }
 
     async fn talk(h: &mut Harness, prompts: usize) {
@@ -1485,14 +1536,13 @@ mod tests {
     /// text included) and answers with `text`.
     fn capturing_summarizer(
         text: &'static str,
-    ) -> (SummarizeFn, Arc<std::sync::Mutex<Vec<String>>>) {
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    ) -> (SummarizeFn, Arc<parking_lot::Mutex<Vec<String>>>) {
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let sink = seen.clone();
         let f: SummarizeFn = Arc::new(move |req: SummaryRequest| {
             let sink = sink.clone();
             Box::pin(async move {
                 sink.lock()
-                    .unwrap()
                     .push(serde_json::to_string(&req.context).unwrap_or_default());
                 Ok(reply(text))
             })
@@ -1553,7 +1603,7 @@ mod tests {
             "entry chains to the navigated leaf: {comp}"
         );
 
-        let requests = seen.lock().unwrap().join("\n");
+        let requests = seen.lock().join("\n");
         assert!(
             requests.contains("first request"),
             "the selected branch is summarized: {requests:.600}"
@@ -1624,7 +1674,7 @@ mod tests {
         assert!(guard.session_alive());
 
         // A pending `/tree` move moves the append point: stale.
-        persist.branch_to(Some(e1.clone())).expect("branch_to");
+        persist.branch_to(Some(e1)).expect("branch_to");
         assert!(guard.check_commit(&persist).is_err(), "navigation discards");
 
         // Any append ends the pending move AND advances the tip: stale either way.

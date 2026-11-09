@@ -31,6 +31,7 @@
 //! spawned on the runtime and tracked, so owners await [`Fs::drain_closes`]
 //! (or call [`File::close`]/[`File::close_async`]) wherever ordering or close
 //! errors matter.
+#![allow(clippy::disallowed_methods)] // vendored third-party code: the sync-bridge rule applies to omp-rs first-party crates only
 
 mod canonicalize;
 mod dir;

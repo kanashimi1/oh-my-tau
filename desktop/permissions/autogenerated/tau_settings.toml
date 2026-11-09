@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tau-settings"
+description = "Enables the tau_settings command without any pre-configured scope."
+commands.allow = ["tau_settings"]
+
+[[permission]]
+identifier = "deny-tau-settings"
+description = "Denies the tau_settings command without any pre-configured scope."
+commands.deny = ["tau_settings"]

@@ -234,6 +234,8 @@ fn base64url(bytes: &[u8]) -> String {
 }
 
 fn authorization_url(challenge: &str, state: &str, originator: &str) -> String {
+    // invariant: AUTHORIZE_URL is a compile-time constant that parses.
+    #[allow(clippy::expect_used)]
     let mut url = Url::parse(AUTHORIZE_URL).expect("the authorize url parses");
     for (name, value) in [
         ("response_type", "code"),

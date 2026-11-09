@@ -27,6 +27,8 @@ struct GoAwayTracker {
 
 impl GoAwayTracker {
     /// Feed the bytes just read from the wire.
+    // invariant: the goaway try_into below is guarded by a len == 8 check.
+    #[allow(clippy::unwrap_used)]
     fn observe(&mut self, chunk: &[u8]) {
         let mut rest = chunk;
         loop {

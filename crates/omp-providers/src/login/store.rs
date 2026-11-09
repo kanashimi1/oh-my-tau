@@ -769,10 +769,12 @@ pub async fn broker_disable(cfg: &BrokerConfig, id: i64, cause: &str) -> Result<
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod usage_tests {
+    use parking_lot::Mutex;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use super::*;
 
@@ -802,7 +804,7 @@ mod usage_tests {
                 }
                 let text = String::from_utf8_lossy(&buf).to_string();
                 let line = text.lines().next().unwrap_or_default().to_string();
-                log.lock().unwrap().push(text);
+                log.lock().push(text);
                 let (status, body) = reply(&line);
                 let _ = write!(
                     stream,
@@ -851,7 +853,7 @@ mod usage_tests {
         assert_eq!(entries[1].window_label, None);
         assert_eq!(entries[1].used_fraction, None);
         assert_eq!(entries[1].status, None);
-        let request = seen.lock().unwrap().join("\n");
+        let request = seen.lock().join("\n");
         assert!(request.contains("authorization: Bearer tok"), "{request}");
     }
 
@@ -879,7 +881,7 @@ mod usage_tests {
         assert_eq!(clients[0].providers[0].provider, "google-antigravity");
         assert_eq!(clients[0].providers[0].cache_write_tokens, 1.0);
         assert!(clients[1].providers.is_empty());
-        let request = seen.lock().unwrap().join("\n");
+        let request = seen.lock().join("\n");
         assert!(request.contains("authorization: Bearer tok"), "{request}");
     }
 

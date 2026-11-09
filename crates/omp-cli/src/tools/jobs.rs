@@ -12,8 +12,9 @@
 //! killed when the session's registry is dropped (omp stops owned services at
 //! session end).
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
@@ -105,11 +106,7 @@ impl Service {
 
     /// The captured log tail, trimmed.
     pub fn log(&self) -> String {
-        self.output
-            .lock()
-            .expect("service output poisoned")
-            .trim_end()
-            .to_string()
+        self.output.lock().trim_end().to_string()
     }
 }
 
@@ -129,7 +126,7 @@ pub struct JobRegistry {
 impl JobRegistry {
     /// Register a job with a fresh `bg_N` id (omp `JobManager.#resolveJobId`).
     pub fn insert(&self, job: Job) -> String {
-        let mut inner = self.inner.lock().expect("job registry poisoned");
+        let mut inner = self.inner.lock();
         if inner.next_id == 0 {
             inner.next_id = 1; // omp `#nextAutoId = 1`: first job is bg_1.
         }
@@ -145,23 +142,18 @@ impl JobRegistry {
     }
 
     pub fn get(&self, id: &str) -> Option<Job> {
-        self.inner
-            .lock()
-            .expect("job registry poisoned")
-            .jobs
-            .get(id)
-            .cloned()
+        self.inner.lock().jobs.get(id).cloned()
     }
 
     pub fn update(&self, id: &str, f: impl FnOnce(&mut Job)) {
-        let mut inner = self.inner.lock().expect("job registry poisoned");
+        let mut inner = self.inner.lock();
         if let Some(job) = inner.jobs.get_mut(id) {
             f(job);
         }
     }
 
     pub fn sorted(&self) -> Vec<(String, Job)> {
-        let inner = self.inner.lock().expect("job registry poisoned");
+        let inner = self.inner.lock();
         let mut v: Vec<(String, Job)> = inner
             .jobs
             .iter()
@@ -225,27 +217,19 @@ impl JobRegistry {
     /// second start under the same name kills the previous instance).
     pub fn insert_service(&self, service: Service) -> Arc<Mutex<Service>> {
         let arc = Arc::new(Mutex::new(service));
-        let mut inner = self.inner.lock().expect("job registry poisoned");
-        if let Some(old) = inner.services.insert(
-            arc.lock().expect("service poisoned").name.clone(),
-            arc.clone(),
-        ) {
-            old.lock().expect("service poisoned").kill_requested = true;
+        let mut inner = self.inner.lock();
+        if let Some(old) = inner.services.insert(arc.lock().name.clone(), arc.clone()) {
+            old.lock().kill_requested = true;
         }
         arc
     }
 
     pub fn service(&self, name: &str) -> Option<Arc<Mutex<Service>>> {
-        self.inner
-            .lock()
-            .expect("job registry poisoned")
-            .services
-            .get(name)
-            .cloned()
+        self.inner.lock().services.get(name).cloned()
     }
 
     pub fn services_sorted(&self) -> Vec<(String, Arc<Mutex<Service>>)> {
-        let inner = self.inner.lock().expect("job registry poisoned");
+        let inner = self.inner.lock();
         let mut v: Vec<(String, Arc<Mutex<Service>>)> = inner
             .services
             .iter()
@@ -308,7 +292,9 @@ pub fn background_notice(job_id: &str, timeout_secs: Option<f64>) -> String {
 pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
     // `url` is everything after `proc://`.
     if url.contains('?') || url.contains('#') || url == "/mode" || url == "/kill" {
-        bail!("Invalid proc:// URL: proc://{url}. Use proc://, proc://<id>, proc://<id>/kill, or proc://<id>/mode.");
+        bail!(
+            "Invalid proc:// URL: proc://{url}. Use proc://, proc://<id>, proc://<id>/kill, or proc://<id>/mode."
+        );
     }
     let (id, action) = match url.strip_suffix("/mode") {
         Some(rest) => (rest, "mode"),
@@ -352,7 +338,7 @@ pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
             .collect();
         // Services ride along (omp `serviceStatus` / ps-data service rows).
         for (name, service) in env.jobs.services_sorted() {
-            let service = service.lock().expect("service poisoned");
+            let service = service.lock();
             let end = service.exited_at.unwrap_or(now);
             let age = format_duration(
                 u64::try_from(end.duration_since(service.started).as_millis()).unwrap_or(u64::MAX),
@@ -386,7 +372,7 @@ pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
             lines.push(format!("Error: {error}"));
         }
         if job.status == JobStatus::Running {
-            let output = job.output.lock().expect("job output poisoned").clone();
+            let output = job.output.lock().clone();
             let trimmed = output.trim_end();
             if !trimmed.is_empty() {
                 lines.push(trimmed.to_string());
@@ -398,7 +384,7 @@ pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
         bail!("Background job or service not found: {id}");
     };
     {
-        let service = service.lock().expect("service poisoned");
+        let service = service.lock();
         let end = service.exited_at.unwrap_or_else(Instant::now);
         let age = format_duration(
             u64::try_from(end.duration_since(service.started).as_millis()).unwrap_or(u64::MAX),

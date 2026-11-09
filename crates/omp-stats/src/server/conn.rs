@@ -2,8 +2,9 @@
 //! idle timeout for plain keep-alive connections. SSE streams are exempt from
 //! the idle timeout (they are long-lived by design and carry heartbeats).
 
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hyper::server::conn::http1;
@@ -39,22 +40,14 @@ struct ConnState {
 
 impl ConnState {
     fn touch(&self) {
-        *self
-            .last_activity
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
+        *self.last_activity.lock() = Instant::now();
     }
 
     fn idle_for(&self) -> Option<Duration> {
         if self.sse.load(Ordering::SeqCst) || self.inflight.load(Ordering::SeqCst) > 0 {
             return None;
         }
-        Some(
-            self.last_activity
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .elapsed(),
-        )
+        Some(self.last_activity.lock().elapsed())
     }
 }
 

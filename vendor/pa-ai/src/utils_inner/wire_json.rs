@@ -213,6 +213,9 @@ impl<'a> Wire<'a> {
     }
 
     /// The equivalent `serde_json::Value` tree (for payload hooks and tests).
+    // invariant: a wire tree only holds string keys and JSON numbers, so
+    // serialization cannot fail.
+    #[allow(clippy::expect_used)]
     pub(crate) fn to_value(&self) -> Value {
         serde_json::to_value(self).expect("a wire tree has string keys and JSON numbers")
     }
@@ -396,6 +399,9 @@ impl io::Write for ByteCount {
 /// Compact JSON text of `value` (`serde_json::to_string`), written into a buffer allocated at its
 /// exact final size: a sizing pass first, so the multi-megabyte request body never goes through
 /// the doubling-growth reallocations (each of which holds the old and the new buffer at once).
+// invariant: request JSON serializes by construction (string keys, JSON
+// numbers) and serde_json writes UTF-8.
+#[allow(clippy::expect_used)]
 pub(crate) fn to_json_string<T: Serialize + ?Sized>(value: &T) -> String {
     let mut count = ByteCount(0);
     serde_json::to_writer(&mut count, value).expect("request JSON serializes");

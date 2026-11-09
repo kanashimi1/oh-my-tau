@@ -6,10 +6,11 @@
 //! are reaped by a background idle checker when a positive `idleTimeoutMs`
 //! is configured globally or in the workspace config.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -86,6 +87,9 @@ struct ClientInner {
     /// Keyed by canonical path (`EquivalentUriMap` in TS).
     diagnostics: Mutex<HashMap<PathBuf, crate::types::PublishedDiagnostics>>,
     diagnostics_version: AtomicU64,
+    /// Last `experimental/serverStatus` quiescent value (rust-analyzer):
+    /// `false` while loading/analyzing, `true` once background work is done.
+    quiescent: AtomicBool,
     pending: Mutex<HashMap<i64, PendingEntry>>,
     server_capabilities: Mutex<Value>,
     last_activity: AtomicI64,
@@ -148,19 +152,11 @@ impl LspClient {
     }
     #[must_use]
     pub fn status(&self) -> ClientStatus {
-        *self
-            .inner
-            .status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.inner.status.lock()
     }
     #[must_use]
     pub fn server_capabilities(&self) -> Value {
-        self.inner
-            .server_capabilities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.inner.server_capabilities.lock().clone()
     }
     #[must_use]
     pub fn diagnostics_version(&self) -> u64 {
@@ -171,28 +167,25 @@ impl LspClient {
         self.inner
             .open_files
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&uri_key(uri))
             .map(|f| f.version)
     }
     /// Latest published diagnostics for `uri`, keyed canonically.
     #[must_use]
     pub fn published_diagnostics(&self, uri: &str) -> Option<crate::types::PublishedDiagnostics> {
-        self.inner
-            .diagnostics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&uri_key(uri))
-            .cloned()
+        self.inner.diagnostics.lock().get(&uri_key(uri)).cloned()
     }
     /// Whether `uri` is currently open on the server.
     #[must_use]
     pub fn is_open(&self, uri: &str) -> bool {
-        self.inner
-            .open_files
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&uri_key(uri))
+        self.inner.open_files.lock().contains_key(&uri_key(uri))
+    }
+    /// Whether the server reported itself quiescent via
+    /// `experimental/serverStatus` (rust-analyzer). Servers that never send
+    /// it stay `false`.
+    #[must_use]
+    pub fn is_quiescent(&self) -> bool {
+        self.inner.quiescent.load(Ordering::SeqCst)
     }
     #[must_use]
     pub fn is_rust_analyzer(&self) -> bool {
@@ -233,7 +226,6 @@ impl LspClient {
         self.inner
             .dynamic_registrations
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .any(|m| m == "textDocument/diagnostic")
     }
@@ -294,11 +286,7 @@ impl LspClient {
             }
         }
         let (tx, rx) = oneshot::channel::<Result<Value, LspError>>();
-        self.inner
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, PendingEntry { tx });
+        self.inner.pending.lock().insert(id, PendingEntry { tx });
         self.inner
             .last_activity
             .store(now_millis(), Ordering::SeqCst);
@@ -307,11 +295,7 @@ impl LspClient {
             .write_message(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await;
         if let Err(e) = result {
-            self.inner
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&id);
+            self.inner.pending.lock().remove(&id);
             return Err(e);
         }
 
@@ -330,7 +314,7 @@ impl LspClient {
                     Some(c) => c.cancelled().await,
                     None => std::future::pending().await,
                 } } => {
-                    self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+                    self.inner.pending.lock().remove(&id);
                     let _ = self
                         .write_message(&json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}))
                         .await;
@@ -342,11 +326,7 @@ impl LspClient {
             Some(t) => match tokio::time::timeout(t, wait).await {
                 Ok(r) => r,
                 Err(_elapsed) => {
-                    self.inner
-                        .pending
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&id);
+                    self.inner.pending.lock().remove(&id);
                     let _ = self
                         .write_message(&json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}))
                         .await;
@@ -381,13 +361,7 @@ impl LspClient {
     }
 
     fn resolve_pending(&self, id: i64, result: Result<Value, LspError>) {
-        if let Some(entry) = self
-            .inner
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&id)
-        {
+        if let Some(entry) = self.inner.pending.lock().remove(&id) {
             let _ = entry.tx.send(result);
         }
     }
@@ -487,7 +461,7 @@ impl LspClient {
             match id {
                 Some(id) => {
                     self.handle_server_request(method, id, message.get("params").cloned())
-                        .await
+                        .await;
                 }
                 None => self.handle_server_notification(method, message.get("params").cloned()),
             }
@@ -525,17 +499,13 @@ impl LspClient {
             ("textDocument/publishDiagnostics", Some(params)) => {
                 if let Ok(published) = serde_json::from_value::<PublishDiagnosticsParams>(params) {
                     let key = uri_key(&published.uri);
-                    self.inner
-                        .diagnostics
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(
-                            key,
-                            crate::types::PublishedDiagnostics {
-                                diagnostics: published.diagnostics,
-                                version: published.version,
-                            },
-                        );
+                    self.inner.diagnostics.lock().insert(
+                        key,
+                        crate::types::PublishedDiagnostics {
+                            diagnostics: published.diagnostics,
+                            version: published.version,
+                        },
+                    );
                     self.inner
                         .diagnostics_version
                         .fetch_add(1, Ordering::SeqCst);
@@ -548,6 +518,11 @@ impl LspClient {
                     .and_then(Value::as_str);
                 if kind == Some("end") {
                     let _ = self.inner.project_loaded_tx.send(true);
+                }
+            }
+            ("experimental/serverStatus", Some(params)) => {
+                if let Some(q) = params.get("quiescent").and_then(Value::as_bool) {
+                    self.inner.quiescent.store(q, Ordering::SeqCst);
                 }
             }
             _ => {}
@@ -598,11 +573,7 @@ impl LspClient {
                     .and_then(|p| p.get("registrations"))
                     .and_then(Value::as_array)
                 {
-                    let mut map = self
-                        .inner
-                        .dynamic_registrations
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut map = self.inner.dynamic_registrations.lock();
                     for reg in regs {
                         if let (Some(id), Some(m)) = (
                             reg.get("id").and_then(Value::as_str),
@@ -623,11 +594,7 @@ impl LspClient {
                     })
                     .and_then(Value::as_array)
                 {
-                    let mut map = self
-                        .inner
-                        .dynamic_registrations
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut map = self.inner.dynamic_registrations.lock();
                     for reg in regs {
                         if let Some(id) = reg.get("id").and_then(Value::as_str) {
                             map.remove(id);
@@ -683,32 +650,17 @@ impl LspClient {
     fn on_reader_exit(&self) {
         let _ = self.inner.project_loaded_tx.send(true);
         self.inner.transport_dead.notify_waiters();
-        *self
-            .inner
-            .status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Error;
-        let stderr = String::from_utf8_lossy(
-            &self
-                .inner
-                .stderr
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-        .trim()
-        .to_string();
+        *self.inner.status.lock() = ClientStatus::Error;
+        let stderr = String::from_utf8_lossy(&self.inner.stderr.lock())
+            .trim()
+            .to_string();
         let code = self
             .inner
             .child
             .lock()
-            .map(|mut c| {
-                c.as_mut()
-                    .and_then(|ch| ch.try_wait().ok().flatten())
-                    .map(|s| s.code())
-            })
-            .ok()
-            .flatten()
-            .flatten();
+            .as_mut()
+            .and_then(|ch| ch.try_wait().ok().flatten())
+            .and_then(|s| s.code());
         let message = if stderr.is_empty() {
             format!(
                 "LSP server exited unexpectedly (code {})",
@@ -724,22 +676,14 @@ impl LspClient {
             message,
             cancelled: false,
         };
-        let pending = std::mem::take(
-            &mut *self
-                .inner
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let pending = std::mem::take(&mut *self.inner.pending.lock());
         for (_, entry) in pending {
             let _ = entry.tx.send(Err(err.clone()));
         }
         registry_remove(&self.inner.name);
         // Kill the process if it is still alive.
-        if let Ok(mut guard) = self.inner.child.lock() {
-            if let Some(child) = guard.as_mut() {
-                let _ = child.start_kill();
-            }
+        if let Some(child) = self.inner.child.lock().as_mut() {
+            let _ = child.start_kill();
         }
     }
 }
@@ -768,7 +712,7 @@ fn registry() -> &'static Registry {
 
 fn registry_remove(name: &str) {
     let reg = registry();
-    let _ = reg.clients.lock().map(|mut g| g.remove(name));
+    let _ = reg.clients.lock().remove(name);
     maybe_stop_idle_checker();
 }
 
@@ -776,17 +720,13 @@ fn registry_insert(client: &LspClient) {
     let _ = registry()
         .clients
         .lock()
-        .map(|mut g| g.insert(client.name().to_string(), client.clone()));
+        .insert(client.name().to_string(), client.clone());
 }
 
 /// All currently live clients (omp `getActiveClients` input).
 #[must_use]
 pub fn active_clients() -> Vec<LspClient> {
-    registry()
-        .clients
-        .lock()
-        .map(|g| g.values().cloned().collect())
-        .unwrap_or_default()
+    registry().clients.lock().values().cloned().collect()
 }
 
 /// Public status row for one active server.
@@ -815,7 +755,7 @@ pub fn get_active_clients() -> Vec<LspServerStatus> {
 /// Allow an explicit user reload to retry a matching initialization failure.
 pub fn clear_initialization_failure(config: &ServerConfig, cwd: &Path) {
     let key = LspClient::name_for(config, cwd);
-    let _ = registry().init_failures.lock().map(|mut g| g.remove(&key));
+    let _ = registry().init_failures.lock().remove(&key);
 }
 
 /// Get or create a client for `config` in `cwd` (omp `getOrCreateClient`).
@@ -834,23 +774,23 @@ pub async fn get_or_create_client(
 ) -> Result<LspClient, LspError> {
     let key = LspClient::name_for(config, cwd);
     let reg = registry();
-
-    if let Ok(guard) = reg.clients.lock() {
-        if let Some(existing) = guard.get(&key) {
-            existing
-                .inner
-                .last_activity
-                .store(now_millis(), Ordering::SeqCst);
-            maybe_start_idle_checker();
-            return Ok(existing.clone());
-        }
+    let fast_hit = reg.clients.lock().get(&key).map(|existing| {
+        existing
+            .inner
+            .last_activity
+            .store(now_millis(), Ordering::SeqCst);
+        existing.clone()
+    });
+    if let Some(client) = fast_hit {
+        // Outside the registry lock: `maybe_start_idle_checker` re-locks
+        // `clients` (via `has_configured_idle_timeout`), which self-deadlocks
+        // a non-reentrant Mutex when called under the guard.
+        maybe_start_idle_checker();
+        return Ok(client);
     }
 
     let cell: SharedInit = {
-        let mut guard = reg
-            .pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = reg.pending.lock();
         if let Some(cell) = guard.get(&key) {
             let cell = Arc::clone(cell);
             drop(guard);
@@ -872,10 +812,7 @@ pub async fn get_or_create_client(
     let result = match result {
         Ok(client) => {
             registry_insert(&client);
-            reg.init_failures
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&key);
+            reg.init_failures.lock().remove(&key);
             Ok(client)
         }
         Err(e) => {
@@ -888,16 +825,12 @@ pub async fn get_or_create_client(
             if !transient {
                 reg.init_failures
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(key.clone(), (Instant::now(), e.message.clone()));
             }
             Err(e)
         }
     };
-    reg.pending
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&key);
+    reg.pending.lock().remove(&key);
     let _ = cell.set(result.map_err(Arc::new));
     match cell.get() {
         Some(Ok(client)) => Ok(client.clone()),
@@ -917,7 +850,8 @@ pub async fn get_active_or_pending_client(
 ) -> Option<LspClient> {
     let key = LspClient::name_for(config, cwd);
     let reg = registry();
-    if let Ok(guard) = reg.clients.lock() {
+    {
+        let guard = reg.clients.lock();
         if let Some(client) = guard.get(&key) {
             client
                 .inner
@@ -926,12 +860,7 @@ pub async fn get_active_or_pending_client(
             return Some(client.clone());
         }
     }
-    let cell = reg
-        .pending
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&key)
-        .cloned()?;
+    let cell = reg.pending.lock().get(&key).cloned()?;
     // Poll the shared init cell; tokio's OnceCell has no wait-on-set, so poll
     // with a short sleep until the in-flight initialization publishes.
     loop {
@@ -1060,7 +989,8 @@ async fn init_client(
     cancel: Option<&dyn Cancel>,
 ) -> Result<LspClient, LspError> {
     // Fail fast on a recent deterministic init failure.
-    if let Ok(failures) = registry().init_failures.lock() {
+    {
+        let failures = registry().init_failures.lock();
         if let Some((at, message)) = failures.get(key) {
             if at.elapsed() < Duration::from_millis(INIT_FAILURE_BACKOFF_MS) {
                 return Err(LspError {
@@ -1113,6 +1043,7 @@ async fn init_client(
         open_files: Mutex::new(HashMap::new()),
         diagnostics: Mutex::new(HashMap::new()),
         diagnostics_version: AtomicU64::new(0),
+        quiescent: AtomicBool::new(false),
         pending: Mutex::new(HashMap::new()),
         server_capabilities: Mutex::new(Value::Null),
         last_activity: AtomicI64::new(now_millis()),
@@ -1139,11 +1070,7 @@ async fn init_client(
 
     run_initialize_handshake(&client, config, cwd, cancel, init_timeout).await?;
 
-    *client
-        .inner
-        .status
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Ready;
+    *client.inner.status.lock() = ClientStatus::Ready;
     maybe_start_idle_checker();
     Ok(client)
 }
@@ -1155,10 +1082,7 @@ fn drain_stderr(mut pipe: tokio::process::ChildStderr, sink: Arc<Mutex<Vec<u8>>>
         loop {
             match pipe.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
-                Ok(n) => sink
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .extend_from_slice(&buf[..n]),
+                Ok(n) => sink.lock().extend_from_slice(&buf[..n]),
             }
         }
     });
@@ -1211,11 +1135,7 @@ async fn run_initialize_handshake(
         }
     };
 
-    *client
-        .inner
-        .server_capabilities
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = init_result
+    *client.inner.server_capabilities.lock() = init_result
         .get("capabilities")
         .cloned()
         .unwrap_or(Value::Null);
@@ -1239,26 +1159,14 @@ async fn run_initialize_handshake(
 
 impl LspClient {
     fn fail_init(&self) {
-        *self
-            .inner
-            .status
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Error;
+        *self.inner.status.lock() = ClientStatus::Error;
         if let Ok(mut guard) = self.inner.stdin.try_lock() {
             *guard = None;
         }
-        if let Ok(mut guard) = self.inner.child.lock() {
-            if let Some(child) = guard.as_mut() {
-                let _ = child.start_kill();
-            }
+        if let Some(child) = self.inner.child.lock().as_mut() {
+            let _ = child.start_kill();
         }
-        let pending = std::mem::take(
-            &mut *self
-                .inner
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let pending = std::mem::take(&mut *self.inner.pending.lock());
         for (_, entry) in pending {
             let _ = entry.tx.send(Err(LspError {
                 message: "LSP initialization failed".to_string(),
@@ -1278,25 +1186,15 @@ impl LspClient {
         expected_document_version: Option<i64>,
     ) {
         let key = crate::utils::uri_key(uri);
-        let version = expected_document_version.or_else(|| {
-            self.inner
-                .open_files
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&key)
-                .map(|f| f.version)
-        });
-        self.inner
-            .diagnostics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                key,
-                crate::types::PublishedDiagnostics {
-                    diagnostics,
-                    version,
-                },
-            );
+        let version = expected_document_version
+            .or_else(|| self.inner.open_files.lock().get(&key).map(|f| f.version));
+        self.inner.diagnostics.lock().insert(
+            key,
+            crate::types::PublishedDiagnostics {
+                diagnostics,
+                version,
+            },
+        );
         self.inner
             .diagnostics_version
             .fetch_add(1, Ordering::SeqCst);
@@ -1331,11 +1229,7 @@ impl LspClient {
 
     async fn wait_for_rust_analyzer_workspace(&self, cancel: Option<&dyn Cancel>) {
         {
-            let ready = self
-                .inner
-                .rust_analyzer_ready
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ready = self.inner.rust_analyzer_ready.lock();
             if *ready {
                 return;
             }
@@ -1376,11 +1270,7 @@ impl LspClient {
                 Ok(Value::String(status)) => {
                     let ready = !status.starts_with("No workspaces");
                     if ready && started.elapsed() >= Duration::from_millis(settle_ms) {
-                        *self
-                            .inner
-                            .rust_analyzer_ready
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                        *self.inner.rust_analyzer_ready.lock() = true;
                         return;
                     }
                     if started.elapsed() >= Duration::from_millis(timeout_ms) {
@@ -1408,13 +1298,7 @@ impl LspClient {
     /// Returns `true` once the process is confirmed exited.
     pub async fn shutdown_instance(&self) -> bool {
         registry_remove(&self.inner.name);
-        let pending = std::mem::take(
-            &mut *self
-                .inner
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let pending = std::mem::take(&mut *self.inner.pending.lock());
         for (_, entry) in pending {
             let _ = entry.tx.send(Err(LspError {
                 message: "LSP client shutdown".to_string(),
@@ -1439,10 +1323,8 @@ impl LspClient {
                 return true;
             }
         }
-        if let Ok(mut guard) = self.inner.child.lock() {
-            if let Some(child) = guard.as_mut() {
-                let _ = child.start_kill();
-            }
+        if let Some(child) = self.inner.child.lock().as_mut() {
+            let _ = child.start_kill();
         }
         self.wait_for_exit(Duration::from_millis(EXIT_TIMEOUT_MS))
             .await
@@ -1463,11 +1345,7 @@ impl LspClient {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             {
-                let mut guard = self
-                    .inner
-                    .child
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = self.inner.child.lock();
                 if let Some(child) = guard.as_mut() {
                     match child.try_wait() {
                         Ok(Some(_)) => {
@@ -1492,7 +1370,7 @@ impl LspClient {
 /// Whether a client may be reaped by the idle checker (omp `isIdleClient`).
 #[must_use]
 pub fn is_idle_client(client: &LspClient, timeout_ms: u64) -> bool {
-    let pending = client.inner.pending.lock().map_or(0, |g| g.len());
+    let pending = client.inner.pending.lock().len();
     if pending > 0 {
         return false;
     }
@@ -1513,17 +1391,12 @@ fn idle_handle() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
 
 /// Configure a global fallback idle timeout (used by tests/overrides).
 pub fn set_idle_timeout(ms: Option<u64>) {
-    *idle_override()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = ms;
+    *idle_override().lock() = ms;
     reconcile_idle_checker();
 }
 
 fn effective_idle_timeout(client: Option<&LspClient>, config: Option<&LspConfig>) -> Option<u64> {
-    if let Some(ms) = *idle_override()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-    {
+    if let Some(ms) = *idle_override().lock() {
         if ms > 0 {
             return Some(ms);
         }
@@ -1550,18 +1423,17 @@ fn has_configured_idle_timeout() -> bool {
     if effective_idle_timeout(None, None).is_some() {
         return true;
     }
-    registry().clients.lock().is_ok_and(|g| {
-        g.values()
-            .any(|c| effective_idle_timeout(Some(c), None).is_some())
-    })
+    registry()
+        .clients
+        .lock()
+        .values()
+        .any(|c| effective_idle_timeout(Some(c), None).is_some())
 }
 
 /// Reconcile the background idle checker against configured timeouts.
 pub fn reconcile_idle_checker() {
     if has_configured_idle_timeout() {
-        let mut guard = idle_handle()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = idle_handle().lock();
         if guard.is_none() {
             *guard = Some(tokio::spawn(async move {
                 let mut interval =
@@ -1573,9 +1445,7 @@ pub fn reconcile_idle_checker() {
             }));
         }
     } else {
-        let mut guard = idle_handle()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = idle_handle().lock();
         if let Some(handle) = guard.take() {
             handle.abort();
         }
@@ -1595,7 +1465,8 @@ fn maybe_stop_idle_checker() {
 pub fn is_idle_checker_running() -> bool {
     idle_handle()
         .lock()
-        .is_ok_and(|g| g.as_ref().is_some_and(|h| !h.is_finished()))
+        .as_ref()
+        .is_some_and(|h| !h.is_finished())
 }
 
 /// Sweep all registered clients against their idle timeout (omp `checkIdleClients`).
@@ -1612,20 +1483,15 @@ pub async fn check_idle_clients() {
 
 /// Shut down all clients (omp `shutdownAll`).
 pub async fn shutdown_all() {
-    if let Ok(mut guard) = idle_handle().lock() {
-        if let Some(handle) = guard.take() {
-            handle.abort();
-        }
+    if let Some(handle) = idle_handle().lock().take() {
+        handle.abort();
     }
-    let clients: Vec<LspClient> = registry()
-        .clients
-        .lock()
-        .map(|mut g| {
-            let v = g.values().cloned().collect();
-            g.clear();
-            v
-        })
-        .unwrap_or_default();
+    let clients: Vec<LspClient> = {
+        let mut g = registry().clients.lock();
+        let v = g.values().cloned().collect();
+        g.clear();
+        v
+    };
     for client in clients {
         let _ = client.shutdown_instance().await;
     }
@@ -1636,16 +1502,10 @@ pub async fn shutdown_all() {
 /// drop every client and kill its child process. Shared-mux links close with
 /// the process.
 pub fn kill_all_now() {
-    let clients: Vec<LspClient> = registry()
-        .clients
-        .lock()
-        .map(|mut g| g.drain().map(|(_, c)| c).collect())
-        .unwrap_or_default();
+    let clients: Vec<LspClient> = registry().clients.lock().drain().map(|(_, c)| c).collect();
     for client in clients {
-        if let Ok(mut guard) = client.inner.child.lock() {
-            if let Some(child) = guard.as_mut() {
-                let _ = child.start_kill();
-            }
+        if let Some(child) = client.inner.child.lock().as_mut() {
+            let _ = child.start_kill();
         }
     }
 }
@@ -1654,13 +1514,7 @@ impl LspClient {
     /// Canonical disk paths of currently open documents.
     #[must_use]
     pub fn open_file_paths(&self) -> Vec<PathBuf> {
-        self.inner
-            .open_files
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .cloned()
-            .collect()
+        self.inner.open_files.lock().keys().cloned().collect()
     }
 }
 
@@ -1678,16 +1532,8 @@ impl LspClient {
         )
         .await?;
         let key = uri_key(uri);
-        self.inner
-            .open_files
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&key);
-        self.inner
-            .diagnostics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&key);
+        self.inner.open_files.lock().remove(&key);
+        self.inner.diagnostics.lock().remove(&key);
         Ok(())
     }
 
@@ -1697,17 +1543,8 @@ impl LspClient {
     pub async fn refresh_file(&self, path: &Path) {
         let uri = file_to_uri(path);
         // Drop cached diagnostics so waiters don't accept stale unversioned rows.
-        self.inner
-            .diagnostics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&uri_key(&uri));
-        let open = self
-            .inner
-            .open_files
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&uri_key(&uri));
+        self.inner.diagnostics.lock().remove(&uri_key(&uri));
+        let open = self.inner.open_files.lock().contains_key(&uri_key(&uri));
         if !open {
             let Ok(text) = std::fs::read_to_string(path) else {
                 return;
@@ -1730,18 +1567,14 @@ impl LspClient {
             {
                 return;
             }
-            self.inner
-                .open_files
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    uri_key(&uri),
-                    OpenFile {
-                        version: 1,
-                        language_id,
-                        synced_text: text,
-                    },
-                );
+            self.inner.open_files.lock().insert(
+                uri_key(&uri),
+                OpenFile {
+                    version: 1,
+                    language_id,
+                    synced_text: text,
+                },
+            );
             self.inner
                 .last_activity
                 .store(now_millis(), Ordering::SeqCst);
@@ -1751,11 +1584,7 @@ impl LspClient {
             return;
         };
         let version = {
-            let mut files = self
-                .inner
-                .open_files
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut files = self.inner.open_files.lock();
             let Some(info) = files.get_mut(&uri_key(&uri)) else {
                 return;
             };

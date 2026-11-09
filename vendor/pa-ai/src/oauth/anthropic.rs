@@ -131,6 +131,8 @@ pub async fn refresh_anthropic_token(
 }
 
 fn authorization_url(challenge: &str, verifier: &str) -> String {
+    // invariant: AUTHORIZE_URL is a compile-time constant that parses.
+    #[allow(clippy::expect_used)]
     let mut url = Url::parse(AUTHORIZE_URL).expect("the authorize url parses");
     for (name, value) in [
         ("code", "true"),

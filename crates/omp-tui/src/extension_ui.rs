@@ -754,6 +754,8 @@ impl ExtensionUi {
         }
     }
 
+    // invariant: is_ascii_digit guarantees to_digit(10) succeeds.
+    #[allow(clippy::expect_used)]
     fn key_select(dialog: &mut ActiveDialog, key: KeyEvent) -> KeyResult {
         let DialogKind::Select {
             options,
@@ -771,6 +773,10 @@ impl ExtensionUi {
             && !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        // While the search query is typing, printable chars (including the
+        // vim `j`/`k` below) must reach the query, so the duplicate
+        // navigation bodies cannot be merged across the guard.
+        #[allow(clippy::match_same_arms)]
         match key.code {
             KeyCode::Esc => return KeyResult::Cancel,
             KeyCode::Enter => {
@@ -1453,7 +1459,7 @@ mod tests {
         let mut ui = ExtensionUi::new();
         ui.push(&json!({"type":"extension_ui_request","id":"i1","method":"input","title":"Key"}));
         assert!(ui
-            .poll_deadlines(Instant::now() + Duration::from_secs(60))
+            .poll_deadlines(Instant::now() + Duration::from_mins(1))
             .is_empty());
         assert!(
             ui.is_active(),

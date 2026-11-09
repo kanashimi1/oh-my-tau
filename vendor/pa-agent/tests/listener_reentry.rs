@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // vendored third-party tests: the sync-bridge rule applies to omp-rs first-party crates only
 //! Regression: sequential runs must not wedge when an event listener calls
 //! back into the agent (state reads, etc.) while a previous turn's events are
 //! still being dispatched.

@@ -289,7 +289,9 @@ fn has_value(details: Option<&Value>, key: &str) -> bool {
 }
 
 /// Glob transcript rows (TS `globToolRenderer.renderCall/renderResult`).
+/// One pass over call + result shapes, mirroring the TS renderer.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn glob_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
     let args = args_of(call);
     let paths = path_list(args);
@@ -540,7 +542,8 @@ fn style_search_line(theme: &Theme, line: &str) -> Span<'static> {
     )
 }
 
-/// TS `renderBudgetedSearchGroups`.
+/// TS `renderBudgetedSearchGroups`. The budget walk is one pass by design.
+#[allow(clippy::too_many_lines)]
 fn budgeted_groups(
     theme: &Theme,
     groups: &[Vec<usize>],
@@ -627,14 +630,21 @@ fn budgeted_groups(
             "{} ",
             theme.symbol(if last { "tree.last" } else { "tree.branch" })
         );
-        let cont = if last {
+        let continuation = if last {
             "   ".to_owned()
         } else {
             format!("{}  ", theme.symbol("tree.vertical"))
         };
         for (j, &i) in g.iter().enumerate() {
             out.push(Line::from(vec![
-                dim_span(theme, if j == 0 { prefix.clone() } else { cont.clone() }),
+                dim_span(
+                    theme,
+                    if j == 0 {
+                        prefix.clone()
+                    } else {
+                        continuation.clone()
+                    },
+                ),
                 style_search_line(theme, lines[i]),
             ]));
         }
@@ -654,7 +664,9 @@ fn budgeted_groups(
 }
 
 /// Grep transcript rows (TS `grepToolRenderer.renderCall/renderResult`).
+/// One pass over call + result shapes, mirroring the TS renderer.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn grep_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
     let args = args_of(call);
     let pattern = args
@@ -875,7 +887,7 @@ mod tests {
         assert!(!is_marked_match("# src/lib.rs"));
     }
 
-    fn plain(lines: Vec<Line<'static>>) -> Vec<String> {
+    fn plain(lines: &[Line<'static>]) -> Vec<String> {
         lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -896,7 +908,7 @@ mod tests {
                 }
             }
         });
-        let rows = plain(grep_lines(&call, false, &theme));
+        let rows = plain(&grep_lines(&call, false, &theme));
         assert_eq!(rows[0], " ⌕ Grep: beta 1 match · 1 file · in .");
         assert_eq!(rows[1], " └─ # e2e-new.txt#0063");
         assert_eq!(rows[2], "    *2│beta");
@@ -913,7 +925,7 @@ mod tests {
                 "scopePath": ".", "fileCount": 2, "files": ["e2e-new.txt", "e2e-read-me.txt"]
             }}
         });
-        let rows = plain(glob_lines(&call, false, &theme));
+        let rows = plain(&glob_lines(&call, false, &theme));
         assert_eq!(rows[0], " ⌕ Glob: *.txt 2 files · in .");
         assert_eq!(rows[1], " ├─ ◦ e2e-new.txt");
         assert_eq!(rows[2], " └─ ◦ e2e-read-me.txt");
@@ -924,11 +936,11 @@ mod tests {
         let theme = Theme::default();
         let call = serde_json::json!({"name":"grep","arguments":{"pattern":"x","path":"src"}});
         assert_eq!(
-            plain(grep_lines(&call, false, &theme))[0],
+            plain(&grep_lines(&call, false, &theme))[0],
             " ◷ Grep: x in src"
         );
         let call = serde_json::json!({"name":"glob","arguments":{}});
-        assert_eq!(plain(glob_lines(&call, false, &theme))[0], " ◷ Glob: *");
+        assert_eq!(plain(&glob_lines(&call, false, &theme))[0], " ◷ Glob: *");
     }
 
     #[test]
@@ -974,6 +986,7 @@ mod tests {
 
     #[test]
     fn grep_truncated_lists_more_matches() {
+        #[allow(clippy::format_collect)] // test fixture; a bytecount-style dep is not warranted
         let body: String = (1..=10)
             .map(|i| format!("src/lib.rs:{i}: match line {i}\n\n"))
             .collect();

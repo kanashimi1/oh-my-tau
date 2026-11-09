@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use futures::FutureExt as _;
+
 use crate::abort::{is_abort_error, AbortSignal};
 use crate::types::{
     AfterToolCallContext, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult,
@@ -127,13 +129,14 @@ async fn prepare_tool_call_inner(
 }
 
 pub(crate) struct ExecutedToolCallOutcome {
-    result: AgentToolResult,
-    is_error: bool,
+    pub(crate) result: AgentToolResult,
+    pub(crate) is_error: bool,
 }
 
 /// Race the tool against abort, stream `tool_execution_update` events
 /// through a background emitter task, and return an error tool result when
 /// the tool fails (or aborts, with the TS message "Tool execution aborted").
+#[allow(clippy::too_many_lines)] // ported TS orchestration: race, stream events, abort handling
 pub(crate) async fn execute_prepared_tool_call(
     prepared: &PreparedToolCall,
     signal: Option<&AbortSignal>,
@@ -173,16 +176,27 @@ pub(crate) async fn execute_prepared_tool_call(
         })
     };
 
-    let execute_result = race_with_abort(
-        (Arc::clone(&prepared.tool)).execute(
-            prepared.tool_call.id.clone(),
-            prepared.args.clone(),
-            signal.cloned().unwrap_or_default(),
-            on_update,
-        ),
-        signal,
-    )
-    .await;
+    // A panicking tool fails its own call, not the turn: building the future
+    // happens inside the guarded async block, so a panic before the first
+    // poll is caught too.
+    let tool = Arc::clone(&prepared.tool);
+    let tool_call_id = prepared.tool_call.id.clone();
+    let tool_args = prepared.args.clone();
+    let tool_signal = signal.cloned().unwrap_or_default();
+    let guarded = std::panic::AssertUnwindSafe(async move {
+        tool.execute(tool_call_id, tool_args, tool_signal, on_update)
+            .await
+    })
+    .catch_unwind()
+    .map(|outcome| {
+        outcome.unwrap_or_else(|payload| {
+            Err(anyhow::anyhow!(
+                "Tool panicked: {}",
+                panic_message(payload.as_ref())
+            ))
+        })
+    });
+    let execute_result = race_with_abort(guarded, signal).await;
 
     accepting_updates.store(false, std::sync::atomic::Ordering::SeqCst);
     drop(update_tx);
@@ -243,6 +257,15 @@ pub(crate) async fn execute_prepared_tool_call(
             }
         }
     }
+}
+
+/// Text of a caught panic payload (`panic!` with a literal or a format string).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
 }
 
 fn error_tool_result(signal: Option<&AbortSignal>, error: &anyhow::Error) -> AgentToolResult {

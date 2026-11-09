@@ -1,0 +1,27 @@
+[package]
+name = "tau"
+version = "0.1.0"
+description = "Tau: omt desktop app (Tauri 2)"
+edition = "2021"
+rust-version = "1.77"
+
+# Standalone workspace: the desktop shell is intentionally NOT a member of
+# the omp-rs root workspace. Give it its own workspace root so builds here
+# are independent of the root members.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+xcap = "0.7"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry", "Win32_Graphics_Dwm"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+tauri-winrt-notification = "0.7"
+url = "2"
+tauri-plugin-single-instance = "2"

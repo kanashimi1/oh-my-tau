@@ -50,6 +50,8 @@ pub fn truncate_tool_result_for_summary(text: &str) -> String {
 
 /// `escapeSummaryBoundaryTags`: stop untrusted text from closing harness-owned boundaries.
 #[must_use]
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 pub fn escape_summary_boundary_tags(text: &str) -> String {
     static CELL: OnceLock<Regex> = OnceLock::new();
     let re = CELL.get_or_init(|| {

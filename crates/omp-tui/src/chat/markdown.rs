@@ -99,7 +99,10 @@ fn inline_spans(text: &str, st: &Styles) -> Vec<Span<'static>> {
     parse_inline(text, st, st.text)
 }
 
-#[allow(clippy::too_many_lines)] // delimiter-heavy inline parser
+#[allow(clippy::too_many_lines)]
+// delimiter-heavy inline parser
+// invariant: every unwrap/expect is guarded by an is_some/contains check on the same string immediately above.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn parse_inline(text: &str, st: &Styles, base: Style) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
@@ -432,7 +435,10 @@ fn parse_blocks(src: &str) -> Vec<Block> {
 /// [`parse_blocks`] over pre-split lines, pairing every block with its end:
 /// the index of the first line it did not consume. Deciding where a block
 /// ends looks at most one line past that end (see [`block_is_final`]).
-#[allow(clippy::too_many_lines)] // block-kind dispatch table
+#[allow(clippy::too_many_lines)]
+// block-kind dispatch table
+// invariant: finds are guarded by contains/starts_with checks; n is bounded by 1..=6.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn parse_block_spans(lines: &[&str]) -> Vec<(Block, usize)> {
     let mut blocks = Vec::new();
     let mut ends = Vec::new();
@@ -1229,8 +1235,12 @@ mod tests {
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
         let text = render(src, width, &theme());
+        // Snapshot canvases are test-sized, far below u16 range.
+        #[allow(clippy::cast_possible_truncation)]
         let height = (text.lines.len() as u16 + 2).max(1);
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+        // Snapshot canvases are test-sized, far below u16 range.
+        #[allow(clippy::cast_possible_truncation)]
         for (y, line) in text.lines.iter().enumerate() {
             buffer.set_line(0, y as u16, line, width);
         }
@@ -1466,7 +1476,11 @@ mod tests {
         }
 
         fn below(&mut self, n: usize) -> usize {
-            (self.next() % n as u64) as usize
+            // Test RNG modulo: `n` is a small row count.
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                (self.next() % n as u64) as usize
+            }
         }
     }
 
@@ -1565,9 +1579,13 @@ mod tests {
         let mut stream = MarkdownStream::new();
         let mut doc = String::new();
         for n in 0..50 {
-            doc.push_str(&format!(
-                "## S{n}\n\nText {n}.\n\n```rs\nlet v = {n};\n```\n\n"
-            ));
+            doc.push_str("## S");
+            doc.push_str(&n.to_string());
+            doc.push_str("\n\nText ");
+            doc.push_str(&n.to_string());
+            doc.push_str(".\n\n```rs\nlet v = ");
+            doc.push_str(&n.to_string());
+            doc.push_str(";\n```\n\n");
             let _ = stream.render(&doc, 60, &theme);
         }
         doc.push_str("tail");

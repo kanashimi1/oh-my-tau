@@ -10,6 +10,9 @@
 //! Plan state lives in a process-wide map keyed by session id (the gate is
 //! process-wide and reflects the single live runtime/session).
 
+// Ported from the omt lineage: the before-tool-call gate hook is wired in the omt lineage; omp-rs tool-spawn integration pending (the planning instruction still steers the model).
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -129,12 +132,94 @@ pub fn parse_args(args: &str) -> PlanCommand {
 }
 
 pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
+    use crate::slash_extra::dialog;
+    let bare = args.trim().is_empty();
+    // UI surfaces get the TS-style selector menu; print/JSON keep the toggle.
+    if bare && dialog::has_ui() {
+        return menu(rt).await;
+    }
+    // TS parity: confirm before discarding a captured plan (only when active).
+    if args.trim().eq_ignore_ascii_case("off")
+        && dialog::has_ui()
+        && lock_state()
+            .get(&rt.session_id())
+            .is_some_and(|p| p.enabled)
+        && dialog::confirm(
+            rt,
+            "Exit plan mode?",
+            "This exits plan mode without approving a plan.",
+        )
+        .await
+            == Some(false)
+    {
+        output(rt, "Plan mode kept.");
+        return handled();
+    }
     match parse_args(args) {
         PlanCommand::Task(task) => enter_and_plan(rt, task).await,
         PlanCommand::Approve => approve(rt).await,
         PlanCommand::Off => leave(rt),
         PlanCommand::Status => status(rt),
         PlanCommand::Toggle => toggle(rt),
+    }
+}
+
+/// Bare `/plan` with a UI: selector menu (TS `handlePlanModeCommand` surfaces:
+/// enter with a task, approve the captured plan, status, exit).
+async fn menu(rt: &Arc<Runtime>) -> Outcome {
+    use crate::slash_extra::dialog::{input, select_with, Choice, SelectStyle};
+    let active = lock_state()
+        .get(&rt.session_id())
+        .is_some_and(|p| p.enabled);
+    let mut choices = vec![Choice::with(
+        "Plan a task…",
+        "describe the task; the agent investigates read-only and drafts a plan",
+    )];
+    if active {
+        choices.push(Choice::with(
+            "Approve plan",
+            "leave plan mode and execute the captured plan",
+        ));
+    }
+    choices.push(Choice::with("Status", "show the task and plan state"));
+    choices.push(Choice::with(
+        if active {
+            "Exit plan mode"
+        } else {
+            "Enter plan mode"
+        },
+        if active {
+            "disable the read-only gate without executing the plan"
+        } else {
+            "enable the read-only gate; your next prompt plans"
+        },
+    ));
+    let title = if active { "Plan mode: ON" } else { "Plan mode" };
+    let Some(index) = select_with(rt, title, &choices, SelectStyle::default()).await else {
+        return handled();
+    };
+    let last = choices.len() - 1;
+    match index {
+        0 => {
+            let Some(task) = input(rt, "Planning task", Some("What should be planned?")).await
+            else {
+                return handled();
+            };
+            let task = task.trim();
+            if task.is_empty() {
+                return handled();
+            }
+            enter_and_plan(rt, task.to_string()).await
+        }
+        i if active && i == 1 => approve(rt).await,
+        i if i == last => {
+            if active {
+                leave(rt)
+            } else {
+                toggle(rt)
+            }
+        }
+        _ => status(rt),
     }
 }
 

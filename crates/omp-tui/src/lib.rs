@@ -47,14 +47,6 @@ pub mod theme;
 pub mod tools;
 pub mod word_completion;
 
-/// Process-wide guards for tests that touch global state.
-#[cfg(test)]
-pub(crate) mod test_support {
-    /// `HOME` is process-global: every test that sets it must hold this for
-    /// its whole duration (one mutex shared by all modules).
-    pub(crate) static HOME_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-}
-
 use std::path::PathBuf;
 
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -106,4 +98,12 @@ pub struct RunConfig {
 /// Returns an error if the terminal cannot be initialized or a draw fails.
 pub async fn run(cfg: RunConfig, port: impl RuntimePort) -> anyhow::Result<()> {
     controller::run(cfg, port).await
+}
+
+/// Process-wide guards for tests that touch global state.
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// `HOME` is process-global: every test that sets it must hold this for
+    /// its whole duration (one mutex shared by all modules).
+    pub(crate) static HOME_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 }

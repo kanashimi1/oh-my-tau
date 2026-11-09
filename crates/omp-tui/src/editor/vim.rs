@@ -559,7 +559,7 @@ fn bracket_object(
 /// ends the buffer. Always linewise.
 fn paragraph_object(buf: &VimBuffer, around: bool) -> TextObjectRange {
     let last = buf.lines.len().saturating_sub(1);
-    let blank = |line: usize| buf.lines.get(line).map_or(true, |l| l.trim().is_empty());
+    let blank = |line: usize| buf.lines.get(line).is_none_or(|l| l.trim().is_empty());
     let target = blank(buf.cursor_line);
     let mut first = buf.cursor_line;
     let mut end = buf.cursor_line;
@@ -651,13 +651,13 @@ fn find_char(line: &str, col: usize, ch: char, search: CharSearch) -> Option<usi
             None
         }
         CharSearch::BackwardFind | CharSearch::BackwardTo => {
-            let mut i = col as isize - 1;
+            let mut i = col.cast_signed() - 1;
             while i >= 0 {
-                if chars[i as usize] == ch {
+                if chars[i.cast_unsigned()] == ch {
                     return Some(if search == CharSearch::BackwardTo {
-                        (i as usize).saturating_add(1)
+                        i.cast_unsigned().saturating_add(1)
                     } else {
-                        i as usize
+                        i.cast_unsigned()
                     });
                 }
                 i -= 1;
@@ -744,7 +744,7 @@ impl VimState {
 
     /// Clamp a position so the Normal-mode cursor rests *on* a char rather
     /// than past the last.
-    fn clamp_normal(&self, buf: &VimBuffer, pos: VimPosition) -> VimPosition {
+    fn clamp_normal(buf: &VimBuffer, pos: VimPosition) -> VimPosition {
         let line = pos.line.min(buf.lines.len().saturating_sub(1));
         let text = buf.lines.get(line).map_or("", String::as_str);
         VimPosition {
@@ -791,7 +791,7 @@ impl VimState {
                 true,
                 self.apply_motion(
                     buf,
-                    Motion {
+                    &Motion {
                         to: VimPosition { line, col: 0 },
                         inclusive: false,
                         linewise: true,
@@ -826,7 +826,7 @@ impl VimState {
         }
 
         if let Some(motion) = self.resolve_motion(k, buf) {
-            return (true, self.apply_motion(buf, motion));
+            return (true, self.apply_motion(buf, &motion));
         }
         // `f`/`F`/`t`/`T` set `pending_char` and defer to the next key.
         if self.pending_char.is_some() {
@@ -853,7 +853,7 @@ impl VimState {
                 vec![
                     VimCommand::Mode(VimMode::Normal),
                     VimCommand::Move {
-                        to: self.clamp_normal(buf, buf.cursor()),
+                        to: Self::clamp_normal(buf, buf.cursor()),
                     },
                 ],
             );
@@ -877,6 +877,8 @@ impl VimState {
         (false, Vec::new())
     }
 
+    // One arm per motion key, mirroring the TS vim motion table.
+    #[allow(clippy::too_many_lines)]
     fn resolve_motion(&mut self, k: char, buf: &VimBuffer) -> Option<Motion> {
         let count = self.peek_count();
         let line = buf.line();
@@ -908,11 +910,11 @@ impl VimState {
                 })
             }
             'j' | 'k' => {
-                let delta = count as isize;
+                let delta = isize::try_from(count).unwrap_or(isize::MAX);
                 let delta = if k == 'j' { delta } else { -delta };
-                let target = (buf.cursor_line as isize + delta)
-                    .clamp(0, buf.lines.len().saturating_sub(1) as isize)
-                    as usize;
+                let target = (buf.cursor_line.cast_signed() + delta)
+                    .clamp(0, buf.lines.len().saturating_sub(1).cast_signed())
+                    .cast_unsigned();
                 // Anchor the desired column on the first vertical move, then
                 // keep reusing it; the host clamps to each line's length.
                 self.desired_col.get_or_insert(buf.cursor_col);
@@ -1073,7 +1075,7 @@ impl VimState {
         let inclusive = matches!(search, CharSearch::ForwardFind | CharSearch::BackwardFind);
         self.apply_motion(
             buf,
-            Motion {
+            &Motion {
                 to: VimPosition {
                     line: buf.cursor_line,
                     col: cur,
@@ -1085,8 +1087,10 @@ impl VimState {
     }
 
     /// Turn a resolved motion into either a cursor move, a selection
-    /// extension, or an operator range.
-    fn apply_motion(&mut self, buf: &VimBuffer, motion: Motion) -> Vec<VimCommand> {
+    /// extension, or an operator range. One branch per operator/motion
+    /// combination, mirroring the TS vim layer.
+    #[allow(clippy::too_many_lines)]
+    fn apply_motion(&mut self, buf: &VimBuffer, motion: &Motion) -> Vec<VimCommand> {
         let operator = self.operator.take();
         self.take_count();
 
@@ -1103,7 +1107,7 @@ impl VimState {
                         .min(buf.lines.get(motion.to.line).map_or(0, |l| line_len(l))),
                 }
             } else {
-                self.clamp_normal(buf, motion.to)
+                Self::clamp_normal(buf, motion.to)
             };
             return vec![VimCommand::Move { to }];
         }
@@ -1170,7 +1174,6 @@ impl VimState {
     /// `iw`, `a(`, `i"`, `ap`, … — resolved around the cursor rather than
     /// from a motion endpoint.
     fn resolve_text_object(
-        &self,
         k: char,
         around: bool,
         buf: &VimBuffer,
@@ -1210,7 +1213,7 @@ impl VimState {
         let operator = self.operator.take();
         self.text_object = None;
         let count = self.take_count();
-        let Some(range) = self.resolve_text_object(k, around, buf, count) else {
+        let Some(range) = Self::resolve_text_object(k, around, buf, count) else {
             return Vec::new();
         };
         if let Some(operator) = operator {
@@ -1248,6 +1251,8 @@ impl VimState {
         commands
     }
 
+    // One arm per Normal-mode key, mirroring the TS vim command table.
+    #[allow(clippy::too_many_lines)]
     fn handle_normal_key(&mut self, k: char, buf: &VimBuffer) -> Vec<VimCommand> {
         let line = buf.line();
         let count = self.peek_count();
@@ -1422,7 +1427,7 @@ impl VimState {
                     return vec![
                         VimCommand::Mode(VimMode::Normal),
                         VimCommand::Move {
-                            to: self.clamp_normal(buf, buf.cursor()),
+                            to: Self::clamp_normal(buf, buf.cursor()),
                         },
                     ];
                 }

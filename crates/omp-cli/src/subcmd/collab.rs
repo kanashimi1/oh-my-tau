@@ -18,6 +18,7 @@ const USAGE: &str =
 /// Registry IPC is async; this subcommand surface is sync — and `run` is
 /// called from inside the CLI's runtime, so `block_on` must happen off that
 /// runtime (dedicated thread, `subcmd/stats.rs` pattern).
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 fn block_on_registry<T>(fut: impl Future<Output = anyhow::Result<T>> + Send + 'static) -> Result<T>
 where
     T: Send + 'static,
@@ -177,13 +178,11 @@ fn print_link(selector: &str, view: bool, json_out: bool) -> Result<i32> {
 /// # Errors
 /// Unknown action, bad flags, or registry I/O failure.
 pub fn run(args: &[String]) -> Result<i32> {
-    let (action, rest) = match args.split_first() {
-        Some((a, r)) => (a.as_str(), r),
-        None => {
-            println!("{USAGE}");
-            return Ok(0);
-        }
+    let Some((action, rest)) = args.split_first() else {
+        println!("{USAGE}");
+        return Ok(0);
     };
+    let action = action.as_str();
     match action {
         "list" => {
             let json_out = parse_list(rest)?;

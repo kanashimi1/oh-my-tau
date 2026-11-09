@@ -1,5 +1,5 @@
 //! TS `transformMessages` (`providers/transform-messages.ts`): the cross-model history rewrite the
-//! Anthropic Messages and OpenAI Responses request builders run before conversion — thinking
+//! Anthropic Messages and `OpenAI` Responses request builders run before conversion — thinking
 //! blocks re-bound to the target model, tool-call ids normalized, orphan tool calls answered and
 //! stale tool results demoted to notes.
 
@@ -148,6 +148,8 @@ fn normalize_anthropic_target_tool_call_id(
     format!("toolu_{}", base36_hash(id))
 }
 
+// invariant: a SHA-256 digest always has >= 8 bytes; the digits emitted are ASCII.
+#[allow(clippy::expect_used)]
 fn base36_hash(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(value.as_bytes());
@@ -458,7 +460,7 @@ pub(crate) fn transform_messages(
      -> Option<ToolResultMessage> {
         let entries = real.get_mut(id)?;
         for entry in entries.iter_mut() {
-            if entry.2 || (entry.0 as i64) <= after {
+            if entry.2 || i64::try_from(entry.0).unwrap_or(i64::MAX) <= after {
                 continue;
             }
             entry.2 = true;
@@ -557,12 +559,12 @@ pub(crate) fn transform_messages(
                     result.push(msg.clone());
                     pending_aborted = calls;
                     pending_aborted_ts = Some(a.timestamp);
-                    pending_aborted_start = i as i64;
+                    pending_aborted_start = i64::try_from(i).unwrap_or(i64::MAX);
                     continue;
                 }
                 if !calls.is_empty() {
                     pending_calls = calls;
-                    pending_start = i as i64;
+                    pending_start = i64::try_from(i).unwrap_or(i64::MAX);
                 }
                 result.push(msg.clone());
             }

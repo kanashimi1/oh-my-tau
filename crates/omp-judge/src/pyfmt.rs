@@ -1,6 +1,8 @@
 //! Python-compatible text helpers (`json.dumps(ensure_ascii=False)`, `str()`, truthiness,
 //! char slicing) so the Rust port reproduces the Python builders byte for byte.
 
+use std::fmt::Write as _;
+
 use serde_json::Value;
 
 /// `s[:n]` on characters.
@@ -79,7 +81,7 @@ fn py_quote(s: &str) -> String {
                 out.push(c);
             }
             c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32))
+                let _ = write!(out, "\\x{:02x}", c as u32);
             }
             c => out.push(c),
         }

@@ -32,6 +32,8 @@ fn read4(data: &[u8]) -> u64 {
 }
 
 #[inline(always)]
+// invariant: callers only invoke read8 on slices of at least 8 bytes.
+#[allow(clippy::expect_used)]
 fn read8(data: &[u8]) -> u64 {
     u64::from_le_bytes(data[..8].try_into().expect("read8 needs 8 bytes"))
 }

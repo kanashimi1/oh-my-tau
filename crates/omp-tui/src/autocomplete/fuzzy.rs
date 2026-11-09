@@ -147,6 +147,12 @@ struct CharacterMatch {
     span: usize,
 }
 
+// Query/text lengths are far below f64's 52-bit mantissa, so these casts are exact.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn score_characters(query_lower: &[char], text_lower: &[char]) -> CharacterMatch {
     if query_lower.is_empty() {
         return CharacterMatch {
@@ -175,19 +181,19 @@ fn score_characters(query_lower: &[char], text_lower: &[char]) -> CharacterMatch
         }
         if c == query_lower[query_index] {
             if first_match_index < 0 {
-                first_match_index = i as isize;
+                first_match_index = i.cast_signed();
             }
-            if last_match_index == i as isize - 1 {
+            if last_match_index == i.cast_signed() - 1 {
                 consecutive_matches += 1;
                 score -= (consecutive_matches * 5) as f64;
             } else {
                 consecutive_matches = 0;
                 if last_match_index >= 0 {
-                    score += (i as isize - last_match_index - 1) as f64 * 2.0;
+                    score += (i.cast_signed() - last_match_index - 1) as f64 * 2.0;
                 }
             }
             score += i as f64 * 0.1;
-            last_match_index = i as isize;
+            last_match_index = i.cast_signed();
             query_index += 1;
         }
     }
@@ -203,7 +209,7 @@ fn score_characters(query_lower: &[char], text_lower: &[char]) -> CharacterMatch
     CharacterMatch {
         matches: true,
         score,
-        span: (last_match_index - first_match_index + 1) as usize,
+        span: (last_match_index - first_match_index + 1).cast_unsigned(),
     }
 }
 
@@ -228,6 +234,12 @@ fn build_alphanumeric_swap_queries(query_lower: &[char]) -> Vec<String> {
     variants
 }
 
+// Query/text lengths are far below f64's 52-bit mantissa, so these casts are exact.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn with_position(score: f64, index: usize) -> f64 {
     score + index as f64 * 0.01
 }
@@ -257,7 +269,7 @@ fn find_subsequence(haystack: &[char], needle: &[char], from: usize) -> Option<u
 
 /// Offset of the first whole-word occurrence of `phrase` in `normalized`, or
 /// None (TS `findWordBoundaryPhrase` — rescans past shadowed hits only for
-/// needles >= MIN_SHADOW_RESCAN_LENGTH).
+/// needles >= `MIN_SHADOW_RESCAN_LENGTH`).
 fn find_word_boundary_phrase(normalized: &[char], phrase: &[char]) -> Option<usize> {
     if phrase.is_empty() {
         return None;
@@ -307,6 +319,12 @@ fn find_compact_word_start(index: &SearchIndex, needle: &[char]) -> Option<usize
 }
 
 /// Score one query token against one word (TS `scoreTokenAgainstWord`).
+// Query/text lengths are far below f64's 52-bit mantissa, so these casts are exact.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn score_token_against_word(token: &[char], word: &SearchWord) -> Option<FuzzyMatch> {
     let word_chars: Vec<char> = word.text.chars().collect();
     if word_chars == token {
@@ -356,6 +374,12 @@ fn starts_with(haystack: &[char], prefix: &[char]) -> bool {
 
 /// Acronym match: token is the leading letters of consecutive words
 /// (TS `scoreAcronym`).
+// Query/text lengths are far below f64's 52-bit mantissa, so these casts are exact.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn score_acronym(token: &[char], index: &SearchIndex) -> Option<FuzzyMatch> {
     if !(2..=4).contains(&token.len()) || index.words.is_empty() {
         return None;
@@ -369,10 +393,10 @@ fn score_acronym(token: &[char], index: &SearchIndex) -> Option<FuzzyMatch> {
             continue;
         }
         if first_ordinal < 0 {
-            first_ordinal = word.ordinal as isize;
+            first_ordinal = word.ordinal.cast_signed();
             first_text_index = word.index;
         }
-        last_ordinal = word.ordinal as isize;
+        last_ordinal = word.ordinal.cast_signed();
         query_index += 1;
         if query_index == token.len() {
             break;
@@ -471,6 +495,12 @@ fn prepare_query(query: &str) -> Option<PreparedQuery> {
     })
 }
 
+// Query/text lengths are far below f64's 52-bit mantissa, so these casts are exact.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn fuzzy_match_core(pq: Option<&PreparedQuery>, index: &SearchIndex) -> FuzzyMatch {
     let Some(pq) = pq else {
         return FuzzyMatch {
@@ -612,7 +642,11 @@ mod tests {
     #[test]
     fn empty_query_matches_everything() {
         assert!(matches("", "anything"));
-        assert_eq!(fuzzy_match("", "anything").score, 0.0);
+        // The empty-query score is the literal 0.0, not a computed float.
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(fuzzy_match("", "anything").score, 0.0);
+        }
     }
 
     #[test]
@@ -653,7 +687,7 @@ mod tests {
     #[test]
     fn rank_sorts_best_first() {
         let items = vec!["reimage thing", "image provider", "imaginary"];
-        let ranked = fuzzy_rank(&items, "image", |s| s.to_string());
+        let ranked = fuzzy_rank(&items, "image", std::string::ToString::to_string);
         assert_eq!(ranked[0].item, "image provider");
     }
 

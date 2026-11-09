@@ -1,6 +1,6 @@
 //! Laya judge inference (ONNX via `laya-ort`) for judge views.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
@@ -60,9 +60,9 @@ impl Scores {
     }
 }
 
-/// Loaded judge. Owns the ONNX session; not `Sync` (use from one thread).
+/// Loaded judge. Talks to the shared judge daemon ([`crate::shared`]); use from one thread.
 pub struct Scorer {
-    judge: crate::onnx::Judge,
+    judge: crate::shared::Client,
     questions: Value,
 }
 
@@ -70,12 +70,7 @@ impl Scorer {
     /// # Errors
     /// Missing/invalid checkpoint or ONNX file.
     pub fn load(paths: &ModelPaths) -> Result<Self> {
-        let judge = crate::onnx::Judge::load(
-            Path::new(&paths.ckpt),
-            Path::new(&paths.onnx),
-            paths.threads.max(1),
-        )
-        .with_context(|| {
+        let judge = crate::shared::Client::connect(paths).with_context(|| {
             format!(
                 "load laya judge (ckpt {}, onnx {})",
                 paths.ckpt.display(),

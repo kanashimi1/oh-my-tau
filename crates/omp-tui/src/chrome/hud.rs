@@ -89,27 +89,39 @@ fn row_parts(entry: &HudEntry, width: usize) -> (String, Option<(char, usize)>, 
     // Tail first (spec §11.1): counter, cost/rate tail, failed note.
     let mut tail = String::new();
     match entry.total {
-        Some(total) => tail.push_str(&format!("{}/{}", entry.done, total)),
-        None => tail.push_str(&format!("{}", entry.done)),
+        Some(total) => {
+            tail.push_str(&entry.done.to_string());
+            tail.push('/');
+            tail.push_str(&total.to_string());
+        }
+        None => tail.push_str(&entry.done.to_string()),
     }
     if let Some(t) = &entry.tail {
         if !t.is_empty() {
-            tail.push_str(&format!(" · {t}"));
+            tail.push_str(" · ");
+            tail.push_str(t);
         }
     }
     if entry.failed > 0 {
-        tail.push_str(&format!(" · {} failed", entry.failed));
+        tail.push_str(" · ");
+        tail.push_str(&entry.failed.to_string());
+        tail.push_str(" failed");
     }
     // Bar: filled `━` / empty `─`, width min(18, remaining-1), floor 4.
     let remaining = width.saturating_sub(tail.chars().count() + 1);
-    let bar_width = remaining.min(18).max(4);
+    let bar_width = remaining.clamp(4, 18);
     let bar = entry.total.map(|total| {
-        let filled = if total == 0 {
-            0
-        } else {
-            ((bar_width as u64 * entry.done) / total).min(bar_width as u64)
-        };
-        (if filled > 0 { '━' } else { '─' }, filled as usize)
+        // Bar geometry is at most `bar_width` (≤ 18), so the u64 math is
+        // far below usize bounds.
+        #[allow(clippy::cast_possible_truncation)]
+        let filled = u64::try_from(bar_width)
+            .unwrap_or(18)
+            .checked_mul(entry.done)
+            .and_then(|n| n.checked_div(total))
+            .unwrap_or(0)
+            .min(u64::try_from(bar_width).unwrap_or(18))
+            .min(u64::from(u16::MAX)) as usize;
+        (if filled > 0 { '━' } else { '─' }, filled)
     });
     (entry.label.clone(), bar, tail)
 }
@@ -127,7 +139,7 @@ pub fn render_hud_row(entry: &HudEntry, width: usize, theme: &Theme) -> Line<'st
     // Bar width: min(18, remaining-1), floor 4 (progress-bar min).
     let remaining = (width - tail_len).saturating_sub(1);
     let bar_len = if bar.is_some() {
-        remaining.min(18).max(4)
+        remaining.clamp(4, 18)
     } else {
         0
     };
@@ -137,15 +149,15 @@ pub fn render_hud_row(entry: &HudEntry, width: usize, theme: &Theme) -> Line<'st
     let mut spans: Vec<Span<'static>> = Vec::new();
     if show_label {
         spans.push(Span::styled(
-            label.clone(),
+            label,
             Style::default().fg(theme.color("text_muted")),
         ));
         spans.push(Span::raw(" "));
     }
     if let Some((glyph, filled)) = bar {
         let filled = filled.min(bar_len);
-        let filled_str: String = std::iter::repeat(glyph).take(filled).collect();
-        let empty_str: String = std::iter::repeat('─').take(bar_len - filled).collect();
+        let filled_str: String = std::iter::repeat_n(glyph, filled).collect();
+        let empty_str: String = std::iter::repeat_n('─', bar_len - filled).collect();
         spans.push(Span::styled(
             filled_str,
             Style::default().fg(theme.color("accent")),
@@ -171,7 +183,9 @@ impl Component for HudProgress {
         let shown = self.rows.len().min(area.height as usize);
         let start = self.rows.len() - shown;
         for (i, entry) in self.rows[start..].iter().enumerate() {
-            let row = render_hud_row(entry, area.width as usize, theme);
+            let row = render_hud_row(entry, usize::from(area.width), theme);
+            // Row indices are bounded by the frame height (u16).
+            #[allow(clippy::cast_possible_truncation)]
             let area = Rect::new(area.x, area.y + i as u16, area.width, 1);
             frame.render_widget(ratatui::widgets::Paragraph::new(row), area);
         }

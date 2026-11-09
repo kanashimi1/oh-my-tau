@@ -1,8 +1,9 @@
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -37,7 +38,7 @@ impl PendingTable {
 type Pending = Arc<Mutex<PendingTable>>;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    m.lock()
 }
 
 /// One transport generation: the writer queue plus the waiters of requests
@@ -389,10 +390,7 @@ impl ExtHost {
     /// extension's load-time requests are not lost to the "not supported"
     /// race (`ReviewWave3`). Without a taker, messages keep buffering.
     pub fn take_incoming(&self) -> Option<mpsc::UnboundedReceiver<HostMessage>> {
-        let mut inc = self
-            .incoming
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inc = self.incoming.lock();
         let rx = inc.rx.take()?;
         if let Delivery::Pending(buf) = &mut inc.delivery {
             let buffered: Vec<_> = buf.drain(..).collect();
@@ -408,6 +406,8 @@ impl ExtHost {
     ///
     /// # Errors
     /// Fails when the host's stdin is closed.
+    // Kept `async` so in-crate callers can `.await` uniformly with the other host calls.
+    #[allow(clippy::unused_async)]
     pub async fn respond(&self, id: Value, result: Result<Value, String>) -> Result<()> {
         let msg = match result {
             Ok(v) => json!({"jsonrpc":"2.0","id":id,"result":v}),
@@ -431,7 +431,7 @@ impl ExtHost {
     fn send_request(
         &self,
         method: &str,
-        params: Value,
+        params: &Value,
     ) -> Result<oneshot::Receiver<Result<Value, String>>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut line =
@@ -460,7 +460,7 @@ impl ExtHost {
     ///
     /// # Errors
     /// Transport failure, host exit, or a JSON-RPC error response.
-    pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+    pub async fn request(&self, method: &str, params: &Value) -> Result<Value> {
         let rx = self.send_request(method, params)?;
         match rx.await {
             Ok(Ok(v)) => Ok(v),
@@ -499,7 +499,7 @@ impl ExtHost {
         if let Some(trace) = &self.trace {
             p["trace"] = json!(trace);
         }
-        let result: LoadResult = serde_json::from_value(self.request("load", p).await?)?;
+        let result: LoadResult = serde_json::from_value(self.request("load", &p).await?)?;
         let subscribed: HashSet<String> = result
             .loaded
             .iter()
@@ -507,10 +507,7 @@ impl ExtHost {
             .filter(|(_, n)| **n > 0)
             .map(|(ty, _)| ty.clone())
             .collect();
-        *self
-            .subscribed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(subscribed);
+        *self.subscribed.lock() = Some(subscribed);
         Ok(result)
     }
 
@@ -518,21 +515,14 @@ impl ExtHost {
     /// `ctx`, so handlers see the TS-live `ctx` (branch, context usage, idle state, ...). It never
     /// forces an emit that `has_handlers` would skip.
     pub fn set_ctx_provider(&self, f: Option<CtxProvider>) {
-        *self
-            .ctx_provider
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = f;
+        *self.ctx_provider.lock() = f;
     }
 
     fn provided_ctx(&self, ctx: Option<Value>, event_type: &str) -> Option<Value> {
         if ctx.is_some() {
             return ctx;
         }
-        let f = self
-            .ctx_provider
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let f = self.ctx_provider.lock().clone();
         f.and_then(|f| f(event_type))
     }
 
@@ -565,7 +555,7 @@ impl ExtHost {
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
-        Ok(serde_json::from_value(self.request("emit", p).await?)?)
+        Ok(serde_json::from_value(self.request("emit", &p).await?)?)
     }
 
     /// `true` unless the host is loaded and no extension subscribes to `event_type`
@@ -573,10 +563,7 @@ impl ExtHost {
     /// expensive payloads that `emit` would discard anyway.
     #[must_use]
     pub fn has_handlers(&self, event_type: &str) -> bool {
-        let subscribed = self
-            .subscribed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let subscribed = self.subscribed.lock();
         match subscribed.as_ref() {
             Some(s) => event_type == "session_shutdown" || s.contains(event_type),
             None => true,
@@ -615,7 +602,7 @@ impl ExtHost {
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
-        let rx = self.send_request("emit", p)?;
+        let rx = self.send_request("emit", &p)?;
         tokio::spawn(async move {
             let r = match rx.await {
                 Ok(Ok(v)) => serde_json::from_value(v).map_err(Into::into),
@@ -631,7 +618,7 @@ impl ExtHost {
     /// Transport failure.
     pub async fn list_tools(&self) -> Result<Vec<ToolInfo>> {
         Ok(serde_json::from_value(
-            self.request("list_tools", json!({})).await?,
+            self.request("list_tools", &json!({})).await?,
         )?)
     }
 
@@ -649,7 +636,7 @@ impl ExtHost {
         let ctx = self.provided_ctx(ctx, "call_tool");
         self.request(
             "call_tool",
-            json!({"name": name, "toolCallId": tool_call_id, "params": params, "ctx": ctx}),
+            &json!({"name": name, "toolCallId": tool_call_id, "params": params, "ctx": ctx}),
         )
         .await
     }
@@ -660,7 +647,7 @@ impl ExtHost {
     /// # Errors
     /// Transport failure.
     pub async fn cancel_tool(&self, tool_call_id: &str) -> Result<()> {
-        self.request("cancel_tool", json!({"toolCallId": tool_call_id}))
+        self.request("cancel_tool", &json!({"toolCallId": tool_call_id}))
             .await?;
         Ok(())
     }
@@ -669,14 +656,14 @@ impl ExtHost {
     /// Transport failure.
     pub async fn list_commands(&self) -> Result<Vec<CommandInfo>> {
         Ok(serde_json::from_value(
-            self.request("list_commands", json!({})).await?,
+            self.request("list_commands", &json!({})).await?,
         )?)
     }
 
     /// # Errors
     /// Unknown command, command failure, or transport failure.
     pub async fn call_command(&self, name: &str, args: &str) -> Result<Value> {
-        self.request("call_command", json!({"name": name, "args": args}))
+        self.request("call_command", &json!({"name": name, "args": args}))
             .await
     }
 
@@ -685,7 +672,7 @@ impl ExtHost {
     /// # Errors
     /// Transport failure.
     pub async fn set_ctx(&self, ctx: Value) -> Result<()> {
-        self.request("set_ctx", json!({ "ctx": ctx })).await?;
+        self.request("set_ctx", &json!({ "ctx": ctx })).await?;
         Ok(())
     }
 
@@ -695,8 +682,8 @@ impl ExtHost {
     /// Only on kill failure.
     pub async fn shutdown(&self) -> Result<()> {
         self.closing.store(true, Ordering::SeqCst);
-        let _ =
-            tokio::time::timeout(Duration::from_secs(2), self.request("shutdown", json!({}))).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.request("shutdown", &json!({})))
+            .await;
         let mut child = self.child.lock().await;
         if let Some(child) = child.as_mut() {
             if tokio::time::timeout(Duration::from_secs(2), child.wait())
@@ -1065,10 +1052,7 @@ fn route(msg: &Value, pending: &Pending, host: Option<Arc<ExtHost>>) {
                 params,
             };
             let Some(host) = host else { return };
-            let mut inc = host
-                .incoming
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut inc = host.incoming.lock();
             match &mut inc.delivery {
                 Delivery::Pending(buf) => buf.push_back(note),
                 Delivery::Live => {
@@ -1086,10 +1070,7 @@ fn route(msg: &Value, pending: &Pending, host: Option<Arc<ExtHost>>) {
             // One lock covers check-and-deliver: a request can no longer slip
             // between "no consumer yet" and the channel send.
             let delivered = {
-                let mut inc = host
-                    .incoming
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut inc = host.incoming.lock();
                 match &mut inc.delivery {
                     Delivery::Pending(buf) => {
                         buf.push_back(req);
@@ -1126,6 +1107,7 @@ fn emit_payload(event: &Value, skip: &[String]) -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::lifecycle::{serve, HeadlessResponder};
@@ -1248,7 +1230,7 @@ mod tests {
                 tasks.spawn(async move {
                     tokio::time::timeout(
                         Duration::from_secs(5),
-                        host.request("emit", json!({ "i": i })),
+                        host.request("emit", &json!({ "i": i })),
                     )
                     .await
                 });
@@ -1293,12 +1275,12 @@ mod tests {
         let (old_r, _old_r_peer) = tokio::io::duplex(16);
         host.install(Box::new(old_w), old_r, None).await;
         let old = host
-            .send_request("emit", json!({"queued": "on the old connection"}))
+            .send_request("emit", &json!({"queued": "on the old connection"}))
             .unwrap();
 
         let ((new_w, new_r), (mut sent, mut answer)) = pipe_conn();
         host.install(new_w, new_r, None).await;
-        let new = host.send_request("emit", json!({})).unwrap();
+        let new = host.send_request("emit", &json!({})).unwrap();
         let line = tokio::time::timeout(Duration::from_secs(5), sent.next_line())
             .await
             .unwrap()
@@ -1344,7 +1326,7 @@ mod tests {
         let (r, _r_peer) = tokio::io::duplex(16);
         host.install(Box::new(w), r, None).await;
         let queued: Vec<_> = (0..8)
-            .map(|i| host.send_request("emit", json!({ "i": i })).unwrap())
+            .map(|i| host.send_request("emit", &json!({ "i": i })).unwrap())
             .collect();
         drop(peer);
         for rx in queued {
@@ -1357,6 +1339,6 @@ mod tests {
         // The table is closed with the failure: no window where a new waiter
         // can be registered on the dead connection.
         assert!(lock(&lock(&host.conn).pending).closed.is_some());
-        assert!(host.send_request("emit", json!({})).is_err());
+        assert!(host.send_request("emit", &json!({})).is_err());
     }
 }

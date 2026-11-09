@@ -1,5 +1,5 @@
 //! Stored-credential access for every request path (TS `AuthStorage.getApiKey`
-//! + `auth-retry`): credentials are resolved per request, never once per
+//! plus `auth-retry`): credentials are resolved per request, never once per
 //! process.
 //!
 //! * A configured auth broker (`OMP_AUTH_BROKER_URL`/`_TOKEN`, `auth.broker.url`/`.token` in
@@ -12,10 +12,11 @@
 //! * After a provider 401 [`recover`] force-refreshes the failing credential once
 //!   (`?reason=auth-recovery` through the broker) and hands back the new bearer, if it differs.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -207,10 +208,7 @@ fn cache_key(cfg: &BrokerConfig) -> String {
 }
 
 fn invalidate_snapshot(cfg: &BrokerConfig) {
-    SNAPSHOTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&cache_key(cfg));
+    SNAPSHOTS.lock().remove(&cache_key(cfg));
 }
 
 async fn broker_request(cfg: &BrokerConfig, post: bool, path: &str) -> Result<Value> {
@@ -252,9 +250,7 @@ async fn broker_request(cfg: &BrokerConfig, post: bool, path: &str) -> Result<Va
 async fn broker_snapshot(cfg: &BrokerConfig) -> Result<Vec<SnapshotEntry>> {
     let key = cache_key(cfg);
     {
-        let cache = SNAPSHOTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cache = SNAPSHOTS.lock();
         if let Some((at, rows)) = cache.get(&key) {
             if at.elapsed() < SNAPSHOT_TTL {
                 return Ok(rows
@@ -277,19 +273,16 @@ async fn broker_snapshot(cfg: &BrokerConfig) -> Result<Vec<SnapshotEntry>> {
         .filter_map(parse_entry)
         .collect();
     entries.sort_by_key(|e| e.id);
-    SNAPSHOTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(
-            key,
-            (
-                Instant::now(),
-                entries
-                    .iter()
-                    .map(|e| (e.id, e.provider.clone(), e.credential.clone()))
-                    .collect(),
-            ),
-        );
+    SNAPSHOTS.lock().insert(
+        key,
+        (
+            Instant::now(),
+            entries
+                .iter()
+                .map(|e| (e.id, e.provider.clone(), e.credential.clone()))
+                .collect(),
+        ),
+    );
     Ok(entries)
 }
 
@@ -510,9 +503,7 @@ static MINTS: LazyLock<Mutex<HashMap<MintKey, (String, Instant)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn remember_mint(db: &str, id: i64, access: &str) {
-    let mut mints = MINTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut mints = MINTS.lock();
     mints.retain(|_, (_, at)| at.elapsed() < REMINT_COOLDOWN);
     mints.insert((db.to_string(), id), (access.to_string(), Instant::now()));
 }
@@ -520,7 +511,6 @@ fn remember_mint(db: &str, id: i64, access: &str) {
 fn recent_mint(db: &str, id: i64, access: &str) -> bool {
     MINTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&(db.to_string(), id))
         .is_some_and(|(a, at)| a == access && at.elapsed() < REMINT_COOLDOWN)
 }
@@ -529,6 +519,8 @@ fn db_key(db: &Path) -> String {
     db.to_string_lossy().into_owned()
 }
 
+// invariant: http://x/ is a valid static URL.
+#[allow(clippy::expect_used)]
 fn form_encode(pairs: &[(&str, &str)]) -> String {
     let mut ser = reqwest::Url::parse("http://x/").expect("static url");
     ser.query_pairs_mut().extend_pairs(pairs);
@@ -1097,6 +1089,10 @@ async fn local_pool(
 
 /// Run `fut` to completion on a private runtime thread: callable from sync code and from inside
 /// a tokio worker alike.
+#[allow(clippy::disallowed_methods)]
+// dedicated thread with its own scratch runtime (pre-existing pattern)
+// invariant: the scratch runtime is built once per call and only fails on resource exhaustion; a panicked worker thread must propagate anyway.
+#[allow(clippy::expect_used)]
 fn block_on<M, F>(make: M) -> F::Output
 where
     M: FnOnce() -> F + Send,
@@ -1247,6 +1243,7 @@ pub fn credential_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<Crede
 
 /// Local-store lookup only (no broker): the seam tests use so the process env cannot redirect them.
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 pub(crate) fn local_credential(db: &Path, provider: &str) -> Option<Credential> {
     let hosts = Hosts::default();
     block_on(|| local_resolve(db, provider, None, &hosts))
@@ -1322,8 +1319,7 @@ pub fn structured_key_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<S
             .and_then(Value::as_str)
             .map(std::string::ToString::to_string)
     };
-    Some(
-        serde_json::to_string(&serde_json::json!({
+    serde_json::to_string(&serde_json::json!({
             "apiEndpoint": pick("apiEndpoint"),
             "token": token,
             "enterpriseUrl": pick("enterpriseUrl"),
@@ -1333,8 +1329,7 @@ pub fn structured_key_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<S
             "email": pick("email"),
             "accountId": pick("accountId"),
         }))
-        .ok()?,
-    )
+        .ok()
 }
 
 /// After a provider 401 for `failed`: force-refresh that credential and return the replacement,
@@ -1399,4 +1394,5 @@ pub async fn recover_async(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests;

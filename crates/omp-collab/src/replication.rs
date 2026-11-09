@@ -393,6 +393,8 @@ fn visit(value: &Value, depth: usize, string_cap: usize, array_limit: usize) -> 
 /// elided. Iterative by construction: recursion is what used to turn a deep
 /// entry into a `RangeError` instead of an oversized payload
 /// (replication-shrink.ts:229 `shrinkWalk`).
+// invariant: pop is guarded by last().is_some_and(...) on the same stack.
+#[allow(clippy::expect_used)]
 fn shrink_walk(root: &Value, string_cap: usize, array_limit: usize) -> Value {
     let mut stack: Vec<Frame<'_>> = Vec::new();
     match visit(root, 0, string_cap, array_limit) {

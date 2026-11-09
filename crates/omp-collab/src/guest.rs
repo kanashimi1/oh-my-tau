@@ -55,11 +55,12 @@
 use std::{
     collections::{HashMap, HashSet},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
 use futures::{Stream, StreamExt};
+use parking_lot::Mutex;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -280,6 +281,8 @@ fn open_frame(cipher: &CollabCipher, sealed: &[u8]) -> DecodedFrame {
 
 /// Seal one frame into a peer-0 envelope (guest send path; the relay
 /// rewrites the peer id, protocol.ts:179-181).
+// invariant: CollabFrame is a plain data struct, serde_json cannot fail to serialize it.
+#[allow(clippy::expect_used)]
 fn seal_frame(cipher: &CollabCipher, frame: &CollabFrame) -> Vec<u8> {
     let json = serde_json::to_string(frame).expect("CollabFrame serializes infallibly");
     pack_envelope(0, &cipher.seal(json.as_bytes()))
@@ -618,12 +621,8 @@ pub struct GuestHandle {
 impl GuestHandle {
     /// Stable replica session id (TS `#replicaId`).
     #[must_use]
-    ///
-    /// # Panics
-    /// When the shared mirror's mutex is poisoned (a driver task panicked
-    /// while holding it).
     pub fn session_id(&self) -> String {
-        self.core.lock().expect("guest core").session_id.clone()
+        self.core.lock().session_id.clone()
     }
 
     /// True when the host marked this peer read-only (view link). Only
@@ -631,32 +630,20 @@ impl GuestHandle {
     /// guest has no welcome yet (TS `#readOnly` latches at finalize,
     /// guest.ts:598).
     #[must_use]
-    ///
-    /// # Panics
-    /// When the shared mirror's mutex is poisoned (a driver task panicked
-    /// while holding it).
     pub fn is_read_only(&self) -> bool {
-        self.core.lock().expect("guest core").read_only
+        self.core.lock().read_only
     }
 
     /// Last host session state, if any has arrived.
     #[must_use]
-    ///
-    /// # Panics
-    /// When the shared mirror's mutex is poisoned (a driver task panicked
-    /// while holding it).
     pub fn state(&self) -> Option<Value> {
-        self.core.lock().expect("guest core").state.clone()
+        self.core.lock().state.clone()
     }
 
     /// The replicated session mirror, if a snapshot train has completed.
     #[must_use]
-    ///
-    /// # Panics
-    /// When the shared mirror's mutex is poisoned (a driver task panicked
-    /// while holding it).
     pub fn snapshot(&self) -> Option<GuestSnapshot> {
-        let core = self.core.lock().expect("guest core");
+        let core = self.core.lock();
         Some(GuestSnapshot {
             replica_header: core.replica_header.clone()?,
             entries: core.entries.clone(),
@@ -665,12 +652,8 @@ impl GuestHandle {
 
     /// Current agent mirror (TS `agentRegistry.list()`).
     #[must_use]
-    ///
-    /// # Panics
-    /// When the shared mirror's mutex is poisoned (a driver task panicked
-    /// while holding it).
     pub fn agents(&self) -> Vec<AgentRef> {
-        self.core.lock().expect("guest core").agents.clone()
+        self.core.lock().agents.clone()
     }
 
     fn send_cmd(&self, cmd: GuestCommand) -> Result<(), GuestSendError> {
@@ -760,21 +743,13 @@ impl GuestHandle {
     /// (guest.ts:227-231), on timeout after [`TRANSCRIPT_TIMEOUT_MS`]
     /// (guest.ts:89-90), or once the session ended (guest.ts:891,
     /// `#flushPendingTranscripts`).
-    ///
-    /// # Panics
-    /// When the shared mirror's mutex is poisoned (a driver task panicked
-    /// while holding it).
     pub async fn fetch_transcript(
         &self,
         agent_id: &str,
         from_byte: u64,
     ) -> Option<RemoteTranscript> {
         if matches!(
-            self.core
-                .lock()
-                .expect("guest core")
-                .agent_has_transcript
-                .get(agent_id),
+            self.core.lock().agent_has_transcript.get(agent_id),
             Some(false)
         ) {
             return None;
@@ -957,6 +932,8 @@ impl GuestDriver {
         tokio::spawn(self.run_inner());
     }
 
+    // invariant: Deadline is only emitted while sync_deadline is armed (see driver).
+    #[allow(clippy::expect_used)]
     async fn run_inner(mut self) {
         while !self.ended {
             // Take the deadline out for the poll: the select future borrows
@@ -1429,8 +1406,8 @@ impl GuestDriver {
         let _ = self.relay.send_binary(seal_frame(&self.cipher, frame));
     }
 
-    fn lock_core(&self) -> std::sync::MutexGuard<'_, GuestCore> {
-        self.core.lock().expect("guest core")
+    fn lock_core(&self) -> parking_lot::MutexGuard<'_, GuestCore> {
+        self.core.lock()
     }
 
     fn arm_sync_deadline(&mut self, kind: SyncDeadlineKind) {
@@ -1483,6 +1460,8 @@ fn synthesize_missing_message_start(synced: &mut bool, event: &Value) -> Option<
 /// Diff a host agent snapshot into the mirror (guest.ts:763-790):
 /// unregister missing ids, register new ones, update status on known ones,
 /// and patch host timestamps/display names on the refs.
+// invariant: agent id inserted or updated above, so the find succeeds.
+#[allow(clippy::expect_used)]
 fn apply_agent_snapshots(core: &mut GuestCore, agents: &[Value]) {
     let seen: HashSet<&str> = agents
         .iter()
@@ -1589,6 +1568,7 @@ fn rewrite_replica_header(host_header: &Value, replica_id: &str) -> Value {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::{
@@ -2111,7 +2091,7 @@ mod tests {
                         // Replies go to the peer that talked to us, sealed
                         // with the wrong key when the script says so.
                         let reply = |frame: &CollabFrame| -> bool {
-                            let wrong = script.lock().unwrap().wrong_seal_key.clone();
+                            let wrong = script.lock().wrong_seal_key.clone();
                             let sealing = CollabCipher::new(wrong.as_deref().unwrap_or(key));
                             let json = serde_json::to_string(frame).expect("frame json");
                             relay.send_binary(pack_envelope(
@@ -2129,7 +2109,7 @@ mod tests {
                                 host_on_prompt(&script, text, &reply);
                             }
                             CollabFrame::UiResponse { req_id, value } => {
-                                script.lock().unwrap().ui_responses.push((req_id, value));
+                                script.lock().ui_responses.push((req_id, value));
                             }
                             _ => {}
                         }
@@ -2154,7 +2134,7 @@ mod tests {
         reply: &impl Fn(&CollabFrame) -> bool,
     ) -> bool {
         let (error, quiet) = {
-            let mut script = script.lock().unwrap();
+            let mut script = script.lock();
             script.hello_tokens.push(write_token);
             (script.hello_error.clone(), script.quiet)
         };
@@ -2176,7 +2156,7 @@ mod tests {
         reply: &impl Fn(&CollabFrame) -> bool,
     ) {
         let do_reply = {
-            let mut script = script.lock().unwrap();
+            let mut script = script.lock();
             script.prompts.push(text);
             script.prompt_reply
         };
@@ -2184,7 +2164,7 @@ mod tests {
             return;
         }
         let entry = {
-            let mut script = script.lock().unwrap();
+            let mut script = script.lock();
             let id = script.next_entry_id;
             script.next_entry_id += 1;
             let entry = serde_json::json!({
@@ -2212,7 +2192,7 @@ mod tests {
     /// replication port).
     fn send_snapshot(script: &Arc<Mutex<HostScript>>, reply: &impl Fn(&CollabFrame) -> bool) {
         let (read_only, entry_jsons) = {
-            let script = script.lock().unwrap();
+            let script = script.lock();
             let jsons: Vec<String> = script
                 .entries
                 .iter()
@@ -2221,7 +2201,7 @@ mod tests {
             (script.read_only, jsons)
         };
         let bytes: Vec<usize> = entry_jsons.iter().map(String::len).collect();
-        let agents = vec![script.lock().unwrap().main_agent()];
+        let agents = vec![script.lock().main_agent()];
         assert!(reply(&CollabFrame::Welcome {
             proto: COLLAB_PROTO,
             header: HostScript::header(),
@@ -2353,7 +2333,7 @@ mod tests {
             sync.snapshot.replica_header.get("providerPromptCacheKey"),
             Some(&Value::String("host-session-1".into()))
         );
-        assert_eq!(sync.snapshot.entries, script.lock().unwrap().entries);
+        assert_eq!(sync.snapshot.entries, script.lock().entries);
         assert_eq!(guest.snapshot().expect("synced").entries.len(), 2);
         assert_eq!(sync.agents.len(), 1);
         assert_eq!(sync.agents[0].id, "main");
@@ -2361,7 +2341,7 @@ mod tests {
 
         // The hello carried the write token, base64url of the raw bytes.
         assert_eq!(
-            script.lock().unwrap().hello_tokens.clone(),
+            script.lock().hello_tokens.clone(),
             vec![Some(encode_base64_url(&TOKEN))]
         );
 
@@ -2394,7 +2374,7 @@ mod tests {
             "reply event reached the guest: {events:?}"
         );
         {
-            let script = script.lock().unwrap();
+            let script = script.lock();
             assert_eq!(script.prompts, vec!["hello room"]);
             assert_eq!(guest.snapshot().expect("synced").entries.len(), 3);
         }
@@ -2415,7 +2395,7 @@ mod tests {
         let relay = start_local_relay(0).expect("relay start");
         let script = Arc::new(HostScript::new(initial_entries()));
         {
-            let mut script = script.lock().unwrap();
+            let mut script = script.lock();
             script.read_only = true;
             script.main_has_transcript = false;
         }
@@ -2428,7 +2408,7 @@ mod tests {
         assert!(sync.read_only);
         assert!(guest.is_read_only());
         // The view-link hello carried no token (guest.ts:293-295).
-        assert_eq!(script.lock().unwrap().hello_tokens.clone(), vec![None]);
+        assert_eq!(script.lock().hello_tokens.clone(), vec![None]);
 
         // Graceful refusal path: local errors, no wire traffic.
         assert_eq!(guest.send_prompt("nope"), Err(GuestSendError::ReadOnly));
@@ -2446,7 +2426,7 @@ mod tests {
         assert!(guest.fetch_transcript("main", 0).await.is_none());
         tokio::time::sleep(Duration::from_millis(100)).await;
         {
-            let script = script.lock().unwrap();
+            let script = script.lock();
             assert!(script.prompts.is_empty(), "no prompt reached the host");
             assert!(script.ui_responses.is_empty());
         }
@@ -2575,7 +2555,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(script.lock().unwrap().entries.len(), 3);
+        assert_eq!(script.lock().entries.len(), 3);
 
         // Cut the guest's TCP pair abruptly: the transport retries (1006,
         // transient) while the room stays alive behind the still-connected
@@ -2596,9 +2576,9 @@ mod tests {
             "the replica id is stable across a resync"
         );
         assert_eq!(second.snapshot.entries.len(), 3);
-        assert_eq!(second.snapshot.entries, script.lock().unwrap().entries);
+        assert_eq!(second.snapshot.entries, script.lock().entries);
         assert_eq!(
-            script.lock().unwrap().hello_tokens.len(),
+            script.lock().hello_tokens.len(),
             2,
             "the guest re-introduced itself on the fresh socket"
         );
@@ -2610,7 +2590,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(script.lock().unwrap().prompts.len(), 2);
+        assert_eq!(script.lock().prompts.len(), 2);
 
         guest.leave();
         host.close();
@@ -2642,7 +2622,7 @@ mod tests {
     async fn e2e_protocol_mismatch_fails_join() {
         let relay = start_local_relay(0).expect("relay start");
         let script = Arc::new(HostScript::new(initial_entries()));
-        script.lock().unwrap().hello_error =
+        script.lock().hello_error =
             Some("protocol mismatch: host speaks v3, guest sent v9".to_string());
         let (_host, host_task) = spawn_fake_host(&relay.url, &KEY, Arc::clone(&script)).await;
 
@@ -2663,7 +2643,7 @@ mod tests {
     async fn e2e_welcome_timeout_fails_join() {
         let relay = start_local_relay(0).expect("relay start");
         let script = Arc::new(HostScript::new(initial_entries()));
-        script.lock().unwrap().quiet = true;
+        script.lock().quiet = true;
         let (_host, host_task) = spawn_fake_host(&relay.url, &KEY, Arc::clone(&script)).await;
 
         let opts = GuestOptions {
@@ -2687,7 +2667,7 @@ mod tests {
     async fn e2e_bad_key_fails_join() {
         let relay = start_local_relay(0).expect("relay start");
         let script = Arc::new(HostScript::new(initial_entries()));
-        script.lock().unwrap().wrong_seal_key = Some(vec![9_u8; 32]);
+        script.lock().wrong_seal_key = Some(vec![9_u8; 32]);
         let (_host, host_task) = spawn_fake_host(&relay.url, &KEY, Arc::clone(&script)).await;
 
         let error = join(&full_link(&relay), guest_opts())
@@ -2730,7 +2710,7 @@ mod tests {
         }
         let _ = guest.respond_ui_request(5, Some(Value::String("b".to_string())));
         let answered = wait_for(|| {
-            let script = script.lock().unwrap();
+            let script = script.lock();
             (!script.ui_responses.is_empty()).then(|| script.ui_responses.clone())
         })
         .await;
@@ -2784,7 +2764,7 @@ mod tests {
         let _ = guest.respond_ui_request(6, Some(Value::String("late".to_string())));
         let _ = guest.respond_ui_request(99, None);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let responses = script.lock().unwrap().ui_responses.clone();
+        let responses = script.lock().ui_responses.clone();
         assert_eq!(responses.len(), 1, "dismissed/unknown answers stay silent");
 
         guest.leave();
@@ -2803,7 +2783,7 @@ mod tests {
 
     impl KillProxy {
         fn cut(&self) {
-            for handle in self.pairs.lock().expect("pairs").drain(..) {
+            for handle in self.pairs.lock().drain(..) {
                 handle.abort();
             }
         }
@@ -2833,7 +2813,7 @@ mod tests {
                         io::copy(&mut server_read, &mut client_write).await.ok();
                     });
                     {
-                        let mut pending = pairs.lock().expect("pairs");
+                        let mut pending = pairs.lock();
                         pending.push(up.abort_handle());
                         pending.push(down.abort_handle());
                     }

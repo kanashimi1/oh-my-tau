@@ -28,7 +28,10 @@ fn sniff(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
         Some(("gif", "image/gif"))
     } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some(("webp", "image/webp"))
-    } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && matches!(&bytes[8..12], b"avif" | b"avis") {
+    } else if bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && matches!(&bytes[8..12], b"avif" | b"avis")
+    {
         Some(("avif", "image/avif"))
     } else {
         None
@@ -52,16 +55,27 @@ fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
         && name.len() <= 128
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
         && mime_for(name).is_some()
 }
 
 /// File stem from a client-supplied name, reduced to the safe alphabet.
 fn safe_stem(name: &str) -> String {
-    let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     let mut out: String = stem
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     out = out.trim_matches('-').chars().take(60).collect();
     if out.is_empty() {
@@ -88,7 +102,7 @@ pub fn list() -> Value {
             valid_name(&name).then_some((modified, name))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     json!({"custom": files.iter().map(|(_, n)| entry(n)).collect::<Vec<_>>()})
 }
 
@@ -141,9 +155,15 @@ mod tests {
     #[test]
     fn only_raster_images_are_accepted() {
         assert_eq!(sniff(b"\x89PNG\r\n\x1a\nrest"), Some(("png", "image/png")));
-        assert_eq!(sniff(&[0xFF, 0xD8, 0xFF, 0xE0]), Some(("jpg", "image/jpeg")));
+        assert_eq!(
+            sniff(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some(("jpg", "image/jpeg"))
+        );
         assert_eq!(sniff(b"RIFF\0\0\0\0WEBPVP8 "), Some(("webp", "image/webp")));
-        assert_eq!(sniff(b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script/>"), None);
+        assert_eq!(
+            sniff(b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script/>"),
+            None
+        );
         assert_eq!(sniff(b"<html>"), None);
     }
 

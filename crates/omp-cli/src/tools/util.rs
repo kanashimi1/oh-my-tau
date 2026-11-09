@@ -2,6 +2,7 @@
 //! `expandPath` / `resolveToCwd` / `formatPathRelativeToCwd`), size and age
 //! formatting, and head/tail truncation with omp's notice texts.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
@@ -568,6 +569,11 @@ pub fn notice_with_artifact(notice: &str, artifact: Option<&str>) -> String {
     }
 }
 
+/// Largest artifact file [`save_artifact`] writes. A runaway command can emit
+/// gigabytes (a 4 GB `.log` was seen in the wild); past this the body keeps its
+/// head and tail around a marker so the artifact store cannot fill the disk.
+pub const ARTIFACT_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 /// Save `text` to the session artifacts dir as the next free `<id>.log`
 /// (omp `session.allocateOutputArtifact`); returns its `artifact://<id>`
 /// URL. `None` without a session or when the write fails.
@@ -576,8 +582,12 @@ pub fn save_artifact(text: &str) -> Option<String> {
     let dir = omp_urls::global_session_file()
         .as_ref()
         .and_then(|p| omp_urls::artifacts_directory_for(p))?;
-    std::fs::create_dir_all(&dir).ok()?;
-    let used: Vec<u64> = std::fs::read_dir(&dir)
+    save_artifact_in(&dir, text, ARTIFACT_MAX_BYTES)
+}
+
+fn save_artifact_in(dir: &Path, text: &str, max_bytes: usize) -> Option<String> {
+    std::fs::create_dir_all(dir).ok()?;
+    let used: Vec<u64> = std::fs::read_dir(dir)
         .ok()?
         .flatten()
         .filter_map(|e| {
@@ -587,14 +597,29 @@ pub fn save_artifact(text: &str) -> Option<String> {
                 .and_then(|p| p.parse().ok())
         })
         .collect();
-    let id = (0u64..).find(|i| !used.contains(i))?;
-    std::fs::write(dir.join(format!("{id}.log")), text).ok()?;
+    let id = (0u64..=u64::MAX).find(|i| !used.contains(i))?;
+    let body = cap_artifact_body(text, max_bytes);
+    std::fs::write(dir.join(format!("{id}.log")), body.as_bytes()).ok()?;
     Some(format!("artifact://{id}"))
+}
+
+/// Head and tail of `text` within `max_bytes` in total, joined by a one-line
+/// marker naming the bytes elided. Text within the cap is returned untouched.
+/// Both cuts land on char boundaries, so the body stays valid UTF-8.
+#[must_use]
+fn cap_artifact_body(text: &str, max_bytes: usize) -> Cow<'_, str> {
+    if text.len() <= max_bytes {
+        return Cow::Borrowed(text);
+    }
+    let head = &text[..floor_boundary(text, max_bytes / 2)];
+    let tail = &text[ceil_boundary(text, text.len() - (max_bytes - max_bytes / 2))..];
+    let elided = text.len() - head.len() - tail.len();
+    Cow::Owned(format!("{head}\n[…{elided}B elided…]\n{tail}"))
 }
 
 /// Serializes tests that install the process-global session file.
 #[cfg(test)]
-pub(crate) static SESSION_FILE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static SESSION_FILE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Cut `s` to at most `max` bytes at a char boundary (display-only column cap).
 #[must_use]
@@ -694,6 +719,31 @@ mod tests {
         assert_eq!(
             enforce_inline_byte_cap("small", 1000, || unreachable!()),
             "small"
+        );
+    }
+
+    #[test]
+    fn artifact_over_cap_keeps_head_and_tail_around_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = (1..=5000)
+            .map(|i| format!("row {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cap = 1000;
+        assert_eq!(
+            save_artifact_in(dir.path(), &text, cap).as_deref(),
+            Some("artifact://0")
+        );
+        let body = std::fs::read_to_string(dir.path().join("0.log")).unwrap();
+        assert!(body.starts_with("row 1\n"), "{body}");
+        assert!(body.ends_with("row 5000"), "{body}");
+        assert_eq!(body.lines().filter(|l| l.starts_with("[…")).count(), 1);
+        assert!(body.len() <= cap + 64, "{}", body.len());
+        // Under the cap the artifact is the verbatim text.
+        save_artifact_in(dir.path(), "short", cap).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("1.log")).unwrap(),
+            "short"
         );
     }
 

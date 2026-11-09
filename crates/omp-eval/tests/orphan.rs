@@ -3,6 +3,7 @@
 //! a cell is busy. The helper is the test binary itself, re-exec'd with
 //! `OMP_ORPHAN_KIND` set; it starts a kernel, records the runner pid, and
 //! parks in a busy cell until the parent test SIGKILLs it.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};

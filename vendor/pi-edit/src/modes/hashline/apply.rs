@@ -1,4 +1,6 @@
 //! Edit application with boundary repair (`packages/hashline/src/apply.ts`).
+// invariant: literal regex verified by tests.
+#![allow(clippy::expect_used)]
 
 use std::{
     collections::{HashMap, HashSet},
@@ -383,7 +385,7 @@ fn normalize_echoes(
                     .map(|&idx| with_index(&edits[idx], idx as u32)),
             );
         }
-        i = group.delete_indices.last().copied().unwrap() + 1;
+        i = group.delete_indices.last().copied().unwrap_or(0) + 1;
     }
     (out, warnings, ambiguities)
 }
@@ -635,7 +637,7 @@ fn splice_variants(
                     .map(|&idx| with_index(&edits[idx], idx as u32)),
             );
         }
-        i = group.delete_indices.last().copied().unwrap() + 1;
+        i = group.delete_indices.last().copied().unwrap_or(0) + 1;
     }
     out
 }
@@ -661,7 +663,7 @@ fn repair_boundaries(
             if !variants.is_empty() {
                 groups.push((group.clone(), variants));
             }
-            i = group.delete_indices.last().copied().unwrap() + 1;
+            i = group.delete_indices.last().copied().unwrap_or(0) + 1;
         } else {
             i += 1;
         }

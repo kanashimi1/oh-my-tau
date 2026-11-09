@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Throwaway probe: does `RelayHandle::send_binary` followed immediately by
 //! `close()` deliver the queued frame? Documented: "queued frames still flush
 //! to the live socket ahead of the close frame".
@@ -7,7 +8,7 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use omp_collab::crypto::CollabCipher;
-use omp_collab::relay_client::{connect_relay, CollabRole, RelayEvent};
+use omp_collab::relay_client::{connect_relay, CollabRole, RelayEvent, RelayOptions};
 use omp_collab::relay_server::start_local_relay;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -17,7 +18,7 @@ async fn queued_send_flushes_before_close() {
         &relay.url,
         "probe-room-1",
         CollabRole::Host,
-        &Default::default(),
+        &RelayOptions::default(),
     )
     .await
     .unwrap();
@@ -31,7 +32,7 @@ async fn queued_send_flushes_before_close() {
         &relay.url,
         "probe-room-1",
         CollabRole::Guest,
-        &Default::default(),
+        &RelayOptions::default(),
     )
     .await
     .unwrap();
@@ -49,14 +50,14 @@ async fn queued_send_flushes_before_close() {
         tokio::select! {
             ev = guest_events.next() => match ev {
                 Some(RelayEvent::Opened) => guest_opened = true,
-                Some(RelayEvent::Binary(data)) => guest_frames.push(data.to_vec()),
+                Some(RelayEvent::Binary(data)) => guest_frames.push(data.clone()),
                 Some(RelayEvent::Closed { code, reason, .. }) => {
                     guest_closed = Some(format!("{code}:{reason}"));
                     break;
                 }
                 _ => {}
             },
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+            () = tokio::time::sleep(Duration::from_millis(50)) => {
                 if guest_opened && !sent {
                     assert!(host.send_binary(envelope.clone()), "send queued");
                     host.close(); // immediately, no grace

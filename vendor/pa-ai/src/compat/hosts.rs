@@ -2,6 +2,10 @@
 //! predicates (TS `compat/anthropic.ts`). Markers are case-insensitive substrings matched against
 //! the base URL, never parsed hostnames, except where noted.
 
+// invariant: every pattern below is a literal regex; a compile failure is a
+// programming error caught by tests.
+#![allow(clippy::expect_used)]
+
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -132,6 +136,7 @@ fn includes_ascii_ci(value: &str, lower_needle: &str) -> bool {
 }
 
 /// URL-only host check.
+#[must_use]
 pub fn host_matches_url(base_url: &str, host: &str) -> bool {
     if base_url.is_empty() {
         return false;
@@ -143,6 +148,7 @@ pub fn host_matches_url(base_url: &str, host: &str) -> bool {
 }
 
 /// Provider-or-URL host check.
+#[must_use]
 pub fn model_matches_host(provider: &str, base_url: &str, host: &str) -> bool {
     let spec = class(host);
     spec.providers.contains(&provider)
@@ -171,6 +177,7 @@ fn has_path_prefix(pathname: &str, prefix: &str) -> bool {
 }
 
 /// Amazon Bedrock API route on a bedrock-runtime / bedrock-mantle endpoint (strict hostname).
+#[must_use]
 pub fn is_bedrock_route_url(base_url: &str, route: &str) -> bool {
     if base_url.is_empty() {
         return false;
@@ -213,7 +220,11 @@ pub fn has_local_loopback_base_url(base_url: &str) -> bool {
     ) {
         return true;
     }
-    if host.starts_with("10.") || host.starts_with("192.168.") || host.ends_with(".local") {
+    // `.local` here is an mDNS hostname suffix, not a file extension.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    let is_local =
+        host.starts_with("10.") || host.starts_with("192.168.") || host.ends_with(".local");
+    if is_local {
         return true;
     }
     if let Some(rest) = host.strip_prefix("172.") {
@@ -231,6 +242,7 @@ pub fn has_local_loopback_base_url(base_url: &str) -> bool {
 
 const OFFICIAL_ANTHROPIC_URL: &str = "https://api.anthropic.com";
 
+#[must_use]
 pub fn is_official_anthropic_api_url(base_url: &str) -> bool {
     if base_url.is_empty() {
         return true;
@@ -243,10 +255,12 @@ fn re(cell: &'static OnceLock<Regex>, pat: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pat).expect("static regex"))
 }
 
+#[must_use]
 pub fn is_bedrock_anthropic_route(base_url: &str) -> bool {
     is_bedrock_route_url(base_url, "anthropic")
 }
 
+#[must_use]
 pub fn is_azure_anthropic_route(base_url: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
     re(
@@ -256,6 +270,7 @@ pub fn is_azure_anthropic_route(base_url: &str) -> bool {
     .is_match(base_url)
 }
 
+#[must_use]
 pub fn is_anthropic_signing_proxy_url(base_url: &str) -> bool {
     static CF: OnceLock<Regex> = OnceLock::new();
     static VX: OnceLock<Regex> = OnceLock::new();

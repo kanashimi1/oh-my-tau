@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 
 use crate::types::{AssistantContent, AssistantMessage, StopReason};
 
+// invariant: literal regexes; a compile failure is a programming error caught by tests.
+#[allow(clippy::expect_used)]
 fn overflow_patterns() -> &'static Vec<Regex> {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {
@@ -40,6 +42,8 @@ fn overflow_patterns() -> &'static Vec<Regex> {
     })
 }
 
+// invariant: literal regexes; a compile failure is a programming error caught by tests.
+#[allow(clippy::expect_used)]
 fn non_overflow_patterns() -> &'static Vec<Regex> {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     PATTERNS.get_or_init(|| {

@@ -141,7 +141,7 @@ impl HighlightStream {
     /// Final rendering of any remaining tail; the authoritative result.
     #[must_use]
     pub fn finish(&mut self) -> Text<'static> {
-        self.take_completed().unwrap_or_else(|| Text::default())
+        self.take_completed().unwrap_or_default()
     }
 
     fn take_completed(&mut self) -> Option<Text<'static>> {
@@ -373,7 +373,8 @@ static FENCE_EXTRA: &[(&str, &str)] = &[
     ("terminal", "text"),
 ];
 
-/// Highlight language for a markdown fence info string ("```rust").
+/// Highlight language for a markdown fence info string (the tag after a
+/// triple-backtick fence).
 #[must_use]
 pub fn lang_from_fence(info: &str) -> Option<&'static str> {
     let tok = info.split_whitespace().next()?.to_ascii_lowercase();

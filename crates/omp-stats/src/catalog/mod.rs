@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 /// Bundled price rows: provider -> modelId -> ModelCost.
+// invariant: pricing.json is bundled via include_str! and its rows are ModelCost-shaped.
+#[allow(clippy::expect_used)]
 static PRICING: LazyLock<HashMap<String, HashMap<String, ModelCost>>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../../data/pricing.json"))
         .expect("pricing.json holds valid ModelCost rows")

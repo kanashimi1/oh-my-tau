@@ -116,6 +116,7 @@ pub struct AnthropicShim {
 ///
 /// # Errors
 /// The thinking budget leaves no room for the response.
+#[allow(clippy::unnecessary_wraps)] // kept `Result` for parity with the sibling shim constructors
 pub fn anthropic_shim(
     model: &Model,
     view: &ModelView,

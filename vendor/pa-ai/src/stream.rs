@@ -148,6 +148,8 @@ pub async fn complete(
 /// # Errors
 ///
 /// Returns `Err` when no API provider is registered for `model.api`.
+// Owned option surface shared with `complete_simple`; only read here.
+#[allow(clippy::needless_pass_by_value)]
 pub fn stream_simple(
     model: &Model,
     context: &Context,

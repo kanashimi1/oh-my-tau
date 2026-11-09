@@ -197,7 +197,7 @@ pub(crate) fn convert_message_range<'a>(
                                 }
                             }
                             UserBlockPayload::Opaque(json) => {
-                                content_blocks.push(text_part(Wire::from(json)))
+                                content_blocks.push(text_part(Wire::from(json)));
                             }
                         }
                     }
@@ -677,7 +677,7 @@ fn emit_tool_call_id<'a>(
 }
 
 /// Normalize a tool call ID for the target endpoint (TS `normalizeToolCallId` in `convertMessages`):
-/// Mistral takes exactly nine alphanumerics; cross-model OpenAI Responses composite ids
+/// Mistral takes exactly nine alphanumerics; cross-model `OpenAI` Responses composite ids
 /// (`call|item`) keep only a sanitized `call_id`; OpenAI-limit endpoints cap ids at 40 chars.
 pub fn normalize_tool_call_id(id: &str, compat: &ResolvedCompat) -> String {
     if compat.requires_mistral_tool_ids {

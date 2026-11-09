@@ -124,6 +124,9 @@ impl ModelCompat {
     /// Workspace API consumed across crates; the by-value signature is fleet-wide.
     #[allow(clippy::needless_pass_by_value)]
     #[must_use]
+    // invariant: serializing in-memory compat structs to JSON cannot fail and always
+    // yields an object.
+    #[allow(clippy::expect_used)]
     pub fn from_kind(kind: CompatKind) -> Self {
         let value = match &kind {
             CompatKind::AnthropicMessages(c) => serde_json::to_value(c),

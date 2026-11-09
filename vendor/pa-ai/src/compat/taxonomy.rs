@@ -123,6 +123,7 @@ pub struct Identity {
 }
 
 impl Identity {
+    #[must_use]
     pub fn to_json(&self) -> Value {
         let mut m = Map::new();
         m.insert("class".into(), self.class.clone().into());
@@ -146,6 +147,7 @@ impl Identity {
 }
 
 /// Anchored `*`-wildcard match; both sides pre-lowercased.
+#[must_use]
 pub fn glob_match(pattern: &str, value: &str) -> bool {
     let segments: Vec<&str> = pattern.split('*').collect();
     if segments.len() == 1 {
@@ -327,7 +329,7 @@ fn classify_ranks(
             let rank = (matcher_rank(&matcher.kind), matcher.token.len());
             match winner {
                 Some((w, c)) if w == rank && c.id != cls.id => {
-                    tied = Some((c.id.as_str(), cls.id.as_str()))
+                    tied = Some((c.id.as_str(), cls.id.as_str()));
                 }
                 Some((w, _)) if w >= rank => {}
                 _ => {
@@ -464,6 +466,7 @@ pub struct Collapsed {
     pub thinking_variant: bool,
 }
 
+#[must_use]
 pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collapsed {
     let collapse = &rules.taxonomy.collapse;
     let lower = model.to_lowercase();
@@ -533,12 +536,12 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
         let Some(effort_rule) = effort_rule else {
             continue;
         };
-        let base = &model[..trimmed.len() - effort_rule.suffix.len()];
-        if base.is_empty() || base.ends_with('/') {
+        let stem = &model[..trimmed.len() - effort_rule.suffix.len()];
+        if stem.is_empty() || stem.ends_with('/') {
             continue;
         }
         return Collapsed {
-            logical_id: format!("{base}{}", &model[trimmed.len()..]),
+            logical_id: format!("{stem}{}", &model[trimmed.len()..]),
             effort: effort_rule.effort.clone(),
             thinking_variant: false,
         };
@@ -551,6 +554,7 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
 }
 
 /// First declared thinking-variant suffix token removed from a model id (`None` when absent).
+#[must_use]
 pub fn strip_thinking_variant_suffix(rules: &Rules, model: &str) -> Option<String> {
     let lower = model.to_lowercase();
     let lb = lower.as_bytes();
@@ -586,6 +590,9 @@ pub fn strip_thinking_variant_suffix(rules: &Rules, model: &str) -> Option<Strin
 }
 
 /// Reviewed override first, then suffix collapse, then class/family/revision ranks.
+///
+/// # Errors
+/// When ranks or override rules conflict ambiguously ([`AmbiguousIdentity`]).
 pub fn classify_model(
     rules: &Rules,
     provider: &str,

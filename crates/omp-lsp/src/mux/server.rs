@@ -11,11 +11,12 @@
 //! environment for tests (`OMP_LSP_MUX_SERVER_LINGER_MS`,
 //! `OMP_LSP_MUX_IDLE_MS`).
 
+use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -61,6 +62,8 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
+// invariant: serializing an in-memory serde_json::Value cannot fail.
+#[allow(clippy::expect_used)]
 fn frame(message: &Value) -> Vec<u8> {
     let body = serde_json::to_string(message).expect("serialize mux frame");
     format!("Content-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
@@ -125,8 +128,8 @@ fn parse_progress(params: Option<&Value>) -> Option<Value> {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
+    m.lock()
 }
 
 /// A server request/notification destined for one specific link, tracked so a
@@ -487,6 +490,8 @@ async fn from_session(state: &Arc<MuxState>, session: &Arc<Session>, message: Va
     }
 }
 
+// invariant: serializing the in-memory connect result cannot fail.
+#[allow(clippy::expect_used)]
 async fn handle_mux_connect(
     state: &Arc<MuxState>,
     session: &Arc<Session>,
@@ -1068,19 +1073,15 @@ async fn stop_server(server: &Arc<ServerInstance>) {
     server
         .write(&json!({ "jsonrpc": "2.0", "method": "exit" }))
         .await;
-    if let Ok(mut guard) = server.child.lock() {
-        if let Some(child) = guard.as_mut() {
-            let _ = child.start_kill();
-        }
+    if let Some(child) = server.child.lock().as_mut() {
+        let _ = child.start_kill();
     }
 }
 
 fn kill_server(state: &Arc<MuxState>, server: &Arc<ServerInstance>) {
     server.stopping.store(true, Ordering::SeqCst);
-    if let Ok(mut guard) = server.child.lock() {
-        if let Some(child) = guard.as_mut() {
-            let _ = child.start_kill();
-        }
+    if let Some(child) = server.child.lock().as_mut() {
+        let _ = child.start_kill();
     }
     server_exited(state, server);
 }

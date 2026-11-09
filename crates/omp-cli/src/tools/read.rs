@@ -61,9 +61,13 @@ pub enum Selector {
     Tail { count: usize, raw: bool },
 }
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static RANGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$").expect("valid line range regex")
 });
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static TAIL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^-(\d+)$").expect("valid tail regex"));
 
@@ -270,6 +274,9 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if !meta.is_file() {
         bail!("Cannot read '{path_part}': it is a special file, not a regular file or directory.");
     }
+    // Autostart the file's language server (best effort, background): by the
+    // time the model edits, the diagnostics gate has a pre-edit baseline.
+    super::edit_diagnostics::prewarm_spawn(&env.cwd, &absolute);
     if matches!(sel, Selector::None) && crate::images::looks_like_image(&absolute) {
         let (image, note) = crate::images::read_image_detailed(
             &absolute,
@@ -492,7 +499,9 @@ fn format_read_output(
         let suggestion = if total == 0 {
             "The file is empty.".to_string()
         } else {
-            format!("Use {selector_base}:1 to read from the start, or {selector_base}:{total} to read the last line.")
+            format!(
+                "Use {selector_base}:1 to read from the start, or {selector_base}:{total} to read the last line."
+            )
         };
         return Ok(AgentToolResult::text(format!(
             "Line {requested} is beyond end of file ({total} lines total). {suggestion}"
@@ -545,6 +554,8 @@ fn format_read_output(
 // ------------------------------------------------------------- internal URLs
 
 /// Process-global scheme registry (TS `InternalUrlRouter.instance()`).
+// invariant: omp_urls::schemes::register_all only fails on duplicate registration, which cannot happen once.
+#[allow(clippy::expect_used)]
 pub(crate) fn url_registry() -> &'static Registry {
     static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| {
@@ -1099,10 +1110,7 @@ mod tests {
         let e = env(dir.path());
         let out = text_of(&read(&e, &serde_json::json!({"path": "a.txt"})).unwrap());
         let expected = "[a.txt#0793]\n1:line 1\n2:line 2\n3:line 3\n4:line 4\n5:line 5";
-        assert_eq!(
-            out, expected,
-            "omt read output diverged from TS formatting"
-        );
+        assert_eq!(out, expected, "omt read output diverged from TS formatting");
     }
 
     #[test]
@@ -1179,9 +1187,7 @@ mod tests {
     }
     #[test]
     fn reads_artifact_url_with_selector() {
-        let _lock = URL_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = URL_TEST_LOCK.lock();
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1198,9 +1204,7 @@ mod tests {
 
     #[test]
     fn reads_agent_url_markdown() {
-        let _lock = URL_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = URL_TEST_LOCK.lock();
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1212,9 +1216,7 @@ mod tests {
 
     #[test]
     fn reads_history_index_and_local_file() {
-        let _lock = URL_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = URL_TEST_LOCK.lock();
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1237,9 +1239,7 @@ mod tests {
 
     #[test]
     fn invalid_url_selector_names_the_url() {
-        let _lock = URL_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = URL_TEST_LOCK.lock();
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");

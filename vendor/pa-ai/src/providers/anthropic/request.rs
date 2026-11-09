@@ -48,7 +48,9 @@ fn billing_header(first_user_text: &str) -> String {
         .collect();
     let version = claude_code_version();
     let suffix = &sha256_hex(format!("59cf53e54c78{k}{version}").as_bytes())[..3];
-    format!("{CLAUDE_BILLING_HEADER_PREFIX} cc_version={version}.{suffix}; cc_entrypoint=cli; cch=00000;")
+    format!(
+        "{CLAUDE_BILLING_HEADER_PREFIX} cc_version={version}.{suffix}; cc_entrypoint=cli; cch=00000;"
+    )
 }
 
 /// TS `getInstallId` (`~/.omp/install-id`, a UUID).
@@ -71,18 +73,15 @@ fn install_id() -> Option<String> {
 /// TS `deriveClaudeDeviceId`.
 fn derive_device_id(install_id: &str, account_id: Option<&str>) -> String {
     let mut h = Sha256::new();
-    match account_id.filter(|a| !a.is_empty()) {
-        Some(account) => {
-            h.update(b"omp-claude-device-id-v2");
-            h.update([0u8]);
-            h.update(install_id.as_bytes());
-            h.update([0u8]);
-            h.update(account.as_bytes());
-        }
-        None => {
-            h.update(b"omp-claude-device-id-v1:");
-            h.update(install_id.as_bytes());
-        }
+    if let Some(account) = account_id.filter(|a| !a.is_empty()) {
+        h.update(b"omp-claude-device-id-v2");
+        h.update([0u8]);
+        h.update(install_id.as_bytes());
+        h.update([0u8]);
+        h.update(account.as_bytes());
+    } else {
+        h.update(b"omp-claude-device-id-v1:");
+        h.update(install_id.as_bytes());
     }
     hex::encode(h.finalize())
 }
@@ -150,7 +149,7 @@ fn resolve_metadata_user_id(
     );
     map.insert(
         "session_id".into(),
-        json!(session_id.map_or_else(|| uuid_v4(), str::to_string)),
+        json!(session_id.map_or_else(uuid_v4, str::to_string)),
     );
     if let Some(account) = account_id.filter(|a| !a.is_empty()) {
         map.insert("account_uuid".into(), json!(account));
@@ -396,6 +395,7 @@ impl Param {
 }
 
 /// TS `convertAnthropicMessages` for the message shapes this runtime carries.
+#[allow(clippy::too_many_lines)] // single pass mirrors the TS converter branch for branch
 fn convert_messages(
     view: &ModelView,
     model: &Model,
@@ -651,10 +651,10 @@ const MAX_STRICT_UNION: i64 = 16;
 fn is_array_node(schema: &Map<String, Value>) -> bool {
     match schema.get("type") {
         Some(Value::String(t)) if t == "array" => return true,
-        Some(Value::Array(t)) => {
-            if t.iter().any(|x| x == "array") && !t.iter().any(|x| x == "object") {
-                return true;
-            }
+        Some(Value::Array(t))
+            if t.iter().any(|x| x == "array") && !t.iter().any(|x| x == "object") =>
+        {
+            return true;
         }
         _ => {}
     }
@@ -696,6 +696,8 @@ fn effective_scalar_type(schema: &Map<String, Value>) -> Option<String> {
     None
 }
 
+// Recursive schema normalizer; one match arm per JSON-schema keyword, mirroring the TS.
+#[allow(clippy::too_many_lines)]
 fn normalize_tool_schema_node(schema: &Value, is_root: bool) -> Value {
     match schema {
         Value::Array(a) => Value::Array(
@@ -735,6 +737,8 @@ fn normalize_tool_schema_node(schema: &Value, is_root: bool) -> Value {
             }
             if scalar.as_deref() == Some("array") {
                 if let Some(min_items) = result.get("minItems").cloned() {
+                    // Only the exact JSON values 0 and 1 are special-cased; float_cmp is intentional.
+                    #[allow(clippy::float_cmp)]
                     let keep = min_items.as_f64().is_some_and(|n| n == 0.0 || n == 1.0);
                     if !keep {
                         spill.push(("minItems".into(), min_items));
@@ -940,11 +944,9 @@ fn normalize_strict_node(schema: &Value, budget: &mut StrictBudget) -> Option<Va
                 result.insert("properties".into(), Value::Object(properties));
                 result.insert("required".into(), Value::Array(required));
             }
-            match result.get("items").cloned() {
-                Some(items @ (Value::Array(_) | Value::Object(_))) => {
-                    result.insert("items".into(), normalize_strict_node(&items, budget)?);
-                }
-                _ => {}
+            if let Some(items @ (Value::Array(_) | Value::Object(_))) = result.get("items").cloned()
+            {
+                result.insert("items".into(), normalize_strict_node(&items, budget)?);
             }
             if let Some(Value::Array(p)) = result.get("prefixItems").cloned() {
                 result.insert(
@@ -1022,14 +1024,19 @@ fn has_object_property(schema: &Value) -> bool {
             props.values().any(|p| {
                 p.get("type").and_then(Value::as_str) == Some("object")
                     || p.get("properties").is_some()
-                    || p.get("anyOf").and_then(Value::as_array).is_some_and(|alts| {
-                        alts.iter().any(|a| a.get("type").and_then(Value::as_str) == Some("object"))
-                    })
+                    || p.get("anyOf")
+                        .and_then(Value::as_array)
+                        .is_some_and(|alts| {
+                            alts.iter()
+                                .any(|a| a.get("type").and_then(Value::as_str) == Some("object"))
+                        })
             })
         })
 }
 
 /// TS `convertTools`.
+#[allow(clippy::fn_params_excessive_bools)] // mirrors the TS convertTools flag parameters
+#[allow(clippy::too_many_lines)]
 fn convert_tools(
     tools: &[crate::types::Tool],
     is_oauth: bool,
@@ -1191,7 +1198,9 @@ fn budget_thinking_output(max_tokens: Option<u64>, budget: u64, max_allowed: u64
     let raised = current
         .max(budget + OUTPUT_FALLBACK_BUFFER)
         .min(max_allowed);
-    let new_budget = (budget as i64).min(raised as i64 - OUTPUT_FALLBACK_BUFFER as i64);
+    let new_budget = budget
+        .cast_signed()
+        .min(raised.cast_signed() - OUTPUT_FALLBACK_BUFFER.cast_signed());
     (raised, new_budget)
 }
 
@@ -1273,7 +1282,7 @@ fn apply_prompt_caching(messages: &mut [Param], head_breakpoints: usize, cache_c
             stable_user_turns += 1;
         }
     }
-    let stable_message_end = message_end as i64;
+    let stable_message_end = i64::try_from(message_end).unwrap_or(0);
     let mut applied = 0usize;
     if let Some(&first) = trailing_candidates.first() {
         if applied < budget
@@ -1296,7 +1305,7 @@ fn apply_prompt_caching(messages: &mut [Param], head_breakpoints: usize, cache_c
         let mut since = stable_user_turns % DECIMATION_INTERVAL;
         let mut index = stable_message_end;
         while index >= 0 && applied < budget {
-            let i = index as usize;
+            let i = usize::try_from(index).unwrap_or(0);
             index -= 1;
             if !messages[i].conversational {
                 continue;
@@ -1361,7 +1370,7 @@ fn apply_head_caching(
         };
         if system[anchor]
             .get("cache_control")
-            .map_or(true, Value::is_null)
+            .is_none_or(Value::is_null)
         {
             for block in system.iter_mut() {
                 if let Some(o) = block.as_object_mut() {
@@ -1482,18 +1491,7 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
         } else if options.thinking_enabled == Some(true) || view.is("requiresThinkingEnabled") {
             let mode = view.thinking_str("mode");
             let effort = resolve_adaptive_effort(model, view, options)?;
-            if !uses_budget_thinking(view) {
-                let mut t = json!({ "type": "adaptive" });
-                if view.thinking_flag("supportsDisplay") == Some(true) {
-                    t["display"] = json!(options
-                        .thinking_display
-                        .map_or("summarized", |d| d.as_str()));
-                }
-                thinking = Some(t);
-                if let Some(e) = effort.filter(|e| e != "adaptive") {
-                    output_effort = Some(e);
-                }
-            } else {
+            if uses_budget_thinking(view) {
                 let mut t = json!({
                     "type": "enabled",
                     "budget_tokens": options.thinking_budget_tokens.filter(|b| *b > 0).unwrap_or(1024),
@@ -1508,6 +1506,17 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
                     if let Some(e) = effort.filter(|e| e != "adaptive") {
                         output_effort = Some(e);
                     }
+                }
+            } else {
+                let mut t = json!({ "type": "adaptive" });
+                if view.thinking_flag("supportsDisplay") == Some(true) {
+                    t["display"] = json!(options
+                        .thinking_display
+                        .map_or("summarized", |d| d.as_str()));
+                }
+                thinking = Some(t);
+                if let Some(e) = effort.filter(|e| e != "adaptive") {
+                    output_effort = Some(e);
                 }
             }
         } else if options.thinking_enabled == Some(false) {
@@ -1698,7 +1707,7 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
                 let current = params["max_tokens"].as_u64();
                 let (max_tokens, new_budget) = budget_thinking_output(current, budget, max_output);
                 params.insert("max_tokens".into(), json!(max_tokens));
-                if new_budget != budget as i64 {
+                if new_budget != budget.cast_signed() {
                     if new_budget <= 0 {
                         return Err(format!(
                             "Anthropic thinking budget requires max_tokens greater than {OUTPUT_FALLBACK_BUFFER}; got {max_tokens}"
@@ -1774,6 +1783,7 @@ pub(crate) fn prompt_cache_key(
 mod eager_streaming_tests {
     use super::*;
 
+    #[allow(clippy::needless_pass_by_value)] // test helper mirroring the Tool constructor shape
     fn tool(name: &str, parameters: Value) -> crate::types::Tool {
         serde_json::from_value(json!({"name": name, "description": "d", "parameters": parameters}))
             .expect("tool")
@@ -1781,9 +1791,15 @@ mod eager_streaming_tests {
 
     #[test]
     fn nested_object_tools_are_not_eager() {
-        let flat = tool("write", json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}));
-        let fused = tool("write", json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"},
-            "then_run": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}, "required": ["path", "content"]}));
+        let flat = tool(
+            "write",
+            json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}),
+        );
+        let fused = tool(
+            "write",
+            json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"},
+            "then_run": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}, "required": ["path", "content"]}),
+        );
         let out = convert_tools(&[flat, fused], false, true, true, false);
         assert_eq!(out[0].get("eager_input_streaming"), Some(&json!(true)));
         assert!(out[1].get("eager_input_streaming").is_none());

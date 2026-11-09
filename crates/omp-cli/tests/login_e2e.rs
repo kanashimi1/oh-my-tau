@@ -1,6 +1,7 @@
 //! `omp-rs login` / `logout` end to end in a temp HOME against a mock Kimi OAuth host: the row
 //! the Rust CLI writes is what TS `omp` reads (`omp-rs`-side reader is `omp_providers::auth`),
 //! and logout soft-deletes it like TS. Never touches the real `~/.omp`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -41,6 +42,7 @@ fn mock_kimi_host() -> String {
 fn omp_rs(home: &std::path::Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_omt"));
     cmd.env("HOME", home)
+        .env("OMP_HUB", "0") // no auto-started hub outliving the temp HOME
         .env_remove("OMP_AGENT_DIR")
         .env_remove("OMP_AUTH_BROKER_URL")
         .env_remove("OMP_AUTH_BROKER_TOKEN")
@@ -96,6 +98,7 @@ fn rows(db: &std::path::Path) -> Vec<(String, String, String, Option<String>)> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one scripted login/logout session; each step reads the last
 fn login_then_logout_roundtrip_in_a_temp_home() {
     let home = tempfile::tempdir().unwrap();
     let db = home.path().join(".omp/agent/agent.db");

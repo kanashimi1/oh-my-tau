@@ -3,8 +3,8 @@
 //!
 //! Port of `src/internal-urls` (router, parse, types) from the TS agent.
 
+use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
 
 pub mod parse;
 pub mod registry;
@@ -56,12 +56,12 @@ static SESSION_FILE: RwLock<Option<PathBuf>> = RwLock::new(None);
 /// Install the process-global session file so tools can default to it
 /// (TS `AgentRegistry` first-main-session fallback).
 pub fn set_global_session_file(path: Option<PathBuf>) {
-    *SESSION_FILE.write().expect("session file lock") = path;
+    *SESSION_FILE.write() = path;
 }
 
 /// The installed global session file, if any.
 pub fn global_session_file() -> Option<PathBuf> {
-    SESSION_FILE.read().expect("session file lock").clone()
+    SESSION_FILE.read().clone()
 }
 
 /// A provider for one internal URL scheme (TS `ProtocolHandler`).

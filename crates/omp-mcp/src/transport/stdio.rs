@@ -9,20 +9,21 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::McpServerConfig;
+use crate::errors::{may_have_run, Failure, McpError, McpTransportError, TransportKind};
 use crate::timeout::is_timeout_enabled;
-use crate::errors::{Failure, McpError, McpTransportError, TransportKind};
 use crate::transport::{
-    await_with_timeout, default_handler, dispatch_message, McpTransport, NotificationCallback,
-    PendingRequests, RequestHandler, RequestIdAllocator, RespondCallback, TransportFut,
+    await_with_timeout, default_handler, dispatch_message, McpProgress, McpTransport,
+    NotificationCallback, PendingRequests, RequestHandler, RequestIdAllocator, RespondCallback,
+    TransportFut,
 };
 
 /// Stdio transport state shared with the read loop.
 struct Shared {
-    pending: Arc<Mutex<PendingRequests>>,
+    pending: Arc<parking_lot::Mutex<PendingRequests>>,
     handler: RequestHandler,
     respond: RespondCallback,
     on_notification: NotificationCallback,
@@ -41,6 +42,57 @@ pub struct StdioTransport {
     ids: RequestIdAllocator,
     shared: Option<Arc<Shared>>,
     shutdown: CancellationToken,
+    /// Server→client progress updates (`notifications/progress`).
+    progress_tx: broadcast::Sender<McpProgress>,
+}
+
+/// Per-request guard: when a request frame that reached the server is
+/// abandoned (aborted = future dropped, or timed out) we owe the server one
+/// `notifications/cancelled` with the original request id — exactly once,
+/// never for `initialize`, and without waiting on the pipe (upstream
+/// `mcp-cancel-notification`). Failing to send must not block the caller.
+struct CancelGuard {
+    stdin: Option<Arc<Mutex<ChildStdin>>>,
+    id: Option<Value>,
+    method: String,
+    /// The frame was fully written; the server may be running the tool.
+    written: bool,
+    /// The call settled normally (response or an error we report ourselves):
+    /// no cancellation is owed.
+    settled: bool,
+}
+
+impl CancelGuard {
+    fn settle(&mut self) {
+        self.settled = true;
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if !self.written || self.settled || self.method == "initialize" {
+            return;
+        }
+        let (Some(stdin), Some(id)) = (self.stdin.take(), self.id.take()) else {
+            return;
+        };
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": { "requestId": id },
+        });
+        tokio::spawn(async move {
+            let line = serde_json::to_string(&frame).unwrap_or_else(|_| "{}".to_string());
+            // Best effort: bounded lock + write, give up rather than park.
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                let mut guard = stdin.lock().await;
+                let _ = guard.write_all(line.as_bytes()).await;
+                let _ = guard.write_all(b"\n").await;
+                let _ = guard.flush().await;
+            })
+            .await;
+        });
+    }
 }
 
 /// Write one NDJSON frame under the stdin lock.
@@ -89,6 +141,7 @@ impl StdioTransport {
             ids: RequestIdAllocator::default(),
             shared: None,
             shutdown: CancellationToken::new(),
+            progress_tx: broadcast::channel(16).0,
         }
     }
 
@@ -121,17 +174,39 @@ impl McpTransport for StdioTransport {
             .is_some_and(|f| f == "string");
         let id = self.ids.next(string_ids);
         let timeout_ms = self.timeout_ms;
+        let method = method.to_string();
+        // Long-running calls ask the server for `notifications/progress`
+        // keyed by the request id (MCP `_meta.progressToken`).
+        let mut params = params;
+        if method == "tools/call" {
+            if let Some(meta) = params
+                .as_object_mut()
+                .map(|m| m.entry("_meta").or_insert_with(|| json!({})))
+                .and_then(Value::as_object_mut)
+            {
+                meta.entry("progressToken").or_insert_with(|| id.clone());
+            }
+        }
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         Box::pin(async move {
             let (tx, rx) = oneshot::channel();
             shared
                 .pending
                 .lock()
-                .await
                 .map
                 .insert(PendingRequests::key(&id), tx);
             let line = serde_json::to_string(&frame).unwrap_or_else(|_| "{}".to_string());
             let started = tokio::time::Instant::now();
+            // Aborts surface as this future being dropped; timeouts settle
+            // it below. Either way the guard owes the server at most one
+            // `notifications/cancelled` once the frame was written.
+            let mut guard = CancelGuard {
+                stdin: Some(stdin.clone()),
+                id: Some(id.clone()),
+                method,
+                written: false,
+                settled: false,
+            };
             // The stdin lock and the write both count against the request
             // timeout: a server that never drains stdin must not hang us.
             let write_result = bounded(timeout_ms, write_frame(&stdin, &line)).await;
@@ -149,31 +224,38 @@ impl McpTransport for StdioTransport {
                 Err(()) => Some(timeout_error(timeout_ms)),
             };
             if let Some(err) = write_err {
-                shared
-                    .pending
-                    .lock()
-                    .await
-                    .map
-                    .remove(&PendingRequests::key(&id));
+                guard.settle();
+                shared.pending.lock().map.remove(&PendingRequests::key(&id));
                 return Err(err);
             }
+            guard.written = true;
             let remaining_ms = if timeout_ms == 0 {
                 0
             } else {
                 let spent = started.elapsed().as_millis() as u64;
                 timeout_ms.saturating_sub(spent).max(1)
             };
-            let result = await_with_timeout(rx, remaining_ms, TransportKind::Stdio).await;
-            if result.is_err() {
-                shared
-                    .pending
-                    .lock()
-                    .await
-                    .map
-                    .remove(&PendingRequests::key(&id));
+            let mut result = await_with_timeout(rx, remaining_ms, TransportKind::Stdio).await;
+            match result {
+                Ok(_) => guard.settle(),
+                Err(_) => {
+                    shared.pending.lock().map.remove(&PendingRequests::key(&id));
+                    if guard.written {
+                        // The frame reached the server and then the call
+                        // failed (timeout or the read loop's EOF): replaying
+                        // would run the tool a second time
+                        // (mcp-retry-double-run). Not settling the guard also
+                        // owes the server a `notifications/cancelled`.
+                        result = result.map_err(may_have_run);
+                    }
+                }
             }
             result
         })
+    }
+
+    fn progress_sink(&self) -> Option<broadcast::Sender<McpProgress>> {
+        Some(self.progress_tx.clone())
     }
 
     fn notify(&mut self, method: &str, params: Value) -> TransportFut<Result<(), McpError>> {
@@ -270,7 +352,7 @@ impl StdioTransport {
         let stdin = child.stdin.take().ok_or_else(Self::not_connected)?;
         let stdin = Arc::new(Mutex::new(stdin));
 
-        let pending = Arc::new(Mutex::new(PendingRequests {
+        let pending = Arc::new(parking_lot::Mutex::new(PendingRequests {
             map: HashMap::new(),
         }));
         let respond: RespondCallback = {
@@ -286,8 +368,14 @@ impl StdioTransport {
                 });
             })
         };
-        let on_notification: NotificationCallback = Arc::new(|method, params| {
+        let progress_tx = self.progress_tx.clone();
+        let on_notification: NotificationCallback = Arc::new(move |method, params| {
             tracing::debug!("MCP server notification: {method} {params}");
+            if method == "notifications/progress" {
+                if let Some(update) = McpProgress::from_params(&params) {
+                    let _ = progress_tx.send(update);
+                }
+            }
         });
         let shared = Arc::new(Shared {
             pending: pending.clone(),
@@ -310,7 +398,7 @@ impl StdioTransport {
                         let Ok(Some(line)) = line else {
                             // EOF: reject all pending requests, like
                             // `#handleClose` with an eof failure.
-                            let mut guard = pending.lock().await;
+                            let mut guard = pending.lock();
                             for (_, tx) in guard.map.drain() {
                                 let _ = tx.send(Err(McpError::Transport(McpTransportError {
                                     transport: TransportKind::Stdio,
@@ -329,19 +417,20 @@ impl StdioTransport {
                         }
                         match serde_json::from_str::<Value>(&line) {
                             Ok(msg) => {
-                                let pending = pending.clone();
-                                let shared = shared.clone();
-                                tokio::spawn(async move {
-                                    dispatch_message(
-                                        msg,
-                                        TransportKind::Stdio,
-                                        &pending,
-                                        &shared.handler,
-                                        &shared.respond,
-                                        &shared.on_notification,
-                                    )
-                                    .await;
-                                });
+                                // Inline (not spawned): JSON-RPC over a stream
+                                // is ordered — a `notifications/progress`
+                                // must reach subscribers before the response
+                                // that ends the call, and dispatch only parks
+                                // briefly on the pending-request lock.
+                                dispatch_message(
+                                    msg,
+                                    TransportKind::Stdio,
+                                    &pending,
+                                    &shared.handler,
+                                    &shared.respond,
+                                    &shared.on_notification,
+                                )
+                                .await;
                             }
                             Err(err) => tracing::debug!("ignoring malformed MCP frame: {err}"),
                         }

@@ -105,6 +105,7 @@ mod tests {
 
     #[test]
     fn output_keeps_live_tail() {
+        #[allow(clippy::format_collect)] // test fixture; a bytecount-style dep is not warranted
         let lines: String = (0..20).map(|i| format!("line {i}\n")).collect();
         let call = json!({"name": "eval", "arguments": {"language": "js", "code": "x"},
             "result": {"content": [{"type": "text", "text": lines}]}});
@@ -118,7 +119,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(text.contains("line 19"));
         assert!(!text.contains("line 0 "));
@@ -139,7 +140,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(text.contains('✗'));
         assert!(text.contains("ZeroDivisionError"));

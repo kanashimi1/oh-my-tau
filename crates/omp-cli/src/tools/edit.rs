@@ -16,6 +16,7 @@ use pi_edit::session::{
 use pi_edit::EditMode;
 use serde_json::{json, Value};
 
+use super::edit_diagnostics;
 use super::util::{format_path_relative_to_cwd, resolve_to_cwd, str_arg};
 use super::Env;
 
@@ -125,13 +126,86 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let mut session = Session::new(config, env.store.clone());
     session.set_args_json(&args.to_string());
     session.finish();
+    // Claims guard (OMP_CLAIMS=block): refuse before the first write when
+    // another live endpoint holds a claim on a target path. Warning mode
+    // checks after the apply instead (the engine knows the exact paths then)
+    // and never blocks.
+    if crate::tools::a2a::claims_block_mode_enabled() {
+        let targets = edit_target_paths(env, args, &mut session);
+        if let Some(reason) = crate::tools::a2a::claims_block_reason(&targets).await {
+            bail!("{reason}");
+        }
+    }
     let outcome = session
         .apply(ApplyRequest::default(), &FsWriter)
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let mut result = AgentToolResult::text(outcome.text.clone());
     result.details = edit_details(&outcome);
+    // Advisory post-write LSP gate: report diagnostics new to this edit.
+    // Never fails the edit; no cold start; bounded by GATE_BUDGET_MS.
+    let changed: Vec<PathBuf> = outcome
+        .files
+        .iter()
+        .filter(|f| matches!(f.op, FileOp::Create | FileOp::Update))
+        .map(|f| f.absolute.clone())
+        .collect();
+    if let Some(gate) = edit_diagnostics::run(env, &changed).await {
+        result
+            .content
+            .push(pa_agent::types::ToolResultContent::text(gate.section));
+        if !result.details.is_object() {
+            result.details = json!({});
+        }
+        result.details["diagnostics"] = Value::Array(gate.diagnostics);
+    }
+    // Advisory post-write claims guard: a live claim held by another
+    // endpoint rides the result as a warning line (apply already proceeded);
+    // a successful write by this agent auto-claims the path (15 min lease).
+    if !changed.is_empty() {
+        for line in crate::tools::a2a::claims_check_files(&changed).await {
+            result
+                .content
+                .push(pa_agent::types::ToolResultContent::text(line));
+        }
+        crate::tools::a2a::claims_note_writes(&changed);
+    }
     Ok(result)
+}
+
+/// Best-effort target paths of an edit call, for the pre-apply claims block:
+/// the explicit `path` argument when the mode takes one, else the paths the
+/// payload names (patch markers), resolved against the cwd.
+fn edit_target_paths(env: &Env, args: &Value, session: &mut Session) -> Vec<PathBuf> {
+    if let Some(raw) = args.get("path").and_then(Value::as_str) {
+        return vec![resolve_to_cwd(raw, &env.cwd)];
+    }
+    let input = args
+        .get("input")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut out = Vec::new();
+    for line in input.lines() {
+        let path = line
+            .strip_prefix("*** Update File: ")
+            .or_else(|| line.strip_prefix("*** Add File: "))
+            .or_else(|| line.strip_prefix("*** Delete File: "))
+            .or_else(|| line.strip_prefix("*** Move to: "));
+        if let Some(path) = path {
+            out.push(resolve_to_cwd(path.trim(), &env.cwd));
+        }
+    }
+    if out.is_empty() {
+        // Last resort: ask the engine for the preview batch (reads inputs,
+        // no writes) so blocking never fails open on an unrecognized format.
+        for file in session.preview().files {
+            if file.error.is_none() {
+                out.push(resolve_to_cwd(&file.display, &env.cwd));
+            }
+        }
+    }
+    out
 }
 
 /// omp `EditToolDetails`: the numbered `diff` (+ `firstChangedLine`, `op`,
@@ -172,7 +246,7 @@ fn edit_details(outcome: &pi_edit::session::ApplyOutcome) -> Value {
 ///
 /// # Errors
 /// Missing arguments or filesystem failures.
-pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
+pub async fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let raw = str_arg(args, "path")?;
     let Some(content) = args.get("content").and_then(Value::as_str) else {
         bail!("`content` is required to write {raw}");
@@ -186,18 +260,9 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         // `AgentProtocolHandler.write` → `executeSend`): steer a running eval
         // subagent instead of hitting the read-only output store.
         if let Some(to) = normalized.strip_prefix("agent://") {
-            // Delivery receipts are async; `write` itself is a sync tool on a
-            // `spawn_blocking` thread (see `tools.rs`), so drive the future to
-            // completion on the current runtime (or a throwaway one, e.g. in
-            // unit tests without a reactor).
-            let delivered = match tokio::runtime::Handle::try_current() {
-                Ok(handle) => handle.block_on(super::eval_agents::deliver_message(to, content)),
-                Err(_) => tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("write agent:// delivery runtime")
-                    .block_on(super::eval_agents::deliver_message(to, content)),
-            };
+            // Delivery receipts are async; `write` is async like `edit`, so
+            // just await the delivery.
+            let delivered = super::eval_agents::deliver_message(to, content).await;
             return delivered
                 .map(AgentToolResult::text)
                 .map_err(|error| anyhow!(error));
@@ -218,6 +283,14 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         )));
     }
     let path = resolve_to_cwd(raw, &env.cwd);
+    // Claims guard (OMP_CLAIMS=block): refuse before the write when another
+    // live endpoint holds a claim on the path (the repo anchor is resolved
+    // by the guard itself; the file may not exist yet).
+    if super::a2a::claims_block_mode_enabled() {
+        if let Some(reason) = super::a2a::claims_block_reason(std::slice::from_ref(&path)).await {
+            bail!("{reason}");
+        }
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
@@ -225,14 +298,33 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     std::fs::write(&path, content).with_context(|| format!("cannot write {}", path.display()))?;
     env.store
         .invalidate(&pi_edit::path_policy::canonical_key(&path));
-    Ok(AgentToolResult::text(format!(
+    let mut result = AgentToolResult::text(format!(
         "Successfully wrote {} bytes to {}",
         content.len(),
         format_path_relative_to_cwd(&path, &env.cwd, false)
-    )))
+    ));
+    // Advisory post-write LSP gate (same rules as `edit`).
+    if let Some(gate) = edit_diagnostics::run(env, std::slice::from_ref(&path)).await {
+        result
+            .content
+            .push(pa_agent::types::ToolResultContent::text(gate.section));
+        if !result.details.is_object() {
+            result.details = json!({});
+        }
+        result.details["diagnostics"] = Value::Array(gate.diagnostics);
+    }
+    // Advisory post-write claims guard (warning line) + auto-claim.
+    for line in super::a2a::claims_check_files(std::slice::from_ref(&path)).await {
+        result
+            .content
+            .push(pa_agent::types::ToolResultContent::text(line));
+    }
+    super::a2a::claims_note_writes(std::slice::from_ref(&path));
+    Ok(result)
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::tools::read::read;
@@ -378,11 +470,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_creates_parents_and_reports_bytes() {
+    #[tokio::test]
+    async fn write_creates_parents_and_reports_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::new(dir.path(), true);
-        let r = write(&env, &json!({"path": "a/b/c.txt", "content": "héllo"})).unwrap();
+        let r = write(&env, &json!({"path": "a/b/c.txt", "content": "héllo"}))
+            .await
+            .unwrap();
         assert_eq!(text_of(&r), "Successfully wrote 6 bytes to a/b/c.txt");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a/b/c.txt")).unwrap(),
@@ -390,14 +484,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_agent_url_is_a_message_not_a_read_only_store() {
+    #[tokio::test]
+    async fn write_agent_url_is_a_message_not_a_read_only_store() {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::new(dir.path(), true);
         let err = write(
             &env,
             &json!({"path": "agent://nobody-here", "content": "hi"}),
         )
+        .await
         .unwrap_err()
         .to_string();
         assert!(

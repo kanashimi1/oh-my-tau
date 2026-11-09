@@ -55,33 +55,24 @@ struct Live {
     by_ultra: bool,
 }
 
-static LIVE: std::sync::RwLock<Option<Live>> = std::sync::RwLock::new(None);
+static LIVE: parking_lot::RwLock<Option<Live>> = parking_lot::RwLock::new(None);
 
 /// Install (or clear) the live strategy `convert_to_llm` reads per request.
 pub fn set_live(shared: Option<Arc<Shared>>, by_ultra: bool) {
-    *LIVE
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        shared.map(|shared| Live { shared, by_ultra });
+    *LIVE.write() = shared.map(|shared| Live { shared, by_ultra });
 }
 
 /// The live strategy, `None` for `append`.
 #[must_use]
 pub fn live() -> Option<Arc<Shared>> {
-    LIVE.read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .map(|l| l.shared.clone())
+    LIVE.read().as_ref().map(|l| l.shared.clone())
 }
 
 /// CLM is on because an ultra mode switched it on: extensions that slim the
 /// context themselves (`context-slim`) must stand aside.
 #[must_use]
 pub fn ultra_owned() -> bool {
-    LIVE.read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .is_some_and(|l| l.by_ultra)
+    LIVE.read().as_ref().is_some_and(|l| l.by_ultra)
 }
 
 /// Extensions skipped on the core's `context` event while [`ultra_owned`].
@@ -191,7 +182,7 @@ impl Limits {
         let num = |id: &str, dv: usize| {
             s.get_number(id)
                 .filter(|v| *v >= 1.0)
-                .map_or(dv, |v| v as usize)
+                .map_or(dv, crate::context_policy::saturating_usize)
         };
         Self {
             max_slots: num("context.clm.maxSlots", d.max_slots),
@@ -227,7 +218,10 @@ impl SlotTable {
 
     /// Render the slots message body (`SLOTS_MARKER` first).
     #[must_use]
+    // invariant: write!/writeln! to a String is infallible.
+    #[allow(clippy::expect_used)]
     pub fn render(&self, host_evicted: &[String]) -> String {
+        use std::fmt::Write as _;
         let mut out = String::from(SLOTS_MARKER);
         out.push_str(
             "\nYour working memory, maintained with the context_edit tool. Raw conversation \
@@ -238,13 +232,16 @@ impl SlotTable {
             out.push_str("(no slots)\n");
         }
         for (name, text) in &self.slots {
-            out.push_str(&format!("<slot id=\"{name}\">\n{text}\n</slot>\n"));
+            writeln!(out, "<slot id=\"{name}\">\n{text}\n</slot>")
+                .expect("writing to a String is infallible");
         }
         if !host_evicted.is_empty() {
-            out.push_str(&format!(
-                "(host evicted over-budget slots: {})\n",
+            writeln!(
+                out,
+                "(host evicted over-budget slots: {})",
                 host_evicted.join(", ")
-            ));
+            )
+            .expect("writing to a String is infallible");
         }
         out.push_str("</context-slots>");
         out
@@ -312,7 +309,7 @@ pub fn apply_ops(table: &mut SlotTable, ops: &[Op], lim: &Limits) -> Result<(), 
                         names(&t)
                     )
                 })?;
-                t.slots[p].1 = text.clone();
+                t.slots[p].1.clone_from(text);
             }
             Op::Append { slot, text } => {
                 if let Some(p) = t.pos(slot) {
@@ -444,7 +441,7 @@ pub fn plan(messages: &[AgentMessage], kind: Kind, lim: &Limits) -> Plan {
         }
         if p.tail_start.is_some() && i < last_user {
             p.shown = p.table.clone();
-            p.host_evicted = evicted_all.clone();
+            p.host_evicted.clone_from(&evicted_all);
         }
     }
     if ask_pending {
@@ -502,10 +499,14 @@ pub struct Shared {
     allowed: AtomicBool,
     /// Offloaded blocks: message index -> the reference that replaces its text on every request.
     offloaded: Mutex<Vec<(usize, String)>>,
+    /// Recall-on-miss: user message index -> offloaded blocks re-inlined into it. Decided once
+    /// per user turn and sticky afterwards, so the wire prefix (and the prompt cache) is stable.
+    recalls: Mutex<Vec<(usize, Vec<usize>)>>,
 }
 
 impl Shared {
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     #[must_use]
     pub fn new(kind: Kind, limits: Limits) -> Arc<Self> {
         Self::with_policy(kind, limits, None)
@@ -524,6 +525,7 @@ impl Shared {
             policy,
             allowed: AtomicBool::new(true),
             offloaded: Mutex::new(Vec::new()),
+            recalls: Mutex::new(Vec::new()),
         })
     }
 
@@ -547,20 +549,48 @@ impl Shared {
             st.block_since_ref_turns = f.2;
         }
         st.offload_reads = offload_reads(&messages, &off);
+        st.offload_match_pct = offload_match(&messages, &off);
         let (action, fresh) = pol.decide(&st);
         if action == crate::context_policy::Action::RlmOffload && fresh {
-            if let Some((i, _)) = largest_old_block(&messages, &off) {
+            if let Some((low, min_age)) = pol.batch_target() {
+                // Cache-aligned: evict oldest-first in one go, down to `low` tokens.
+                let mut hist = st.history_tokens;
+                for (i, chars) in old_blocks(&messages, &off) {
+                    if hist <= low {
+                        break;
+                    }
+                    if block_features(&messages, i).0 < min_age {
+                        continue;
+                    }
+                    if let Some(reference) = offload_block(&messages[i], i) {
+                        hist = hist
+                            .saturating_sub(chars.saturating_sub(reference.chars().count()) / 4);
+                        off.push((i, reference));
+                    }
+                }
+            } else if let Some((i, _)) = largest_old_block(&messages, &off) {
                 if let Some(reference) = offload_block(&messages[i], i) {
                     off.push((i, reference));
                 }
             }
         }
+        let recall_budget = if action == crate::context_policy::Action::RlmRecall {
+            pol.recall_chars.max(crate::context_policy::POLICY_RECALL_CHARS)
+        } else {
+            pol.recall_chars
+        };
+        let recalled = self.recall(&messages, &off, recall_budget);
         for (i, reference) in off.iter() {
             if let Some(AgentMessage::Standard(m)) = messages.get_mut(*i) {
                 replace_block_text(m, reference);
             }
         }
         drop(off);
+        for (u, text) in recalled {
+            if let Some(AgentMessage::Standard(Message::User(m))) = messages.get_mut(u) {
+                append_user_text(m, &text);
+            }
+        }
         let edit = action == crate::context_policy::Action::ClmEdit;
         let done = edited_this_turn(&messages);
         let (mut out, p) = build_wire(messages, self.kind, &self.limits);
@@ -570,6 +600,148 @@ impl Shared {
             out.push(user_msg(crate::context_policy::MAINT_NOTICE.to_owned()));
         }
         out
+    }
+}
+
+impl Shared {
+    /// Recall-on-miss (T2): when the newest user message lexically matches offloaded blocks,
+    /// their full text is re-inlined into that user message (appended, so everything before it
+    /// keeps its cached prefix). Returns `(user message index, text to append)` for every turn
+    /// that recalled something — decisions are sticky. `budget` = max recalled chars per turn
+    /// (0 = off). `messages` must still hold the original (not yet replaced) block texts.
+    fn recall(
+        &self,
+        messages: &[AgentMessage],
+        off: &[(usize, String)],
+        budget: usize,
+    ) -> Vec<(usize, String)> {
+        if budget == 0 {
+            return Vec::new();
+        }
+        let mut rec = self.recalls.lock();
+        if let Some(&u) = user_turns(messages).last() {
+            if !off.is_empty() && rec.iter().all(|(i, _)| *i != u) {
+                let q = block_text(&messages[u]).unwrap_or_default();
+                let hits = recall_matches(messages, off, &q, budget);
+                rec.push((u, hits));
+            }
+        }
+        rec.iter()
+            .filter(|(u, b)| !b.is_empty() && *u < messages.len())
+            .map(|(u, blocks)| {
+                use std::fmt::Write as _;
+                let mut s = String::new();
+                for &i in blocks {
+                    let (text, call) = recall_source(messages, i);
+                    let _ = write!(
+                        s,
+                        "\n\n[recalled: block-{i}.txt was offloaded from your context earlier and matches this \
+                         message; its full text{} follows]\n{text}\n[end of block-{i}.txt]",
+                        call.map(|c| format!(" (result of {c})")).unwrap_or_default()
+                    );
+                }
+                (*u, s)
+            })
+            .collect()
+    }
+}
+
+/// Lowercased word tokens; `_ . -` stay inside a token (file names, ids), `/` splits paths.
+fn recall_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '-'))
+        .map(|t| t.trim_matches(|c| c == '.' || c == '-').to_lowercase())
+        .filter(|t| t.len() >= 2)
+        .collect()
+}
+
+/// A token specific enough to identify a block on its own: a name with a digit or `_ . -`.
+fn is_distinctive(t: &str) -> bool {
+    t.len() >= 5
+        && t.chars()
+            .any(|c| c.is_ascii_digit() || matches!(c, '_' | '.' | '-'))
+}
+
+/// Block text plus, for a tool result, `name {args}` of the call that produced it.
+fn recall_source(messages: &[AgentMessage], idx: usize) -> (String, Option<String>) {
+    let text = block_text(&messages[idx]).unwrap_or_default();
+    let AgentMessage::Standard(Message::ToolResult(tr)) = &messages[idx] else {
+        return (text, None);
+    };
+    let call = messages[..idx].iter().rev().find_map(|m| match m {
+        AgentMessage::Standard(Message::Assistant(a)) => a.content.iter().find_map(|c| match c {
+            AssistantContent::ToolCall(tc) if tc.id == tr.tool_call_id => {
+                Some(format!("`{}` {}", tc.name, tc.arguments))
+            }
+            _ => None,
+        }),
+        _ => None,
+    });
+    (text, call)
+}
+
+/// Offloaded blocks that the query points at, best first, within `budget` chars (max 3).
+/// A block qualifies with >= 3 shared word trigrams (a quoted line) or a shared distinctive
+/// token (file name, id) that occurs in at most two offloaded blocks.
+fn recall_matches(
+    messages: &[AgentMessage],
+    off: &[(usize, String)],
+    query: &str,
+    budget: usize,
+) -> Vec<usize> {
+    use std::collections::{HashMap, HashSet};
+    let qt = recall_tokens(query);
+    let qgrams: HashSet<String> = qt.windows(3).map(|w| w.join(" ")).collect();
+    let qdist: HashSet<&String> = qt.iter().filter(|t| is_distinctive(t)).collect();
+    let blocks: Vec<(usize, String, HashSet<String>, HashSet<String>)> = off
+        .iter()
+        .map(|(i, _)| {
+            let (text, call) = recall_source(messages, *i);
+            let toks = recall_tokens(&format!("{}\n{text}", call.unwrap_or_default()));
+            let grams = toks.windows(3).map(|w| w.join(" ")).collect();
+            let set = toks.into_iter().collect();
+            (*i, text, grams, set)
+        })
+        .collect();
+    let mut df: HashMap<&String, usize> = HashMap::new();
+    for t in &qdist {
+        df.insert(
+            t,
+            blocks.iter().filter(|b| b.3.contains(t.as_str())).count(),
+        );
+    }
+    let mut scored: Vec<(usize, usize, usize)> = blocks
+        .iter()
+        .filter_map(|(i, text, grams, set)| {
+            let g = qgrams.iter().filter(|q| grams.contains(*q)).count();
+            let d = qdist
+                .iter()
+                .filter(|t| set.contains(t.as_str()) && df.get(*t).copied().unwrap_or(0) <= 2)
+                .count();
+            (g >= 3 || d >= 1).then_some((*i, g + 5 * d, text.chars().count()))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut used = 0;
+    let mut out = Vec::new();
+    for (i, _, n) in scored {
+        if out.len() == 3 || used + n > budget {
+            continue;
+        }
+        used += n;
+        out.push(i);
+    }
+    out
+}
+
+fn append_user_text(m: &mut UserMessage, extra: &str) {
+    match &mut m.content {
+        UserContent::Text(t) => t.push_str(extra),
+        UserContent::Parts(ps) => ps.push(pa_agent::types::UserPart::Text(
+            pa_agent::types::TextContent {
+                text: extra.to_owned(),
+                text_signature: None,
+            },
+        )),
     }
 }
 
@@ -585,6 +757,13 @@ fn block_text(m: &AgentMessage) -> Option<String> {
 /// Largest not-yet-offloaded user/tool-result block before the newest user message, outside
 /// the pinned prefix, that is big enough to be worth a reference. `(index, chars)`.
 fn largest_old_block(messages: &[AgentMessage], off: &[(usize, String)]) -> Option<(usize, usize)> {
+    old_blocks(messages, off)
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+}
+
+/// Every such candidate block, oldest first. `(index, chars)`.
+fn old_blocks(messages: &[AgentMessage], off: &[(usize, String)]) -> Vec<(usize, usize)> {
     let pinned_end = messages
         .iter()
         .position(|m| matches!(m, AgentMessage::Standard(Message::Assistant(_))))
@@ -596,7 +775,7 @@ fn largest_old_block(messages: &[AgentMessage], off: &[(usize, String)]) -> Opti
         .filter(|(i, _)| *i >= pinned_end && *i < last_user && off.iter().all(|(j, _)| j != i))
         .filter_map(|(i, m)| block_text(m).map(|t| (i, t.chars().count())))
         .filter(|(_, n)| *n >= crate::context_policy::OFFLOAD_MIN_CHARS)
-        .max_by_key(|(_, n)| *n)
+        .collect()
 }
 
 /// Distinctive tokens of a block: identifiers/numbers (>= 6 chars with a digit), at most 400.
@@ -683,6 +862,43 @@ fn offload_reads(messages: &[AgentMessage], off: &[(usize, String)]) -> usize {
             _ => false,
         })
         .count()
+}
+/// % of the newest user message's distinctive tokens that identify an offloaded block
+/// (the same `recall_tokens`/`is_distinctive`/df<=2 contract `recall_matches` scores with).
+fn offload_match(messages: &[AgentMessage], off: &[(usize, String)]) -> usize {
+    use std::collections::{HashMap, HashSet};
+    if off.is_empty() {
+        return 0;
+    }
+    let Some(&u) = user_turns(messages).last() else {
+        return 0;
+    };
+    let Some(q) = block_text(&messages[u]) else {
+        return 0;
+    };
+    let qt = recall_tokens(&q);
+    let qdist: HashSet<&String> = qt.iter().filter(|t| is_distinctive(t)).collect();
+    if qdist.is_empty() {
+        return 0;
+    }
+    let blocks: Vec<HashSet<String>> = off
+        .iter()
+        .map(|(i, _)| {
+            let (text, call) = recall_source(messages, *i);
+            recall_tokens(&format!("{}\n{text}", call.unwrap_or_default()))
+                .into_iter()
+                .collect()
+        })
+        .collect();
+    let df: HashMap<&String, usize> = qdist
+        .iter()
+        .map(|t| (*t, blocks.iter().filter(|b| b.contains(*t)).count()))
+        .collect();
+    let hit = qdist
+        .iter()
+        .filter(|t| matches!(df.get(*t), Some(n) if (1..=2).contains(n)))
+        .count();
+    100 * hit / qdist.len()
 }
 
 /// Write the block to the offload dir and return the one-line reference that replaces it.
@@ -837,7 +1053,7 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
         .unwrap_or_default();
     crate::context_policy::State {
         step,
-        history_tokens: last_usage as usize + new_chars / 4,
+        history_tokens: usize::try_from(last_usage).unwrap_or(usize::MAX) + new_chars / 4,
         slots_chars: table.chars(),
         slots_count: table.slots.len(),
         steps_since_edit,
@@ -848,11 +1064,10 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
         block_since_ref_turns: 0,
         offloads_total: 0,
         offload_reads: 0,
-        cache_hit_pct: if input == 0 {
-            0
-        } else {
-            (100 * cached / input) as usize
-        },
+        offload_match_pct: 0,
+        cache_hit_pct: (100 * cached)
+            .checked_div(input)
+            .map_or(0, |pct| usize::try_from(pct).unwrap_or(usize::MAX)),
         excerpt,
     }
 }
@@ -965,6 +1180,7 @@ fn result_text(c: &[ToolResultContent]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use pa_agent::types::ToolResultMessage;
@@ -973,7 +1189,7 @@ mod tests {
         user_msg(t.to_owned())
     }
 
-    fn asst(content: Value, stop: &str) -> AgentMessage {
+    fn asst(content: &Value, stop: &str) -> AgentMessage {
         let v = json!({"role":"assistant","content":content,"api":"x","provider":"x","model":"x",
             "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
                      "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
@@ -981,15 +1197,15 @@ mod tests {
         AgentMessage::Standard(serde_json::from_value::<Message>(v).expect("assistant"))
     }
 
-    fn assistant_edit(id: &str, ops: Value) -> AgentMessage {
+    fn assistant_edit(id: &str, ops: &Value) -> AgentMessage {
         asst(
-            json!([{"type":"toolCall","id":id,"name":TOOL_NAME,"arguments":{"ops":ops}}]),
+            &json!([{"type":"toolCall","id":id,"name":TOOL_NAME,"arguments":{"ops":ops}}]),
             "toolUse",
         )
     }
 
     fn assistant_text(t: &str) -> AgentMessage {
-        asst(json!([{"type":"text","text":t}]), "stop")
+        asst(&json!([{"type":"text","text":t}]), "stop")
     }
 
     fn result(id: &str, err: bool) -> AgentMessage {
@@ -1024,7 +1240,7 @@ mod tests {
     fn append_is_identity() {
         let h = vec![
             user("task"),
-            assistant_edit("c1", json!([{"op":"append","slot":"a","text":"x"}])),
+            assistant_edit("c1", &json!([{"op":"append","slot":"a","text":"x"}])),
             result("c1", false),
         ];
         let before = wire_json(&h);
@@ -1046,7 +1262,7 @@ mod tests {
             user("task"),
             assistant_text("old work"),
             user("steer"),
-            assistant_edit("c1", json!([{"op":"append","slot":"facts","text":"A=1"}])),
+            assistant_edit("c1", &json!([{"op":"append","slot":"facts","text":"A=1"}])),
             result("c1", false),
             assistant_text("noted"),
             user("next"),
@@ -1070,7 +1286,7 @@ mod tests {
             user("task"),
             assistant_edit(
                 "c1",
-                json!([{"op":"append","slot":"a","text":"alpha"},{"op":"append","slot":"b","text":"beta"}]),
+                &json!([{"op":"append","slot":"a","text":"alpha"},{"op":"append","slot":"b","text":"beta"}]),
             ),
             result("c1", false),
             assistant_text("ok"),
@@ -1085,7 +1301,7 @@ mod tests {
         // edit of slot b: pinned prefix and slot a bytes unchanged
         h.push(assistant_edit(
             "c2",
-            json!([{"op":"replace","slot":"b","text":"BETA2"}]),
+            &json!([{"op":"replace","slot":"b","text":"BETA2"}]),
         ));
         h.push(result("c2", false));
         h.push(assistant_text("ok2"));
@@ -1113,7 +1329,7 @@ mod tests {
         let (w0, _) = build_wire(h.clone(), Kind::Clm, &l);
         h.push(assistant_edit(
             "c1",
-            json!([{"op":"append","slot":"a","text":"x"}]),
+            &json!([{"op":"append","slot":"a","text":"x"}]),
         ));
         h.push(result("c1", false));
         // same run (no user message after the edit): wire is the unchanged raw history + the edit
@@ -1177,7 +1393,7 @@ mod tests {
         let h = vec![
             user("task"),
             assistant_text("work"),
-            assistant_edit("c1", json!([{"op":"replace","slot":"nope","text":"x"}])),
+            assistant_edit("c1", &json!([{"op":"replace","slot":"nope","text":"x"}])),
             result("c1", true),
         ];
         let before = wire_json(&h);
@@ -1194,7 +1410,7 @@ mod tests {
             user("task"),
             assistant_edit(
                 "c1",
-                json!([{"op":"append","slot":"old","text":big},{"op":"append","slot":"new","text":big}]),
+                &json!([{"op":"append","slot":"old","text":big},{"op":"append","slot":"new","text":big}]),
             ),
             result("c1", false),
             user("u"),
@@ -1292,7 +1508,7 @@ mod tests {
         let mut h2 = h1;
         h2.push(assistant_edit(
             "c9",
-            json!([{"op":"append","slot":"a","text":"x"}]),
+            &json!([{"op":"append","slot":"a","text":"x"}]),
         ));
         h2.push(result("c9", false));
         let w2 = sh.wire(h2.clone());
@@ -1312,7 +1528,7 @@ mod tests {
             user("brief"),
             usage(100, 0, 5),
             user("step 1"),
-            assistant_edit("c1", json!([{"op":"append","slot":"a","text":"abc"}])),
+            assistant_edit("c1", &json!([{"op":"append","slot":"a","text":"abc"}])),
             result("c1", false),
             usage(20, 180, 10),
             user(&format!("{} END", "w ".repeat(400))),
@@ -1367,6 +1583,142 @@ mod tests {
     }
 
     #[test]
+    fn batch_offload_evicts_oldest_blocks_once_down_to_low() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pol = crate::context_policy::Policy::new(crate::context_policy::Kind::Rule);
+        pol.rule_tokens = 0;
+        pol.rule_offload_high = 20_000;
+        pol.rule_offload_low = 28_000;
+        let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
+        let usage = |i: u64| {
+            let v = json!({"role":"assistant","content":[{"type":"text","text":"r"}],"api":"x","provider":"x",
+                "model":"x","usage":{"input":i,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
+                "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
+                "stopReason":"stop","timestamp":0});
+            AgentMessage::Standard(serde_json::from_value::<Message>(v).unwrap())
+        };
+        let (b1, b2, b3) = ("a".repeat(5000), "b".repeat(5000), "c".repeat(5000));
+        let h = vec![
+            user("brief"),
+            assistant_text("ACK"),
+            user(&b1),
+            assistant_text("1"),
+            user(&b2),
+            assistant_text("2"),
+            user(&b3),
+            usage(30_000),
+            user("now"),
+        ];
+        std::env::set_var("OMP_CONTEXT_OFFLOAD_DIR", dir.path());
+        let j = wire_json(&sh.wire(h));
+        // 30k tokens, each 5000-char block frees ~1.2k: the two oldest go, the third stays.
+        assert!(
+            !j.contains(&b1) && !j.contains(&b2),
+            "two oldest evicted in one turn"
+        );
+        assert!(j.contains(&b3), "eviction stops at the low mark");
+        // (file names only: the offload dir env var is shared with parallel tests)
+        assert!(
+            j.contains("block-2.txt") && j.contains("block-4.txt") && !j.contains("block-6.txt")
+        );
+    }
+
+    #[test]
+    fn recall_on_miss_reinlines_a_matching_block_once_and_sticky() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pol = crate::context_policy::Policy::new(crate::context_policy::Kind::Rule);
+        pol.rule_tokens = 0;
+        pol.rule_offload_high = 20_000;
+        pol.rule_offload_low = 27_600;
+        pol.recall_chars = 20_000;
+        let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
+        let usage = |i: u64| {
+            let v = json!({"role":"assistant","content":[{"type":"text","text":"r"}],"api":"x","provider":"x",
+                "model":"x","usage":{"input":i,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
+                "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
+                "stopReason":"stop","timestamp":0});
+            AgentMessage::Standard(serde_json::from_value::<Message>(v).unwrap())
+        };
+        let file = format!("def spawn_gate(limit_42):\n{}", "    pass\n".repeat(600));
+        let other = "b".repeat(5000);
+        let mut h = vec![
+            user("brief"),
+            assistant_text("ACK"),
+            asst(
+                &json!([{"type":"toolCall","id":"r1","name":"read","arguments":{"path":"/src/spawn_gate.py"}}]),
+                "toolUse",
+            ),
+            AgentMessage::Standard(Message::ToolResult(ToolResultMessage {
+                tool_call_id: "r1".into(),
+                tool_name: "read".into(),
+                content: vec![ToolResultContent::text(&file)],
+                details: None,
+                is_error: false,
+                timestamp: 0,
+            })),
+            assistant_text("1"),
+            user(&other),
+            usage(30_000),
+            user("Which file did your earlier read of spawn_gate.py show? Quote its first line."),
+        ];
+        std::env::set_var("OMP_CONTEXT_OFFLOAD_DIR", dir.path());
+        let j = wire_json(&sh.wire(h.clone()));
+        assert!(j.contains("[offloaded:"), "the blocks were evicted");
+        assert_eq!(
+            j.matches("[recalled: block-3.txt").count(),
+            1,
+            "matching block re-inlined"
+        );
+        assert!(
+            j.contains("def spawn_gate(limit_42)") && j.contains("`read`"),
+            "full text + its call"
+        );
+        assert!(!j.contains(&other), "the unrelated block stays out");
+        h.push(assistant_text("it is spawn_gate.py"));
+        h.push(user("Thanks. Anything else pending today?"));
+        let j2 = wire_json(&sh.wire(h));
+        assert_eq!(
+            j2.matches("[recalled: block-3.txt").count(),
+            1,
+            "sticky, not repeated"
+        );
+        assert!(
+            j2.starts_with(&j[..j.len() - 1]),
+            "earlier wire is a prefix: cache-safe"
+        );
+    }
+
+    #[test]
+    fn explicit_policy_recall_restores_large_matching_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = omp_settings::Settings::load_from(None, dir.path());
+        let env = |key: &str| match key {
+            "OMP_CONTEXT_POLICY" => Some("schedule".to_owned()),
+            "OMP_CONTEXT_POLICY_SCRIPT" => Some("0,0,2,3".to_owned()),
+            _ => None,
+        };
+        let pol = crate::context_policy::Policy::resolve(&settings, &env).unwrap().unwrap();
+        let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
+        let file = format!("def spawn_gate(limit_42):\n{}", "x".repeat(30_000));
+        let mut h = vec![
+            user("brief"),
+            assistant_text("ACK"),
+            user(&file),
+            assistant_text("received"),
+            user("Which function was defined?"),
+        ];
+        std::env::set_var("OMP_CONTEXT_OFFLOAD_DIR", dir.path());
+        let offloaded = wire_json(&sh.wire(h.clone()));
+        assert!(offloaded.contains("[offloaded:"));
+        assert!(!offloaded.contains("def spawn_gate(limit_42)"));
+        h.push(assistant_text("unknown"));
+        h.push(user("Quote the first line for spawn_gate."));
+        let recalled = wire_json(&sh.wire(h));
+        assert!(recalled.contains("[recalled:"));
+        assert!(recalled.contains("def spawn_gate(limit_42)"));
+    }
+
+    #[test]
     fn block_features_age_restatement_and_offload_reads() {
         let block = format!(
             "{} ID-1234567 ID-7654321 ID-1111111 ID-2222222",
@@ -1388,8 +1740,8 @@ mod tests {
             since, 2,
             "last restatement was in the turn right after the block"
         );
-        let mut h2 = h.clone();
-        h2.insert(5, asst(json!([{"type":"toolCall","id":"e1","name":"eval","arguments":{"code":"open('/x/block-2.txt').read()"}}]), "toolUse"));
+        let mut h2 = h;
+        h2.insert(5, asst(&json!([{"type":"toolCall","id":"e1","name":"eval","arguments":{"code":"open('/x/block-2.txt').read()"}}]), "toolUse"));
         assert_eq!(offload_reads(&h2, &[(2, "ref".into())]), 1);
         assert_eq!(offload_reads(&h2, &[]), 0);
     }

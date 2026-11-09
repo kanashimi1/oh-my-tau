@@ -37,7 +37,10 @@ fn output(rt: &Runtime, text: &str) {
 /// ledger and hands the RLM loop prompt to the model.
 /// The conversation as plain text for `/rlm <question>` without a context
 /// source: one `[role]` header per message, text and tool output bodies.
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 fn session_transcript(messages: &[Value]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::new();
     for m in messages {
         let role = m.get("role").and_then(Value::as_str).unwrap_or("?");
@@ -61,9 +64,14 @@ fn session_transcript(messages: &[Value]) -> String {
         if body.trim().is_empty() {
             continue;
         }
-        out.push_str(&format!("[{role}]\n{body}\n\n"));
+        write!(out, "[{role}]\n{body}\n\n").expect("writing to a String is infallible");
     }
     out
+}
+
+/// `session_transcript` for sibling features (`/refine` planner context).
+pub(crate) fn session_transcript_for_prompt(messages: &[Value]) -> String {
+    session_transcript(messages)
 }
 
 async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
@@ -115,7 +123,7 @@ async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
         }
         rlm::ContextSource::File(path) => {
             let full = if Path::new(&path).is_absolute() {
-                path.clone().into()
+                path.into()
             } else {
                 rt.cwd.join(&path)
             };
@@ -229,6 +237,8 @@ pub fn is_extra_command(name: &str) -> bool {
             | "login"
             | "logout"
             | "debug"
+            | "budget"
+            | "refine"
             | "restart"
             | "btw"
             | "rlm"
@@ -241,6 +251,7 @@ pub fn is_extra_command(name: &str) -> bool {
 ///
 /// Shape: `{"name", "description", "aliases"?, "input": {"hint"}?, "source": "builtin"}`.
 #[must_use]
+#[allow(clippy::too_many_lines)] // one json! literal per command: a catalog table, not logic
 pub fn extra_catalog() -> Vec<Value> {
     vec![
         json!({
@@ -354,6 +365,14 @@ pub fn extra_catalog() -> Vec<Value> {
             "source": "builtin",
         }),
         json!({
+            "name": "refine",
+            "description": "Review the trajectory and distill small prompt/memory lessons into the persistent harness (prime-agent port)",
+            "input": {
+                "hint": "[instructions] | list | history | rollback [id] | global [instructions]"
+            },
+            "source": "builtin",
+        }),
+        json!({
             "name": "restart",
             "description": "Restart omp with the same launch flags, resuming this session",
             "source": "builtin",
@@ -382,6 +401,14 @@ pub fn extra_catalog() -> Vec<Value> {
             },
             "source": "builtin",
         }),
+        json!({
+            "name": "budget",
+            "description": "Set a session spend limit (USD); warns and can stop prompting when tripped",
+            "input": {
+                "hint": "[<limit>|off|status]"
+            },
+            "source": "builtin",
+        }),
     ]
 }
 
@@ -389,6 +416,7 @@ pub fn extra_catalog() -> Vec<Value> {
 ///
 /// Returns `None` when `name` is not recognized, allowing fallback to
 /// extension and file commands.
+#[allow(clippy::too_many_lines)] // flat name->handler dispatcher, one arm per slash command
 pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option<Outcome> {
     match name {
         "rlm" => Some(rlm_command(rt, args).await),
@@ -417,16 +445,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "quit" => {
-            output(
-                rt,
-                "/quit: to exit the interactive session use /exit, Ctrl+D, or double-tap Ctrl+C; RPC sessions terminate when the client disconnects.",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
-        "q" => {
+        "quit" | "q" => {
             output(
                 rt,
                 "/quit: to exit the interactive session use /exit, Ctrl+D, or double-tap Ctrl+C; RPC sessions terminate when the client disconnects.",
@@ -467,8 +486,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "branch" => Some(interactive::branch_command(rt).await),
-        "rewind" => Some(interactive::branch_command(rt).await),
+        "branch" | "rewind" => Some(interactive::branch_command(rt).await),
         "plan" => Some(crate::features::plan::command(rt, args).await),
         "goal" => {
             output(
@@ -494,8 +512,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
         }
         "skills" => Some(crate::features::skills::command(rt, args).await),
         "agents" => Some(interactive::agents_command(rt).await),
-        "extensions" => Some(interactive::extensions_command(rt).await),
-        "status" => Some(interactive::extensions_command(rt).await),
+        "extensions" | "status" => Some(interactive::extensions_command(rt).await),
         "login" => {
             login::login_command(rt, args).await;
             Some(Outcome::Handled {
@@ -510,7 +527,9 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
         }
         "debug" => Some(interactive::debug_command(rt).await),
         "restart" => Some(crate::features::restart::command(rt, args).await),
+        "refine" => Some(crate::features::refine::command(rt, args).await),
         "btw" => Some(crate::features::btw::command(rt, args).await),
+        "budget" => Some(crate::features::budget::command(rt, args).await),
         "collab" => Some(collab_command(rt, args).await),
         _ => None,
     }
@@ -590,6 +609,7 @@ fn collab_controller(rt: &Arc<Runtime>) -> Arc<CollabController> {
 
 /// `/collab [start|view|list|stop|status] [relayUrl]` (TS
 /// `slash-commands/builtin-collaboration.ts` "collab", text-mode port).
+#[allow(clippy::too_many_lines)] // text-mode port of one TS command; its verbs share the controller
 async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     let controller = collab_controller(rt);
     let args = args.trim();
@@ -658,9 +678,7 @@ async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
                             },
                         ));
                     }
-                    lines.push(
-                        "Get a link: omt collab link <instanceId|pid> [--view]".to_string(),
-                    );
+                    lines.push("Get a link: omt collab link <instanceId|pid> [--view]".to_string());
                     output(rt, &lines.join("\n"));
                 }
                 Err(err) => output(rt, &format!("Failed to list collab hosts: {err:#}")),
@@ -730,7 +748,7 @@ mod tests {
     #[test]
     fn test_extra_catalog_names_all_handled() {
         let catalog = extra_catalog();
-        assert_eq!(catalog.len(), 20, "expected 20 extra commands in catalog");
+        assert_eq!(catalog.len(), 22, "expected 22 extra commands in catalog");
         for cmd in &catalog {
             let name = cmd["name"].as_str().expect("command must have name");
             assert!(

@@ -183,7 +183,7 @@ fn plan_op(args: &Value) -> Result<Value, String> {
         remaining_calls: limits.max_calls.saturating_sub(used),
         max_chars,
     };
-    plan(&req).map(|p| p.to_json())
+    plan(&req).map(LamPlan::to_json)
 }
 
 // ---------------------------------------------------------------------------
@@ -308,11 +308,10 @@ impl Backend for HostBackend {
     ) -> BoxFut<'a, Result<(String, Usage, Model), String>> {
         Box::pin(async move {
             #[cfg(test)]
+            #[allow(clippy::disallowed_methods)]
+            // tests: throwaway runtimes drive async code
             {
-                let test_backend = super::rlm::TEST_BACKEND
-                    .lock()
-                    .expect("test backend")
-                    .clone();
+                let test_backend = super::rlm::TEST_BACKEND.lock().clone();
                 if let Some(b) = test_backend {
                     return b.complete(model, prompt, signal).await;
                 }
@@ -400,6 +399,7 @@ fn rank_op(args: &Value) -> Result<Value, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -509,7 +509,7 @@ mod tests {
                     "id": "mock-1", "name": "Mock", "api": "mock-api", "provider": "mock",
                     "baseUrl": "http://localhost", "reasoning": false, "input": ["text"],
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                    "contextWindow": 128000, "maxTokens": 4096,
+                    "contextWindow": 128_000, "maxTokens": 4096,
                 }))
                 .expect("mock model");
                 Ok((text, usage, model))

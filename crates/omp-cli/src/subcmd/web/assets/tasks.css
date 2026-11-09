@@ -1,0 +1,56 @@
+/* Background task center (feature: tasks.js) — panel + topbar badge. */
+.tasks-btn { position: relative; }
+.tasks-btn .tasks-badge {
+  position: absolute; top: -4px; right: -4px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--accent); color: var(--on-accent);
+  font-size: 10.5px; line-height: 16px; font-weight: 700; text-align: center;
+}
+.tasks-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--fg); }
+
+.modal.tasks-modal .modal-body { padding: 0; }
+.modal.tasks-modal { width: min(720px, 94vw); }
+.modal.tasks-modal .modal-foot { gap: 8px; }
+
+.tasks-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+}
+.tasks-toolbar .filter { flex: 1; }
+.tasks-state { padding: 28px 16px; text-align: center; color: var(--fg-muted); }
+.tasks-state .spin { display: inline-block; animation: pulse 1.2s infinite; }
+
+.tasks-list { max-height: min(56vh, 480px); overflow: auto; margin: 0; padding: 6px; list-style: none; }
+.task-row {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center;
+  padding: 8px 10px; border-radius: 8px; border: 1px solid transparent;
+}
+.task-row:hover, .task-row:focus-within { background: var(--bg-hover); border-color: var(--border); }
+.task-row + .task-row { margin-top: 2px; }
+.task-row.active { border-color: var(--accent); }
+.task-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--fg-faint); align-self: start; margin-top: 5px; }
+.task-dot.busy { background: var(--accent); animation: pulse 1s infinite; }
+.task-dot.wait { background: var(--warn); }
+.task-dot.done { background: var(--ok); }
+.task-dot.dead { background: var(--fg-faint); }
+
+.task-main { min-width: 0; }
+.task-title-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.task-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-status { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+.task-status.busy { color: var(--accent); border-color: var(--accent); }
+.task-status.wait { color: var(--warn); border-color: var(--warn); }
+.task-status.done { color: var(--ok); border-color: var(--ok); }
+.task-sub { color: var(--fg-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-sub .sep { color: var(--fg-faint); }
+.task-tool { color: var(--accent-2); font-size: 12px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-stats { color: var(--fg-muted); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
+.task-elapsed { font-variant-numeric: tabular-nums; color: var(--fg-muted); font-size: 12px; }
+
+.task-actions { display: flex; gap: 6px; align-items: center; }
+.task-actions .icon-btn { padding: 3px 8px; font-size: 12px; border-radius: 6px; }
+
+@media (max-width: 640px) {
+  .task-row { grid-template-columns: auto 1fr; }
+  .task-actions { grid-column: 1 / -1; justify-content: flex-end; }
+}

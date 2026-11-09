@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/omp-sandbox",
     "vendor/pa-types",
     "vendor/pa-ai",
     "vendor/pa-models",
@@ -18,7 +19,7 @@ members = [
 exclude = ["crates/.wsckpt"]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 license = "MIT"
 
@@ -54,6 +55,15 @@ unsafe_code = "forbid"
 # (the design-choice classes, each with its in-code justification) keep
 # their force under the manifest route.
 pedantic = "warn"
+# Lock convention: parking_lot for synchronous locks, tokio::sync only where a
+# guard must live across `.await`. A std/parking_lot guard held across an await
+# can deadlock the runtime or make the future !Send, so these are hard errors.
+await_holding_lock = { level = "deny", priority = 1 }
+await_holding_refcell_ref = { level = "deny", priority = 1 }
+# Library code returns errors instead of panicking; documented invariants
+# carry an item-level #[allow] with the reason. Tests are exempt (clippy.toml).
+unwrap_used = { level = "deny", priority = 1 }
+expect_used = { level = "deny", priority = 1 }
 redundant_clone = "warn"
 clone_on_copy = "warn"
 assigning_clones = "warn"
@@ -136,6 +146,13 @@ used_underscore_binding = "warn"
 lto = "thin"
 codegen-units = 4
 debug = "line-tables-only"
+
+# Distribution build (`cargo build --profile dist -p omp-cli`): release minus
+# the DWARF line tables (~200 MB of the ~310 MB release binary; ~107 MB
+# stripped). `release` keeps them for symbolized local backtraces.
+[profile.dist]
+inherits = "release"
+strip = "debuginfo"
 
 # Vendored crossterm: adds xterm modifyOtherKeys (`CSI 27 ; mods ; code ~`) decoding
 # that upstream lacks — needed so ctrl+shift+v works when only the modifyOtherKeys

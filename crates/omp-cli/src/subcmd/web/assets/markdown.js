@@ -64,6 +64,11 @@
     const park = (html) => `\u0000${parked.push(html) - 1}\u0000`;
     let s = text.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _t, code) => park(`<code>${esc(code)}</code>`));
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (m, alt, url) => {
+      // Host files (/abs, ~/x, C:\x) become preview links; artifacts.js then shows them inline.
+      if (/^(?:\/(?!\/)|~\/|[A-Za-z]:[\\/])/.test(url.trim())) {
+        const p = url.trim();
+        return park(`<a class="file-link" href="#" title="Preview ${esc(p)}" data-path="${esc(p)}">${esc(alt || p)}</a>`);
+      }
       const u = safeUrl(url);
       return u ? park(`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(alt || u)}</a>`) : m;
     });
@@ -88,19 +93,24 @@
       .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
   }
 
-  function codeBlock(code, lang) {
-    const id = "cb" + Math.random().toString(36).slice(2, 9);
+  function codeBlock(code, lang, ctx) {
+    // Streaming callers provide a stable scope: rerendering the same block
+    // reuses its store slot instead of adding one random entry per frame.
+    const id = ctx && ctx.scope != null
+      ? `cb${ctx.scope}-${ctx.index++}`
+      : "cb" + Math.random().toString(36).slice(2, 9);
     OMP._codeStore = OMP._codeStore || new Map();
-    OMP._codeStore.set(id, code);
+    OMP._codeStore.set(id, { code, lang: lang || "" });
     if (OMP._codeStore.size > 3000) OMP._codeStore.delete(OMP._codeStore.keys().next().value);
     return `<div class="codeblock"><div class="code-head"><span>${esc(lang || "")}</span>` +
-      `<button class="copy-btn" data-copy="${id}">copy</button></div>` +
+      `<button class="copy-btn" data-copy="${id}">copy</button>` +
+      `<button class="copy-btn" data-open="${id}">open</button></div>` +
       `<pre><code>${highlight(code, lang)}</code></pre></div>`;
   }
 
   const LIST_RE = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 
-  function blocks(lines) {
+  function blocks(lines, ctx) {
     let out = "";
     let i = 0;
     let para = [];
@@ -118,7 +128,7 @@
         i++;
         while (i < lines.length && !lines[i].trim().startsWith(marker)) body.push(lines[i++]);
         i++;
-        out += codeBlock(body.join("\n"), fence[2]);
+        out += codeBlock(body.join("\n"), fence[2], ctx);
         continue;
       }
       if (!line.trim()) { flush(); i++; continue; }
@@ -129,7 +139,7 @@
         flush();
         const quote = [];
         while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*>\s?/, ""));
-        out += `<blockquote>${blocks(quote)}</blockquote>`;
+        out += `<blockquote>${blocks(quote, ctx)}</blockquote>`;
         continue;
       }
       if (line.includes("|") && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
@@ -176,7 +186,7 @@
         for (const it of items) {
           const task = it[0].match(/^\[([ xX])\]\s+(.*)$/);
           if (task) it[0] = (task[1] === " " ? "☐ " : "☑ ") + task[2];
-          const inner = it.length === 1 ? inline(it[0]) : blocks(it).replace(/^<p>([\s\S]*?)<\/p>/, "$1");
+          const inner = it.length === 1 ? inline(it[0]) : blocks(it, ctx).replace(/^<p>([\s\S]*?)<\/p>/, "$1");
           out += `<li>${inner}</li>`;
         }
         out += `</${tag}>`;
@@ -189,11 +199,13 @@
     return out;
   }
 
-  OMP.md = function md(text) {
-    return blocks(String(text ?? "").replace(/\r\n?/g, "\n").split("\n"));
+  let mdScope = 0;
+  OMP.mdScope = () => ++mdScope;
+  OMP.md = function md(text, scope) {
+    return blocks(String(text ?? "").replace(/\r\n?/g, "\n").split("\n"), { scope, index: 0 });
   };
 
-  // Delegated copy buttons for code blocks.
+  // Delegated copy + open buttons for code blocks.
   document.addEventListener("click", async (e) => {
     const btn = e.target.closest && e.target.closest("[data-copy]");
     if (!btn) return;
@@ -203,5 +215,17 @@
       btn.textContent = "copied";
       setTimeout(() => (btn.textContent = "copy"), 1200);
     }
+  });
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest && e.target.closest("[data-open]");
+    if (!btn) return;
+    const entry = OMP._codeStore && OMP._codeStore.get(btn.dataset.open);
+    if (!entry) return;
+    const { code, lang } = entry;
+    const l = (lang || "").toLowerCase();
+    if (l === "html" || l === "svg" || l === "xml") OMP.artifacts?.open({ kind: "html", title: lang || "html", content: code });
+    else if (l === "diff" || l === "patch") OMP.artifacts?.open({ kind: "diff", title: lang || "diff", content: code });
+    else OMP.artifacts?.open({ kind: "code", title: lang || "code", content: code, lang });
   });
 })(window.OMP);

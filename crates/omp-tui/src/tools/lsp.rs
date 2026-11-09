@@ -131,7 +131,11 @@ mod tests {
             .draw(|f| Lsp.render(f, f.area(), &call, &Theme::default()))
             .unwrap();
         let buf = terminal.backend().buffer();
-        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        let text: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(text.contains("mismatched types"));
         let error_fg = Theme::default().color("error");
         assert!(buf.content().iter().any(|c| c.fg == error_fg));

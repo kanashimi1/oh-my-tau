@@ -8,8 +8,9 @@
 //! back to the local agent.db read when no broker is installed or a fetch
 //! fails (TS degrades the same way).
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -57,14 +58,11 @@ static BROKER: Mutex<Option<Arc<dyn UsageBroker>>> = Mutex::new(None);
 /// Register (or replace) the host usage broker; `None` removes it (the TS
 /// "no broker configured" path: local agent.db, no fleet tokens).
 pub fn set_usage_broker(broker: Option<Arc<dyn UsageBroker>>) {
-    *BROKER.lock().unwrap_or_else(PoisonError::into_inner) = broker;
+    *BROKER.lock() = broker;
 }
 
 pub(crate) fn installed_broker() -> Option<Arc<dyn UsageBroker>> {
-    BROKER
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    BROKER.lock().clone()
 }
 
 /// TS `fetchFleetTokens`: sum broker-recorded client token burn per provider;

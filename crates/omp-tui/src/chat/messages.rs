@@ -390,6 +390,7 @@ impl ChatEntry {
 
     /// Test constructor over the typed payload (block-renderer unit tests).
     #[cfg(test)]
+    #[must_use]
     pub fn new_for_test(role: ChatRole, kind: ChatKind) -> Self {
         let text = match &kind {
             ChatKind::Assistant(a) => a.text(),
@@ -861,7 +862,7 @@ impl Messages {
                 self.seen_parts = total;
                 if live {
                     self.reveal
-                        .set_target(reveal_blocks(&segments, &ThinkingDisplay::default()));
+                        .set_target(reveal_blocks(&segments, ThinkingDisplay::default()));
                 }
                 match self.live_assistant {
                     Some(idx) => {
@@ -1135,6 +1136,11 @@ impl Messages {
     // ---- tools ------------------------------------------------------------
 
     fn tool_start(&mut self, frame: &Value) {
+        // A call already on screen is never announced twice: a repeated
+        // start would add a second card that no end ever settles.
+        if str_field(frame, "toolCallId").is_some_and(|id| self.pending.contains_key(id)) {
+            return;
+        }
         // A tool call finishes the assistant's leading segment immediately
         // (TS snap on `hasToolCalls`): freeze it; text arriving after the
         // tool card lands in a fresh assistant entry after the card.
@@ -1244,8 +1250,8 @@ impl Messages {
                 path,
                 status: ToolStatus::Pending,
                 preview: None,
-                tool: name.clone(),
-                args: args.clone(),
+                tool: name,
+                args,
                 details: Value::Null,
             };
             let open = self.open_group.or_else(|| self.reusable_group());
@@ -1599,7 +1605,6 @@ fn entry_visible(entry: &ChatEntry) -> bool {
                 })
         }
         ChatKind::Usage(_) => false,
-        ChatKind::ReadGroup(_) => true,
         _ => true,
     }
 }
@@ -1711,8 +1716,15 @@ fn parse_usage(message: &Value) -> Option<Usage> {
     let usage = message.get("usage")?;
     let ms = |key: &str| -> Option<u64> {
         let v = message.get(key)?;
-        v.as_u64()
-            .or_else(|| v.as_f64().map(|f| f.round().max(0.0) as u64))
+        v.as_u64().or_else(|| {
+            // Usage values are small positive counts.
+            v.as_f64().map(|f| {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    f.round().max(0.0) as u64
+                }
+            })
+        })
     };
     let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
     let parsed = Usage {
@@ -1913,7 +1925,7 @@ fn result_text(result: &Value) -> String {
 
 /// Build reveal blocks from assistant segments (chat.md §8): thinking text
 /// is kept in display form, mirroring TS `rawThinking`.
-fn reveal_blocks(segments: &[AssistantSegment], settings: &ThinkingDisplay) -> Vec<RevealBlock> {
+fn reveal_blocks(segments: &[AssistantSegment], settings: ThinkingDisplay) -> Vec<RevealBlock> {
     segments
         .iter()
         .map(|s| match s {
@@ -1943,6 +1955,37 @@ mod tests {
             "type": "message_end",
             "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
         }))
+    }
+
+    #[test]
+    fn duplicate_tool_start_does_not_hold_back_scrollback() {
+        // A runtime that re-announces an already started call (early
+        // read-only dispatch whose hook blocked it) must not leave a phantom
+        // pending read: it would hold every later entry out of scrollback.
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        let start = json!({"type": "tool_execution_start", "toolCallId": "r1",
+            "toolName": "read", "args": {"path": "a.rs"}});
+        m.apply(&AppEvent::ToolExecutionStart(start.clone()));
+        m.apply(&AppEvent::ToolExecutionStart(start));
+        m.apply(&AppEvent::ToolExecutionEnd(json!({
+            "type": "tool_execution_end", "toolCallId": "r1", "toolName": "read",
+            "result": {"content": [{"type": "text", "text": "denied"}]}, "isError": true
+        })));
+        m.apply(&AppEvent::TurnEnd(json!({})));
+        m.apply(&msg_update("after"));
+        m.apply(&msg_end("after"));
+        m.apply(&AppEvent::AgentEnd(json!({})));
+        assert_eq!(m.finished_len(), m.entries().len());
+        let reads: usize = m
+            .entries()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ChatKind::ReadGroup(g) => Some(g.reads.len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(reads, 1);
     }
 
     #[test]
@@ -2047,7 +2090,7 @@ mod tests {
         let text: Vec<String> = m
             .entry_lines_at(0, 60)
             .iter()
-            .map(|l| l.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert!(
             text.iter()

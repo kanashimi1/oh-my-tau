@@ -48,11 +48,12 @@ impl ScriptedProvider {
         }
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `turns` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn push_turn(&self, turn: ScriptedTurn) {
-        self.turns.lock().unwrap().push_back(turn);
+        self.turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(turn);
     }
 
     pub fn push_text_turn(&self, text: &str) {
@@ -102,25 +103,33 @@ impl ScriptedProvider {
         self.push_turn(ScriptedTurn::FailStart(message.to_string()));
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `calls` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn calls(&self) -> Vec<LlmContext> {
-        self.calls.lock().unwrap().clone()
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The `StreamFn` for this provider.
     ///
-    /// # Panics
-    ///
-    /// The returned stream function panics if the `calls` or `turns` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn stream_fn(self: &Arc<Self>) -> StreamFn {
         let provider = Arc::clone(self);
         Arc::new(move |_model, context, _options| {
             let provider = Arc::clone(&provider);
             Box::pin(async move {
-                provider.calls.lock().unwrap().push(context);
-                let Some(turn) = provider.turns.lock().unwrap().pop_front() else {
+                provider
+                    .calls
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(context);
+                let Some(turn) = provider
+                    .turns
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pop_front()
+                else {
                     anyhow::bail!("ScriptedProvider exhausted: no scripted turn available");
                 };
                 match turn {
@@ -185,7 +194,11 @@ impl ScriptedStream {
 
     fn set_result(&self, message: AssistantMessage) {
         {
-            let mut result = self.inner.result.lock().unwrap();
+            let mut result = self
+                .inner
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *result = Some(message);
         }
         self.inner.notify.notify_waiters();
@@ -245,11 +258,23 @@ impl ModelStream for ScriptedStream {
     fn result(&mut self) -> crate::BoxFut<'_, anyhow::Result<AssistantMessage>> {
         Box::pin(async {
             loop {
-                if let Some(message) = self.inner.result.lock().unwrap().clone() {
+                if let Some(message) = self
+                    .inner
+                    .result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                {
                     return Ok(message);
                 }
                 let notified = self.inner.notify.notified();
-                if let Some(message) = self.inner.result.lock().unwrap().clone() {
+                if let Some(message) = self
+                    .inner
+                    .result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                {
                     return Ok(message);
                 }
                 notified.await;

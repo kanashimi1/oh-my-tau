@@ -1,0 +1,14 @@
+{
+  "name": "omp-web-assets-checks",
+  "private": true,
+  "description": "Static and E2E checks for the omp web UI assets. `npm install` here, then `node test/check-no-undef.js`.",
+  "scripts": {
+    "check": "node check-no-undef.js",
+    "lifecycle": "node agents.lifecycle.test.js",
+    "e2e": "node e2e.cdp.js"
+  },
+  "devDependencies": {
+    "acorn": "^8.19.0",
+    "ws": "^8.18.0"
+  }
+}

@@ -1,6 +1,10 @@
 //! The TS log-message regexes (src/cli/incident.ts) the classifier
 //! matches against, kept 1:1 with their TypeScript sources.
 
+// invariant: every pattern below is a literal regex; a compile failure is a
+// programming error caught by tests, not a runtime condition.
+#![allow(clippy::expect_used)]
+
 use regex::Regex;
 use std::sync::LazyLock;
 

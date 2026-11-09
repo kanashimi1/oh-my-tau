@@ -137,7 +137,7 @@ mod tests {
         let answer =
             json!({"type": "score", "score": 2.0, "probabilities": {"0": 0.1, "2": 0.7, "3": 0.2}});
         let parsed = levels(&answer).expect("levels");
-        assert_eq!(parsed["2"], 0.7);
+        assert!((parsed["2"] - 0.7).abs() < 1e-12);
         assert!(levels(&json!({"type": "choice"})).is_none());
     }
 

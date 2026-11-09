@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration test against a fake stdio MCP server: exercises config
 //! loading, connect/init handshake, `tools/list` pagination-free listing,
 //! `tools/call`, result formatting, and per-server failure isolation.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::collections::BTreeMap;
 use std::io::Write;

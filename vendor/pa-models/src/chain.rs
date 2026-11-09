@@ -145,13 +145,14 @@ impl ModelCatalog {
     /// scope only seeds the first observation; afterwards only live credentials are trusted. Every
     /// call records the current scope as the next comparison base.
     ///
-    /// # Panics
-    ///
-    /// Panics if the scope-observation mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn credentials_changed(&self, credentials: Option<&PrimeCredentials>) -> bool {
         let current = credentials
             .map(|credentials| self.prime_inference.scope_for(&credentials.as_inference()));
-        let mut seen = self.pi_scope_seen.lock().expect("scope observation lock");
+        let mut seen = self
+            .pi_scope_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let last = seen
             .clone()
             .unwrap_or_else(|| self.prime_inference.stored_scope());

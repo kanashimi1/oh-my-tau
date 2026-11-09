@@ -4,6 +4,10 @@
 //!
 //! Port of `packages/coding-agent/src/edit/sloppy.ts` lines 1651–4258.
 
+// invariant: the char scans below only run on non-empty suffix slices, so the
+// `chars().next()` expects cannot fail.
+#![allow(clippy::expect_used)]
+
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -935,6 +939,8 @@ fn numbered_preview(content: &str, offset: usize) -> String {
         .join("\n")
 }
 
+// invariant: serde_json::to_string on a String cannot fail.
+#[allow(clippy::expect_used)]
 fn display_fragment(text: &str) -> String {
     if text.contains('\n') && text.split('\n').count() <= 8 {
         return format!("\n{text}");
@@ -1852,8 +1858,8 @@ fn positional_rewrite_segments(
         for line in lines {
             if line.trim() == GAP {
                 groups.push(Vec::new());
-            } else {
-                groups.last_mut().expect("one group").push(line);
+            } else if let Some(group) = groups.last_mut() {
+                group.push(line);
             }
         }
         return (groups.len() == count)
@@ -1871,6 +1877,8 @@ fn positional_rewrite_segments(
     None
 }
 
+// One pipeline stage over the candidate/span/selection triple.
+#[allow(clippy::too_many_arguments)]
 fn prepare_inline(
     content: &str,
     located: &Candidate,
@@ -2799,7 +2807,9 @@ fn apply_operations(
             continue;
         }
         if let Some(merged) = reconcile_overlap(content, &previous, &current) {
-            *ordered.last_mut().expect("present") = merged;
+            if let Some(last) = ordered.last_mut() {
+                *last = merged;
+            }
             continue;
         }
         if previous.operation_number == current.operation_number {

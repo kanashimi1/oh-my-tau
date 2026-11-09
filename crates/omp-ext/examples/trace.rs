@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Load every user extension into the host, emit a scripted omp event sequence and compare the
 //! per-handler trace with a TS-omp reference (`hook_trace.jsonl` rows of one `omp -p` run).
 //!
@@ -52,7 +53,12 @@ async fn main() -> Result<()> {
         cfg.shared_socket = Some(dir.join("ext.sock"));
     }
     let host = ExtHost::spawn(&cfg).await?;
-    let mut incoming = host.take_incoming().expect("incoming");
+    let mut incoming = host.take_incoming().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "incoming channel already taken",
+        )
+    })?;
     let notes = tokio::spawn(async move {
         let mut counts: HashMap<String, u32> = HashMap::new();
         while let Some(m) = incoming.recv().await {

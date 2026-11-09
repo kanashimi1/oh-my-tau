@@ -365,8 +365,7 @@ pub fn key_id_from_event(event: &KeyEvent) -> Option<String> {
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Enter => "enter".to_string(),
         KeyCode::Esc => "escape".to_string(),
-        KeyCode::Tab => "tab".to_string(),
-        KeyCode::BackTab => "tab".to_string(),
+        KeyCode::Tab | KeyCode::BackTab => "tab".to_string(),
         KeyCode::Backspace => "backspace".to_string(),
         KeyCode::Delete => "delete".to_string(),
         KeyCode::Insert => "insert".to_string(),
@@ -410,14 +409,15 @@ pub fn key_id_from_event(event: &KeyEvent) -> Option<String> {
 /// binding.
 #[must_use]
 pub fn user_keybindings_path() -> PathBuf {
-    let mut p = std::env::var_os("OMP_AGENT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let mut p = std::env::var_os("OMP_AGENT_DIR").map_or_else(
+        || {
             let mut home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
             home.push(".omp");
             home.push("agent");
             home
-        });
+        },
+        PathBuf::from,
+    );
     p.push("keybindings.yml");
     p
 }
@@ -425,6 +425,12 @@ pub fn user_keybindings_path() -> PathBuf {
 /// Load user overrides from `path`. Missing file → empty map (no overrides).
 /// A malformed file yields an error string (the caller surfaces it as a
 /// notice and keeps the defaults, like TS which logs and continues).
+///
+/// # Errors
+/// Returns the read/parse failure message (with the path) when the file
+/// exists but cannot be loaded.
+// `Path`'s `Debug` (quoted) is the established message form.
+#[allow(clippy::unnecessary_debug_formatting)]
 pub fn load_user_bindings(path: &Path) -> Result<UserBindings, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,

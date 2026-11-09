@@ -8,11 +8,12 @@
 //! a session file (tests, `--no-session`) it falls back to an in-memory map;
 //! nothing persists, which matches the TS host-retained-only registry.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -213,7 +214,7 @@ fn with_event<T>(
     let cwd = cwd.to_path_buf();
     let session = omp_urls::global_session_file();
     let key = Key {
-        session: session.clone(),
+        session,
         cwd: cwd.clone(),
         lang,
     };
@@ -227,7 +228,7 @@ fn with_event<T>(
             }
         }
     } else {
-        let mem = MEM.lock().expect("eval journal lock");
+        let mem = MEM.lock();
         if let Some(saved) = mem.get(&key) {
             journal = Journal {
                 kernels: saved.kernels,
@@ -249,7 +250,7 @@ fn with_event<T>(
                 },
             );
         } else if path.is_none() {
-            MEM.lock().expect("eval journal lock").insert(key, journal);
+            MEM.lock().insert(key, journal);
         }
     }
     out
@@ -409,6 +410,8 @@ fn split_assignment(stmt: &str) -> Option<(&str, &str)> {
 
 /// LHS of a setup assignment: plain names, optionally dotted targets or
 /// comma-separated names — nothing else (no subscripts, no calls).
+// invariant: chars().next() is Some because !seg.is_empty() was checked above.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn is_assignable_lhs(lhs: &str) -> bool {
     let lhs = lhs.trim();
     if lhs.is_empty() {
@@ -420,7 +423,11 @@ fn is_assignable_lhs(lhs: &str) -> bool {
             && part.split('.').all(|seg| {
                 !seg.is_empty()
                     && seg.chars().all(|c| c.is_alphanumeric() || c == '_')
-                    && !seg.chars().next().unwrap().is_ascii_digit()
+                    && !seg
+                        .chars()
+                        .next()
+                        .expect("!seg.is_empty() above")
+                        .is_ascii_digit()
             })
     })
 }
@@ -588,12 +595,16 @@ mod tests {
 
     #[test]
     fn py_imports_defs_are_setup() {
-        assert!(is_setup_py("import json\nfrom pathlib import Path\ndef f(x):\n    return x + 1\nclass C:\n    pass"));
+        assert!(is_setup_py(
+            "import json\nfrom pathlib import Path\ndef f(x):\n    return x + 1\nclass C:\n    pass"
+        ));
     }
 
     #[test]
     fn py_load_assignments_are_setup() {
-        assert!(is_setup_py("data = json.load(open('a.json'))\ndf = pd.read_csv('x.csv')\narr = np.load('a.npy')\nblob = open('f.txt').read()"));
+        assert!(is_setup_py(
+            "data = json.load(open('a.json'))\ndf = pd.read_csv('x.csv')\narr = np.load('a.npy')\nblob = open('f.txt').read()"
+        ));
     }
 
     #[test]

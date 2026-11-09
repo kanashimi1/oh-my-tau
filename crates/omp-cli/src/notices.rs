@@ -20,6 +20,7 @@ const JEVIFY: &str = include_str!("../prompts/notices/jevify-notice.md");
 const ULTRACODE: &str = include_str!("../prompts/notices/ultracode-notice.md");
 const ULTRADEEP_ADDENDUM: &str = include_str!("../prompts/notices/ultradeep-addendum.md");
 const ULTRALONG_ADDENDUM: &str = include_str!("../prompts/notices/ultralong-addendum.md");
+const INTERJECTION: &str = include_str!("../prompts/notices/interjection-notice.md");
 
 /// Session facts a notice renders against (TS `MagicKeywordContext`).
 #[derive(Debug, Clone, Default)]
@@ -114,6 +115,13 @@ pub fn ultracode_notice(
     data["wsCkpt"] = json!(ws_ckpt.map(|p| p.display().to_string()));
     data["addenda"] = json!(addenda.join("\n\n"));
     crate::sysprompt::render(ULTRACODE, &data).trim().to_owned()
+}
+
+/// Hidden notice ahead of a message steered into a live run: answer it, then
+/// continue the task instead of treating it as a new request that ends the run.
+#[must_use]
+pub fn interjection(timestamp: i64) -> AgentMessage {
+    message("interjection-notice", INTERJECTION.trim(), timestamp)
 }
 
 /// One hidden notice message (CONTEXT contract 4).

@@ -337,7 +337,7 @@ fn parse_answers(questions: &[QuestionItem], answers: &Value) -> Result<Vec<Ques
                     return Err(anyhow!(
                         "Ask dialog answer {} customInput must be a string",
                         json!(question.id)
-                    ))
+                    ));
                 }
             };
             if !multi && (selected.len() > 1 || (!selected.is_empty() && custom.is_some())) {
@@ -802,6 +802,7 @@ pub fn schema() -> Value {
     },"required":["questions"]})
 }
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use parking_lot::Mutex;
 

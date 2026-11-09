@@ -23,7 +23,7 @@ is a short handshake so the seed is *not* in the pinned prefix and CLM can fold 
 
 ## Context-policy experiment (`ctxp.py`, `ctxp_analysis.py`)
 
-Does a controller decide *when* to edit (`clm_edit`), offload a block to the kernel (`rlm_offload`) or do nothing
+Does a controller decide *when* to edit (`clm_edit`), offload (`rlm_offload`), recall an offloaded block (`rlm_recall`) or do nothing
 (`noop`)? Opt-in host hook: `context.policy = always|rule|laya|schedule` (env `OMP_CONTEXT_POLICY`, only with
 `--context-strategy clm|clm-host`; default unset = unchanged behaviour). See `crates/omp-cli/src/context_policy.rs`;
 rule knobs `OMP_CONTEXT_POLICY_RULE_{TOKENS,EVERY,OFFLOAD}`, laya `OMP_CONTEXT_LAYA_{CKPT,ONNX,THREADS}`,

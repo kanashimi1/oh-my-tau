@@ -1,5 +1,7 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Payload shapes for the retry/compaction/goal/approval/user-shell events and the
 //! `assistant_message` / `user_bash` / `user_python` result aggregation (same fixture as `lifecycle.rs`).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! `mux_session`: single-session driver used by the LSP-sharing measurement
 //! (report `LspShare.md`). Opens one LSP client against the `fake_lsp`
 //! fixture in `--root`, runs a didOpen → diagnostics → definition turn, holds
@@ -86,7 +87,7 @@ async fn main() {
         assert!(std::time::Instant::now() < deadline, "no diagnostics");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
-    let _ = client
+    if let Err(error) = client
         .send_request(
             "textDocument/definition",
             serde_json::json!({
@@ -97,7 +98,9 @@ async fn main() {
             Some(std::time::Duration::from_secs(5)),
         )
         .await
-        .expect("definition");
+    {
+        eprintln!("definition request failed: {error}");
+    }
 
     // Hold the session open until the harness closes our stdin.
     let mut sink = Vec::new();
