@@ -1,6 +1,6 @@
 use super::{
     App, Component, Constraint, Direction, Frame, Instant, Layout, Line, Maintenance, Rect, Span,
-    Style, SPINNER, SPINNER_ADVANCE_MS,
+    Style, BRAIN_THINKING, SPINNER, SPINNER_ADVANCE_MS,
 };
 
 impl App {
@@ -351,6 +351,13 @@ impl App {
                 accent.add_modifier(ratatui::style::Modifier::BOLD),
             ),
             Span::raw(" "),
+            // Thinking gets a dim "ghost" brain glyph (design 2A); Working
+            // keeps the plain spinner + face so tool runs stay quieter.
+            if matches!(mood, Mood::Thinking) {
+                Span::styled(format!("{BRAIN_THINKING} "), dim)
+            } else {
+                Span::raw("")
+            },
             Span::styled(face(mood, tick).to_owned(), pink),
             Span::styled(format!("  {}s · esc to interrupt", elapsed.as_secs()), dim),
         ])

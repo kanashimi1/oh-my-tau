@@ -70,6 +70,12 @@ const MESSAGE_UPDATE_COALESCE: Duration = Duration::from_millis(33);
 const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(500);
 /// Spinner frames for the "Working…" loader (TS loading animation set).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+/// Brain glyph marking the "Thinking…" state. Ghost-grey, low-contrast by
+/// design: it must not compete with the spinner or the mascot face.
+/// Chosen variant: design `2A Ghost` (#9aa0ad) from
+/// `fleet-split/omt-optimization-lab/thinking-brain-icons.html`.
+/// Fallbacks for terminals without wide-glyph support: "◍", then "(brain)".
+pub(crate) const BRAIN_THINKING: &str = "🧠";
 /// Loader spinner glyph step (TS `SPINNER_ADVANCE_MS`).
 const SPINNER_ADVANCE_MS: u64 = 80;
 /// P0 builtin slash commands dispatched through `Action::Slash`
