@@ -174,6 +174,12 @@ impl Component for Editor {
             );
             y += 1;
         }
+        // An area with no room left below the top chrome (the live region can
+        // hand the editor a single row) gets the chrome only: content rows
+        // must never be painted past `area` (ratatui panics outside the buffer).
+        if y >= area.y + area.height {
+            return;
+        }
         let bottom_rows = u16::from(shape.has_bottom());
         let content_height = (area.y + area.height)
             .saturating_sub(y + bottom_rows)

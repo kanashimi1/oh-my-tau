@@ -1233,6 +1233,24 @@ mod render_tests {
     }
 
     #[test]
+    fn one_row_area_at_buffer_bottom_stays_inside_the_area() {
+        // Regression: a 1-row editor area (top chrome only) still painted a
+        // content row below it; at the buffer's last row ratatui panicked
+        // "index outside of buffer" (omt crash on a prompt typed mid-turn).
+        let mut e = Editor::new();
+        type_str(&mut e, &"long prompt text ".repeat(20));
+        let mut terminal = Terminal::new(TestBackend::new(60, 2)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = ratatui::layout::Rect { y: 1, height: 1, ..f.area() };
+                e.render(f, area, &crate::theme::Theme::default());
+            })
+            .unwrap();
+        let row0: String = (0..60).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+        assert_eq!(row0.trim_end(), "", "nothing painted above the area");
+    }
+
+    #[test]
     fn bash_mode_uses_accent_gutter() {
         let mut e = Editor::new();
         type_str(&mut e, "!ls");
