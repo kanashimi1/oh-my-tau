@@ -205,7 +205,7 @@ impl App {
     /// The frame-timer period the controller loop must arm right now, or
     /// `None` when nothing animates (idle loops must not wake): 30 fps
     /// while the streaming reveal has a backlog (TS
-    /// `STREAMING_REVEAL_FRAME_MS`), the 80 ms spinner step while the
+    /// `STREAMING_REVEAL_FRAME_MS`), the 50 ms spinner step while the
     /// loader row is visible (TS `SPINNER_ADVANCE_MS`).
     #[must_use]
     pub fn animation_interval(&self) -> Option<Duration> {

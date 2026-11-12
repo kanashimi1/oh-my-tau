@@ -591,7 +591,7 @@ mod frame_timer_tests {
         app.push_frame(&json!({"type":"agent_start"}), t0);
         app.pump_events(t0);
         // Loader visible: spinner cadence.
-        assert_eq!(app.animation_interval(), Some(Duration::from_millis(80)));
+        assert_eq!(app.animation_interval(), Some(Duration::from_millis(50)));
         app.push_frame(
             &json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
             t0,

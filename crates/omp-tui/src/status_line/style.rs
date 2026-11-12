@@ -87,11 +87,11 @@ pub fn clean_color(theme: &Theme, token: &str) -> Color {
 }
 
 /// Braille activity spinner frame for `now_ms` (`segments.ts:235`,
-/// `SPINNER_ADVANCE_MS` = 80).
+/// `SPINNER_ADVANCE_MS` = 50).
 #[must_use]
 pub fn activity_frame(now_ms: u64) -> &'static str {
     const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    FRAMES[((now_ms / 80) as usize) % FRAMES.len()]
+    FRAMES[((now_ms / 50) as usize) % FRAMES.len()]
 }
 
 #[cfg(test)]
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn spinner_frames_rotate() {
         assert_eq!(activity_frame(0), "⠋");
-        assert_eq!(activity_frame(80), "⠙");
-        assert_eq!(activity_frame(80 * 10), "⠋");
+        assert_eq!(activity_frame(50), "⠙");
+        assert_eq!(activity_frame(50 * 10), "⠋");
     }
 }

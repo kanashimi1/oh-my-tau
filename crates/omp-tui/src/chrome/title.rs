@@ -27,7 +27,7 @@ pub const DEFAULT_TERMINAL_TITLE: &str = "π";
 pub const CLEAN_TERMINAL_TITLE: &str = "τ";
 
 /// Tick rate for the working-state spinner (spec §8.2).
-const SPINNER_ADVANCE: Duration = Duration::from_millis(80);
+const SPINNER_ADVANCE: Duration = Duration::from_millis(50);
 
 /// Run state shown in the title separator (TS `setTerminalTitleState`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,7 +67,7 @@ impl TitleSpinner {
         }
     }
 
-    /// Frame at `tick` (80 ms clock, index mod len; style switch resets the
+    /// Frame at `tick` (50 ms clock, index mod len; style switch resets the
     /// counter — callers pass the tick from `TerminalTitle` which resets on
     /// `set_spinner`).
     #[must_use]
@@ -219,7 +219,7 @@ impl TerminalTitle {
     }
 
     /// Recompose and emit for a new run state (TS `setTerminalTitleState`).
-    /// Starts/stops the 80 ms spinner thread as needed.
+    /// Starts/stops the 50 ms spinner thread as needed.
     pub fn set_state(&self, state: TitleState, label: Option<&str>) {
         let sanitized = label.map(sanitize_title).filter(|l| !l.trim().is_empty());
         *self.shared.current.lock() = Some((state, sanitized.clone()));

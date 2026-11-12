@@ -76,8 +76,11 @@ const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 /// `fleet-split/omt-optimization-lab/thinking-brain-icons.html`.
 /// Fallbacks for terminals without wide-glyph support: "◍", then "(brain)".
 pub(crate) const BRAIN_THINKING: &str = "🧠";
-/// Loader spinner glyph step (TS `SPINNER_ADVANCE_MS`).
-const SPINNER_ADVANCE_MS: u64 = 80;
+/// Loader spinner glyph step (TS `SPINNER_ADVANCE_MS`). 50 ms (20 fps):
+/// smooth enough to read as continuous motion next to the Thinking/Working
+/// label — 80 ms (12.5 fps) flickers and makes the loader feel sluggish
+/// even when the backend is fast.
+const SPINNER_ADVANCE_MS: u64 = 50;
 /// P0 builtin slash commands dispatched through `Action::Slash`
 /// (§4.2 MVP cut: `exit help model effort compact clear context export`
 /// plus the overlay-backed `resume`/`tree`/`theme`/`settings`/`hotkeys`).
