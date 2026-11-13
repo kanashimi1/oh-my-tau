@@ -579,6 +579,8 @@ async fn run_stream(
                     port: endpoint_port,
                 },
                 transport: crate::utils_inner::http::Transport::Http1,
+                stream_idle_timeout_ms: None,
+                stream_first_event_timeout_ms: None,
             })
             .await?,
         ),
@@ -595,6 +597,8 @@ async fn run_stream(
                     port: endpoint_port,
                 },
                 transport: crate::utils_inner::http::Transport::H2Alpn,
+                stream_idle_timeout_ms: None,
+                stream_first_event_timeout_ms: None,
             })
             .await?,
         ),

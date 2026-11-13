@@ -21,7 +21,7 @@ const CLAUDE_TOOL_PREFIX: &str = "_";
 const CLAUDE_CODE_SYSTEM_INSTRUCTION: &str =
     "You are Claude Code, Anthropic's official CLI for Claude.";
 const CLAUDE_BILLING_HEADER_PREFIX: &str = "x-anthropic-billing-header:";
-const DEFAULT_CLAUDE_CODE_VERSION: &str = "2.1.280";
+const DEFAULT_CLAUDE_CODE_VERSION: &str = "2.1.290";
 const NON_VISION_IMAGE_PLACEHOLDER: &str = "[image omitted: model does not support vision]";
 const EMPTY_ERROR_TOOL_RESULT_TEXT: &str = "Tool failed with no output.";
 const MAX_BREAKPOINTS: usize = 4;

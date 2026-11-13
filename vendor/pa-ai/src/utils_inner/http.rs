@@ -83,34 +83,117 @@ pub struct HttpResponse {
     /// The request's connection-error profile: body-read failures on the AWS http2 profile surface
     /// the TS bedrock transport's mid-stream texts.
     pub(crate) connection: ConnectionErrorProfile,
+    /// Longest silence allowed between body chunks (None: no limit).
+    idle_timeout: Option<std::time::Duration>,
+    /// Longest wait for the first body chunk (None: no limit).
+    first_chunk_timeout: Option<std::time::Duration>,
+    seen_chunk: bool,
+}
+
+/// The TS default for both the inter-chunk idle watchdog and the first-event watchdog.
+const DEFAULT_STREAM_TIMEOUT_MS: u64 = 300_000;
+
+/// TS `normalizeIdleTimeoutMs`: an env value overrides the fallback; non-numeric keeps the
+/// fallback; `<= 0` disables the watchdog (None).
+fn normalize_timeout_ms(env: Option<String>, fallback: u64) -> Option<u64> {
+    let value = match env {
+        None => fallback,
+        Some(raw) => match raw.trim().parse::<f64>() {
+            Ok(v) if v.is_finite() => {
+                if v <= 0.0 {
+                    return None;
+                }
+                // Truncation of a finite positive millisecond count is the TS `Math.trunc`.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    v.trunc() as u64
+                }
+            }
+            _ => fallback,
+        },
+    };
+    (value > 0).then_some(value)
+}
+
+/// TS `getOpenAIStreamIdleTimeoutMs`/`getStreamFirstEventTimeoutMs`: the stream watchdogs a
+/// request runs with. `compat_*` are the model's `streamIdleTimeoutMs`/`streamFirstEventTimeoutMs`
+/// (0 disables); env `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS`/`PI_STREAM_IDLE_TIMEOUT_MS` and
+/// `PI_STREAM_FIRST_EVENT_TIMEOUT_MS` override them. The first-event wait never undershoots idle.
+fn stream_timeouts(compat_idle: Option<u64>, compat_first: Option<u64>) -> (Option<u64>, Option<u64>) {
+    let env = |k: &str| std::env::var(k).ok();
+    let idle = normalize_timeout_ms(
+        env("PI_OPENAI_STREAM_IDLE_TIMEOUT_MS").or_else(|| env("PI_STREAM_IDLE_TIMEOUT_MS")),
+        compat_idle.unwrap_or(DEFAULT_STREAM_TIMEOUT_MS),
+    );
+    let first_fallback = compat_first.unwrap_or_else(|| {
+        DEFAULT_STREAM_TIMEOUT_MS.max(idle.unwrap_or(0))
+    });
+    let first = normalize_timeout_ms(env("PI_STREAM_FIRST_EVENT_TIMEOUT_MS"), first_fallback);
+    (idle, first)
+}
+
+fn stream_timeout_error(profile: &ConnectionErrorProfile, what: &str, ms: u64) -> ProviderError {
+    ProviderError::Connection(ProviderConnectionError {
+        kind: ConnectionErrorKind::Timeout,
+        profile: profile.clone(),
+        cause: format!("provider stream {what} after {ms}ms"),
+    })
 }
 
 impl HttpResponse {
+    /// One body chunk, raced against the abort signal and the stream watchdog (first-chunk
+    /// deadline until a chunk arrived, then the inter-chunk idle deadline).
+    async fn read_chunk(&mut self) -> Result<Option<bytes::Bytes>, ProviderError> {
+        if self
+            .signal
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        {
+            return Err(ProviderError::Aborted);
+        }
+        let limit = if self.seen_chunk { self.idle_timeout } else { self.first_chunk_timeout };
+        let signal = self.signal.clone();
+        let next = self.body.chunk();
+        let watchdog = async {
+            match limit {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let cancelled = async {
+            match &signal {
+                Some(s) => s.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let chunk = tokio::select! {
+            () = cancelled => return Err(ProviderError::Aborted),
+            () = watchdog => {
+                let what = if self.seen_chunk { "went idle" } else { "sent no data" };
+                #[allow(clippy::cast_possible_truncation)]
+                let ms = limit.map_or(0, |d| d.as_millis() as u64);
+                return Err(stream_timeout_error(&self.connection, what, ms));
+            }
+            result = next => result,
+        };
+        match chunk {
+            Ok(Some(bytes)) => {
+                self.seen_chunk = true;
+                Ok(Some(bytes))
+            }
+            Ok(None) => Ok(None),
+            Err(error) => Err(self.body_error(&error)),
+        }
+    }
+
     /// Read the next text chunk from the body (None at end of stream). A UTF-8 sequence split
     /// across body chunks is held until it completes; a sequence still incomplete at end of
     /// stream yields one U+FFFD.
     pub async fn next_text(&mut self) -> Result<Option<String>, ProviderError> {
         loop {
-            if self
-                .signal
-                .as_ref()
-                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
-            {
-                return Err(ProviderError::Aborted);
-            }
-            let signal = self.signal.clone();
-            let chunk = match signal {
-                Some(signal) => {
-                    let next = self.body.chunk();
-                    tokio::select! {
-                        () = signal.cancelled() => return Err(ProviderError::Aborted),
-                        result = next => result,
-                    }
-                }
-                None => self.body.chunk().await,
-            };
+            let chunk = self.read_chunk().await?;
             let text = match chunk {
-                Ok(Some(bytes)) => {
+                Some(bytes) => {
                     self.utf8_tail.extend_from_slice(&bytes);
                     match std::str::from_utf8(&self.utf8_tail) {
                         Ok(text) => {
@@ -132,13 +215,12 @@ impl HttpResponse {
                         }
                     }
                 }
-                Ok(None) if self.utf8_tail.is_empty() => return Ok(None),
-                Ok(None) => {
+                None if self.utf8_tail.is_empty() => return Ok(None),
+                None => {
                     let text = String::from_utf8_lossy(&self.utf8_tail).to_string();
                     self.utf8_tail.clear();
                     text
                 }
-                Err(error) => return Err(self.body_error(&error)),
             };
             if !text.is_empty() {
                 return Ok(Some(text));
@@ -148,29 +230,7 @@ impl HttpResponse {
 
     /// Read the next raw byte chunk from the body (None at end of stream).
     pub async fn next_bytes(&mut self) -> Result<Option<Vec<u8>>, ProviderError> {
-        if self
-            .signal
-            .as_ref()
-            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
-        {
-            return Err(ProviderError::Aborted);
-        }
-        let signal = self.signal.clone();
-        let chunk = match signal {
-            Some(signal) => {
-                let next = self.body.chunk();
-                tokio::select! {
-                    () = signal.cancelled() => return Err(ProviderError::Aborted),
-                    result = next => result,
-                }
-            }
-            None => self.body.chunk().await,
-        };
-        match chunk {
-            Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
-            Ok(None) => Ok(None),
-            Err(error) => Err(self.body_error(&error)),
-        }
+        Ok(self.read_chunk().await?.map(|bytes| bytes.to_vec()))
     }
 
     /// Classify a body-read failure: the AWS bedrock http2 profile surfaces the TS transport's
@@ -220,6 +280,10 @@ pub struct RequestOptions {
     pub connection: ConnectionErrorProfile,
     /// The wire transport (HTTP/1.1 by default; bedrock https requests use ALPN-negotiated HTTP/2).
     pub transport: Transport,
+    /// The model's `streamIdleTimeoutMs` (None: the 300 s default; 0 disables). Env overrides.
+    pub stream_idle_timeout_ms: Option<u64>,
+    /// The model's `streamFirstEventTimeoutMs` (None: max(300 s, idle); 0 disables). Env overrides.
+    pub stream_first_event_timeout_ms: Option<u64>,
 }
 
 impl RequestOptions {
@@ -234,6 +298,8 @@ impl RequestOptions {
             timeout_ms: None,
             connection: ConnectionErrorProfile::Sdk,
             transport: Transport::Http1,
+            stream_idle_timeout_ms: None,
+            stream_first_event_timeout_ms: None,
         }
     }
 }
@@ -274,29 +340,40 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
         builder = builder.body(body);
     }
 
+    let (idle_ms, first_ms) = stream_timeouts(
+        request.stream_idle_timeout_ms,
+        request.stream_first_event_timeout_ms,
+    );
+    // Response headers must arrive within the caller's request timeout, else within the
+    // first-event watchdog (a hung provider used to block the turn forever when a signal was set).
+    let (head_ms, head_cause) = match request.timeout_ms {
+        Some(ms) => (Some(ms), "request exceeded the {ms}ms timeout"),
+        None => (first_ms, "provider sent no response headers after {ms}ms"),
+    };
     let send_future = builder.send();
-    let response = match (&signal, request.timeout_ms) {
-        (Some(signal), _) => {
-            tokio::select! {
-                () = signal.cancelled() => return Err(ProviderError::Aborted),
-                result = send_future => result,
-            }
+    let head_watchdog = async {
+        match head_ms {
+            Some(ms) => tokio::time::sleep(std::time::Duration::from_millis(ms)).await,
+            None => std::future::pending::<()>().await,
         }
-        (None, Some(timeout_ms)) => {
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), send_future)
-                .await
-            {
-                Ok(result) => result,
-                Err(_) => {
-                    return Err(ProviderError::Connection(ProviderConnectionError {
-                        kind: ConnectionErrorKind::Timeout,
-                        profile: request.connection.clone(),
-                        cause: format!("request exceeded the {timeout_ms}ms timeout"),
-                    }))
-                }
-            }
+    };
+    let cancelled = async {
+        match &signal {
+            Some(s) => s.cancelled().await,
+            None => std::future::pending::<()>().await,
         }
-        (None, None) => send_future.await,
+    };
+    let response = tokio::select! {
+        () = cancelled => return Err(ProviderError::Aborted),
+        () = head_watchdog => {
+            let ms = head_ms.unwrap_or(0);
+            return Err(ProviderError::Connection(ProviderConnectionError {
+                kind: ConnectionErrorKind::Timeout,
+                profile: request.connection.clone(),
+                cause: head_cause.replace("{ms}", &ms.to_string()),
+            }));
+        }
+        result = send_future => result,
     };
 
     // The TS SDKs surface request-send failures as their fixed connection error texts: the
@@ -342,6 +419,9 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
         signal,
         utf8_tail: Vec::new(),
         connection: request.connection,
+        idle_timeout: idle_ms.map(std::time::Duration::from_millis),
+        first_chunk_timeout: first_ms.map(std::time::Duration::from_millis),
+        seen_chunk: false,
     })
 }
 
@@ -456,5 +536,66 @@ mod tests {
             text.push_str(&chunk);
         }
         assert_eq!(text, "cut \u{FFFD}");
+    }
+
+    /// A provider that stops sending mid-stream fails the read with a timeout instead of hanging
+    /// the turn forever (the omt pane hang).
+    #[tokio::test]
+    async fn a_stalled_body_times_out_after_the_idle_limit() {
+        let (_hold_tx, hold_rx) = tokio::sync::oneshot::channel();
+        let addr = serve_split_body(b"data: 1".to_vec(), b"never".to_vec(), hold_rx).await;
+        let mut response = send(RequestOptions {
+            signal: Some(CancellationToken::new()),
+            stream_idle_timeout_ms: Some(150),
+            ..RequestOptions::new(reqwest::Method::GET, format!("http://{addr}/"))
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.next_text().await.unwrap().as_deref(), Some("data: 1"));
+        let started = std::time::Instant::now();
+        let error = response.next_text().await.unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        match error {
+            ProviderError::Connection(e) => {
+                assert_eq!(e.kind, ConnectionErrorKind::Timeout);
+                assert!(e.cause.contains("went idle after 150ms"), "{}", e.cause);
+            }
+            other => panic!("expected a connection timeout, got {other:?}"),
+        }
+    }
+
+    /// No response headers at all: the first-event watchdog fires even with an abort signal set.
+    #[tokio::test]
+    async fn missing_response_headers_time_out_even_with_a_signal() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        let result = send(RequestOptions {
+            signal: Some(CancellationToken::new()),
+            stream_first_event_timeout_ms: Some(150),
+            ..RequestOptions::new(reqwest::Method::GET, format!("http://{addr}/"))
+        })
+        .await;
+        match result {
+            Err(ProviderError::Connection(e)) => {
+                assert_eq!(e.kind, ConnectionErrorKind::Timeout);
+                assert!(e.cause.contains("no response headers after 150ms"), "{}", e.cause);
+            }
+            Err(other) => panic!("expected a connection timeout, got {other:?}"),
+            Ok(_) => panic!("expected a timeout"),
+        }
+    }
+
+    #[test]
+    fn stream_timeout_env_semantics_match_ts() {
+        assert_eq!(normalize_timeout_ms(None, 300_000), Some(300_000));
+        assert_eq!(normalize_timeout_ms(Some("0".into()), 300_000), None);
+        assert_eq!(normalize_timeout_ms(Some("-5".into()), 300_000), None);
+        assert_eq!(normalize_timeout_ms(Some("abc".into()), 300_000), Some(300_000));
+        assert_eq!(normalize_timeout_ms(Some("1500.9".into()), 300_000), Some(1500));
+        assert_eq!(normalize_timeout_ms(None, 0), None);
     }
 }

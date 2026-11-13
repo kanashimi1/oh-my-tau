@@ -27,9 +27,9 @@ mod stream_tests;
 pub const API_ANTHROPIC_MESSAGES: &str = "anthropic-messages";
 
 /// Claude Code version mimicked in OAuth mode. The API gates newer models on the claimed client
-/// version (e.g. claude-opus-5.5 requires >= 2.280), so keep this at or above the latest released
+/// version (claude-fable-5-2 requires >= 2.1.290), so keep this at or above the latest released
 /// Claude Code.
-const CLAUDE_CODE_VERSION: &str = "2.1.281";
+const CLAUDE_CODE_VERSION: &str = "2.1.290";
 const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 const CONTEXT_MANAGEMENT_BETA: &str = "context-management-2025-06-27";
@@ -593,7 +593,7 @@ mod subscription_identity_tests {
 
     // TS #2645's wire-contract assertions (anthropic-thinking-disable.test.ts): subscription
     // requests claim the Claude Code client identity, and the claimed version must stay at or above
-    // what the API's model gates require (the opus-5.5 family rejects anything below 2.280).
+    // what the API's model gates require (Fable 5.2 rejects anything below 2.1.290).
     fn test_model() -> Model {
         Model {
             id: "claude-opus-5-5".into(),
@@ -635,7 +635,7 @@ mod subscription_identity_tests {
                 .map(|(_, value)| value.as_str())
         };
         let user_agent = header("user-agent").expect("the OAuth request sends a user-agent");
-        assert!(user_agent.starts_with("claude-cli/"), "got {user_agent}");
+        assert_eq!(user_agent, "claude-cli/2.1.290");
         assert_eq!(header("x-app"), Some("cli"));
         let beta = header("anthropic-beta").expect("the OAuth request sends the claude-code beta");
         assert!(beta.contains("claude-code-20250219"));

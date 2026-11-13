@@ -301,6 +301,8 @@ async fn run_stream(
         timeout_ms: options.base.timeout_ms,
         connection: crate::utils_inner::stream_failure::ConnectionErrorProfile::RawFetch,
         transport: crate::utils_inner::http::Transport::Http1,
+        stream_idle_timeout_ms: None,
+        stream_first_event_timeout_ms: None,
     })
     .await?;
 

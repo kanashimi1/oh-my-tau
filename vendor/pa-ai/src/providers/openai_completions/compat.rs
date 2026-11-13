@@ -24,6 +24,10 @@ use crate::utils_inner::stream_failure::ProviderError;
 #[serde(rename_all = "camelCase", default)]
 pub struct ResolvedCompat {
     pub supports_store: bool,
+    /// Resolved `streamIdleTimeoutMs` (glm coding plan 600 s, local backends 300 s); 0 disables.
+    pub stream_idle_timeout_ms: Option<u64>,
+    /// Resolved `streamFirstEventTimeoutMs` (local serving backends 0 = off).
+    pub stream_first_event_timeout_ms: Option<u64>,
     pub supports_developer_role: bool,
     /// TS reads `?? true`.
     pub supports_multiple_system_messages: Option<bool>,

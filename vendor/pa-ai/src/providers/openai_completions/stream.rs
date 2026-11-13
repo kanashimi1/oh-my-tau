@@ -658,6 +658,8 @@ async fn run_stream(
         timeout_ms: base_options.timeout_ms,
         connection: crate::utils_inner::stream_failure::ConnectionErrorProfile::Sdk,
         transport: crate::utils_inner::http::Transport::Http1,
+        stream_idle_timeout_ms: compat.stream_idle_timeout_ms,
+        stream_first_event_timeout_ms: compat.stream_first_event_timeout_ms,
     })
     .await?;
 
