@@ -1,10 +1,11 @@
 // context.ts — the ExtensionAPI context factory (mechanical split from host.ts).
 import { dirname } from "node:path";
-import type { Json } from "./types.ts";
+import type { Json, Handler } from "./types.ts";
 import type { Ext } from "./types.ts";
 import { request, notify, log } from "./transport.ts";
 import { loadSchemaLib } from "./schemas.ts";
-import { events } from "./registry.ts";
+import { events, exts, flagValues, providers, timers } from "./registry.ts";
+import { execCommand } from "./process-util.ts";
 import { getState, setCtxCache, getCtxCache } from "./registry.ts";
 
 export const sm = () => ({
@@ -155,7 +156,7 @@ export function makeApi(ext: Ext) {
     // sees flags this extension registered (omp scopes flags per extension).
     registerFlag(name: string, options: Json) {
       ext.flags.set(name, { name, ...options });
-      if (options.default !== undefined) flagValues.set(name, options.default as boolean | string);
+      if (options?.default !== undefined) flagValues.set(name, options.default as boolean | string);
     },
     getFlag(name: string) {
       if (!ext.flags.has(name)) return undefined;

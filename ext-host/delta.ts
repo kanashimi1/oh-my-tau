@@ -2,6 +2,7 @@
 import type { Json, UpdateChain } from "./types.ts";
 import { DeltaError, STREAM_KEY } from "./types.ts";
 import { copyJson, setOwn } from "./json.ts";
+import { log } from "./transport.ts";
 
 const updateChains = new Map<string, UpdateChain>();
 // Encoders that went away (dropped subscriptions) leave their last chain

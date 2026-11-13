@@ -1,8 +1,9 @@
 // tools.ts — tool/command invocation (mechanical split from host.ts).
 import type { Json, Ext } from "./types.ts";
-import { exts, events } from "./registry.ts";
+import { exts, events, setState } from "./registry.ts";
 import { log, request, notify } from "./transport.ts";
 import { runHandler } from "./handlers.ts";
+import { rpcError } from "./rpc.ts";
 import { ctx } from "./context.ts";
 
 export function summarize(v: unknown): unknown {
@@ -33,7 +34,7 @@ export function allTools(): { ext: Ext; tool: Json }[] {
 export const toolAcs = new Map<string, AbortController>();
 
 export async function callTool(p: Json) {
-  if (p.ctx) state = { ...state, ...(p.ctx as Json) };
+  if (p.ctx) setState(p.ctx as Json);
   const found = allTools().findLast((t) => t.tool.name === p.name);
   if (!found) throw rpcError(-32004, `unknown tool: ${p.name}`);
   const ac = new AbortController();
