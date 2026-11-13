@@ -237,7 +237,7 @@ pub struct ExtHost {
     /// Capability negotiation: what the host declared in `load` response.
     /// `None` = legacy host without negotiation; the core must not call
     /// additive RPC methods (`cancel_tool`, `list_flags`, ...) on it.
-    capabilities: Mutex<Option<std::collections::HashSet<String>>>,
+    pub(crate) capabilities: Mutex<Option<std::collections::HashSet<String>>>,
 }
 
 /// Writer task: coalesces every queued line into one buffered write and
@@ -412,6 +412,13 @@ impl ExtHost {
             .lock()
             .as_ref()
             .map_or(false, |caps| caps.contains(capability))
+    }
+
+    /// Test-only: seed capabilities directly (fake hosts without a load RPC).
+    /// Not for production use; real hosts negotiate via `load`.
+    #[doc(hidden)]
+    pub fn seed_capabilities(&self, caps: &[&str]) {
+        *self.capabilities.lock() = Some(caps.iter().map(|s| s.to_string()).collect());
     }
 
     /// Answer a [`HostMessage::Request`].

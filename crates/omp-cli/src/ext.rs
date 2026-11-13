@@ -1693,7 +1693,7 @@ mod tests {
     ) -> Arc<ExtHost> {
         let script = dir.join("fake-host.sh");
         std::fs::write(&script, body).unwrap();
-        ExtHost::spawn(&HostConfig {
+        let host = ExtHost::spawn(&HostConfig {
             bun: "/bin/sh".into(),
             host_script: script,
             trace: None,
@@ -1702,7 +1702,11 @@ mod tests {
             shared_socket: None,
         })
         .await
-        .unwrap()
+        .unwrap();
+        // Fake host without a `load` response: manually seed capabilities
+        // so capability-gated calls (cancel_tool) still fire in tests.
+        host.seed_capabilities(&["cancel_tool"]);
+        host
     }
 
     /// Answers every request with a `session_stop` outcome of
