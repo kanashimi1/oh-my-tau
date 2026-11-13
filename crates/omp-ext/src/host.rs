@@ -127,6 +127,11 @@ pub struct LoadedExtension {
 pub struct LoadResult {
     pub loaded: Vec<LoadedExtension>,
     pub errors: Vec<LoadError>,
+    /// Capability negotiation: what the ext-host supports (additive RPC).
+    /// Absent = legacy host (pre-negotiation); the core must gate every
+    /// optional method on this list before calling it.
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -229,6 +234,10 @@ pub struct ExtHost {
     /// Set by [`Self::shutdown`]: the daemon closing our socket is then the
     /// expected end of the session, not a death to recover from.
     closing: std::sync::atomic::AtomicBool,
+    /// Capability negotiation: what the host declared in `load` response.
+    /// `None` = legacy host without negotiation; the core must not call
+    /// additive RPC methods (`cancel_tool`, `list_flags`, ...) on it.
+    capabilities: Mutex<Option<std::collections::HashSet<String>>>,
 }
 
 /// Writer task: coalesces every queued line into one buffered write and
@@ -370,6 +379,7 @@ impl ExtHost {
             config: cfg.clone(),
             generation,
             closing: std::sync::atomic::AtomicBool::new(false),
+            capabilities: Mutex::new(None),
         });
 
         // Host gone: the reader fails everything still waiting.
@@ -393,6 +403,15 @@ impl ExtHost {
         }
         inc.delivery = Delivery::Live;
         Some(rx)
+    }
+
+    /// Capability negotiation: does the host support this additive RPC?
+    /// `None` (legacy host) → conservative `false` for optional methods.
+    pub fn supports(&self, capability: &str) -> bool {
+        self.capabilities
+            .lock()
+            .as_ref()
+            .map_or(false, |caps| caps.contains(capability))
     }
 
     /// Answer a [`HostMessage::Request`].
@@ -501,6 +520,12 @@ impl ExtHost {
             .map(|(ty, _)| ty.clone())
             .collect();
         *self.subscribed.lock() = Some(subscribed);
+        // Capability negotiation: remember what the host supports so later
+        // additive RPC calls can be gated (`host.supports("cancel_tool")`).
+        *self.capabilities.lock() = result
+            .capabilities
+            .as_ref()
+            .map(|c| c.iter().cloned().collect());
         Ok(result)
     }
 
@@ -736,6 +761,7 @@ impl ExtHost {
             config: cfg.clone(),
             generation,
             closing: std::sync::atomic::AtomicBool::new(false),
+            capabilities: Mutex::new(None),
         });
 
         let reader = spawn_reader(read_half, pending, Arc::downgrade(&host));

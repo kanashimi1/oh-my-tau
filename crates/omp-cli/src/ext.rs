@@ -1634,7 +1634,11 @@ impl AgentTool for ExtTool {
                 // host: cancel it there too (`cancel_tool`), like an
                 // AbortSignal reaching a TS extension tool.
                 () = signal.aborted() => {
-                    let _ = host.cancel_tool(&tool_call_id).await;
+                    // Capability-gated: only send cancel_tool when the host
+                    // declared it in load (legacy hosts don't know it).
+                    if host.supports("cancel_tool") {
+                        let _ = host.cancel_tool(&tool_call_id).await;
+                    }
                     bail!("extension tool '{}' cancelled", self.info.name);
                 }
                 res = tokio::time::timeout(tool_timeout(), call) => res

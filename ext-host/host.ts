@@ -403,7 +403,13 @@ async function load(p: Json) {
       flags: [...ext.flags.values()].map((f) => ({ ...f })),
     });
   }
-  return { loaded, errors };
+  // Capability negotiation: declare what this host supports so the core
+  // never calls a method the host doesn't have (additive RPC safety).
+  const capabilities = [
+    "tools", "commands", "flags", "bus_emit", "set_ctx",
+    "cancel_tool", "list_flags", "set_flag_value", "list_providers",
+  ];
+  return { loaded, errors, capabilities };
 }
 
 // ---------------------------------------------------------------- emit
