@@ -1,7 +1,9 @@
 // handlers.ts — handler execution with timeout + result classification (mechanical split from host.ts).
 import { log } from "./transport.ts";
 import { TIMEOUT_MS } from "./env.ts";
+import { TIMEOUT } from "./types.ts";
 import type { Json, Handler, Ext, HandlerRecord } from "./types.ts";
+import { ctx } from "./context.ts";
 
 export async function runHandler(ext: Ext, h: Handler, event: Json, timeoutMs: number, rec: HandlerRecord[]): Promise<{ value?: unknown; failed?: "timeout" | "error"; message?: string }> {
   const t0 = performance.now();
