@@ -74,8 +74,9 @@ const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 /// design: it must not compete with the spinner or the mascot face.
 /// Chosen variant: design `2A Ghost` (#9aa0ad) from
 /// `fleet-split/omt-optimization-lab/thinking-brain-icons.html`.
-/// Fallbacks for terminals without wide-glyph support: "◍", then "(brain)".
-pub(crate) const BRAIN_THINKING: &str = "🧠";
+/// Single-cell outline circle (U+25CB) — monochrome, matches the Ghost
+/// wireframe look; terminals without wide-glyph support render it as-is.
+pub(crate) const BRAIN_THINKING: &str = "○";
 /// Loader spinner glyph step (TS `SPINNER_ADVANCE_MS`). 50 ms (20 fps):
 /// smooth enough to read as continuous motion next to the Thinking/Working
 /// label — 80 ms (12.5 fps) flickers and makes the loader feel sluggish
