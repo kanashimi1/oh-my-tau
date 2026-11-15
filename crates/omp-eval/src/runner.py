@@ -260,9 +260,33 @@ class _StreamProxy:
             _emit({"type": self._kind, "id": _CURRENT_RID, "data": text})
 
 
+def _image_reprs(obj: object) -> dict:
+    """`image/png` / `image/jpeg` base64 from an object's `_repr_png_` / `_repr_jpeg_` (PIL, matplotlib)."""
+    import base64
+    out: dict = {}
+    for attr, mime in (("_repr_png_", "image/png"), ("_repr_jpeg_", "image/jpeg")):
+        fn = getattr(obj, attr, None)
+        if not callable(fn):
+            continue
+        try:
+            raw = fn()
+        except Exception:
+            continue
+        if isinstance(raw, tuple):
+            raw = raw[0]
+        if isinstance(raw, (bytes, bytearray)) and raw:
+            out[mime] = base64.b64encode(bytes(raw)).decode("ascii")
+            break
+        if isinstance(raw, str) and raw:  # already base64 (IPython convention for some libs)
+            out[mime] = raw
+            break
+    return out
+
+
 def display(obj: object, **reprs: str) -> None:
     """Prelude helper: rich-ish display of an object (repr + JSON when safe)."""
     bundle: dict = {"text/plain": reprs.pop("text/plain", None) or repr(obj)}
+    bundle.update(_image_reprs(obj))
     try:
         json.dumps(obj)
         bundle["application/json"] = obj
@@ -287,6 +311,7 @@ def __omp_display(value: object, *, raw: bool = False, kind: str = "display") ->
         bundle = value
     else:
         bundle = {"text/plain": repr(value)}
+        bundle.update(_image_reprs(value))
         try:
             json.dumps(value)
             bundle["application/json"] = value

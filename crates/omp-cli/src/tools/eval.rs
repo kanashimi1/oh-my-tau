@@ -462,8 +462,13 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         }
     }
     let text = cap_output_with(&text, &SpillConfig::load(&cwd));
+    // Images a cell displayed (PIL/_repr_png_ values, bridged `read` of an image file, image bundles)
+    // reach the model as image content; the cell text alone cannot carry pixels.
+    let images = display_images(&result.displays);
+    let mut content = vec![pa_agent::types::ToolResultContent::text(text)];
+    content.extend(images.into_iter().map(pa_agent::types::ToolResultContent::Image));
     Ok(AgentToolResult {
-        content: vec![pa_agent::types::ToolResultContent::text(text)],
+        content,
         details: cell_details(result, replayed),
         terminate: None,
         is_error: cell_is_error(result).then_some(true),
@@ -483,16 +488,115 @@ pub(crate) fn shutdown_slot(cwd: &std::path::Path) {
     SLOTS.lock().remove(cwd);
 }
 
+/// At most this many displayed images ride one eval result (each also capped by size).
+const MAX_DISPLAY_IMAGES: usize = 8;
+const MAX_DISPLAY_IMAGE_B64: usize = 6 * 1024 * 1024;
+const IMAGE_MIMES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+fn image_of(v: &Value) -> Option<pa_agent::types::ImageContent> {
+    let data = v.get("data")?.as_str()?;
+    let mime = v.get("mimeType").or_else(|| v.get("mime_type"))?.as_str()?;
+    (IMAGE_MIMES.contains(&mime) && !data.is_empty() && data.len() <= MAX_DISPLAY_IMAGE_B64).then(|| {
+        pa_agent::types::ImageContent { data: data.to_string(), mime_type: mime.to_string() }
+    })
+}
+
+/// Image content from a cell's display bundles: `application/x-omp-image` ({data, mimeType}),
+/// raw `image/<fmt>` base64 strings (`_repr_png_` values), and JSON values shaped like a tool
+/// result with `images: [{data, mimeType}]` or a single `{type: "image", data, mimeType}`.
+fn display_images(displays: &[Value]) -> Vec<pa_agent::types::ImageContent> {
+    let mut out = Vec::new();
+    for bundle in displays {
+        if out.len() >= MAX_DISPLAY_IMAGES {
+            break;
+        }
+        if let Some(img) = bundle.get("application/x-omp-image").and_then(image_of) {
+            out.push(img);
+            continue;
+        }
+        if let Some((mime, data)) = IMAGE_MIMES
+            .iter()
+            .find_map(|m| bundle.get(*m).and_then(Value::as_str).map(|d| (*m, d)))
+        {
+            if !data.is_empty() && data.len() <= MAX_DISPLAY_IMAGE_B64 {
+                out.push(pa_agent::types::ImageContent { data: data.to_string(), mime_type: mime.to_string() });
+            }
+            continue;
+        }
+        if let Some(json) = bundle.get("application/json") {
+            if let Some(img) = image_of(json).filter(|_| json.get("type").and_then(Value::as_str) == Some("image")) {
+                out.push(img);
+            } else if let Some(list) = json.get("images").and_then(Value::as_array) {
+                out.extend(list.iter().filter_map(image_of).take(MAX_DISPLAY_IMAGES - out.len()));
+            }
+        }
+    }
+    out.truncate(MAX_DISPLAY_IMAGES);
+    out
+}
+
+/// Display bundles for `details` with image payloads elided (the pixels travel as image content;
+/// keeping base64 here would bloat every session file and text-plain previews).
+fn displays_for_details(displays: &[Value]) -> Vec<Value> {
+    fn elide(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => Value::Object(
+                m.iter()
+                    .map(|(k, x)| {
+                        let big = matches!(x, Value::String(s) if s.len() > 4096);
+                        let keep = !(big && (k == "data" || k == "text/plain" || IMAGE_MIMES.contains(&k.as_str())));
+                        (k.clone(), if keep { elide(x) } else { Value::String(format!("<{} bytes elided>", x.as_str().map_or(0, str::len))) })
+                    })
+                    .collect(),
+            ),
+            Value::Array(a) => Value::Array(a.iter().map(elide).collect()),
+            _ => v.clone(),
+        }
+    }
+    displays.iter().map(elide).collect()
+}
+
 /// `details` payload: execution counter plus timeout annotations, omp-style.
 fn cell_details(result: &CellResult, replayed: bool) -> Value {
     json!({
         "executionCount": result.execution_count,
         "status": format!("{:?}", result.status),
         "timedOut": result.timed_out,
-        "displays": result.displays,
+        "displays": displays_for_details(&result.displays),
         "isError": cell_is_error(result),
         "replayed": replayed.then_some(true),
     })
+}
+
+#[cfg(test)]
+mod display_image_tests {
+    use super::display_images;
+    use serde_json::json;
+
+    #[test]
+    fn displayed_images_become_image_content() {
+        let d = vec![
+            json!({"text/plain": "x"}),
+            json!({"application/x-omp-image": {"data": "QUJD", "mimeType": "image/png"}}),
+            json!({"text/plain": "<PIL>", "image/jpeg": "REVG"}),
+            json!({"application/json": {"text": "Read image file", "images": [{"data": "R0hJ", "mimeType": "image/webp"}]}}),
+            json!({"application/json": {"type": "image", "data": "SktM", "mimeType": "image/gif"}}),
+            json!({"application/json": {"images": [{"data": "QUJD", "mimeType": "text/html"}]}}),
+        ];
+        let got: Vec<(String, String)> = display_images(&d).into_iter().map(|i| (i.mime_type, i.data)).collect();
+        assert_eq!(got, vec![
+            ("image/png".into(), "QUJD".into()),
+            ("image/jpeg".into(), "REVG".into()),
+            ("image/webp".into(), "R0hJ".into()),
+            ("image/gif".into(), "SktM".into()),
+        ]);
+    }
+
+    #[test]
+    fn image_count_is_capped() {
+        let d: Vec<_> = (0..20).map(|_| json!({"image/png": "QUJD"})).collect();
+        assert_eq!(display_images(&d).len(), super::MAX_DISPLAY_IMAGES);
+    }
 }
 
 #[cfg(test)]
