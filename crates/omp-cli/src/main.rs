@@ -509,7 +509,7 @@ async fn async_main() -> Result<()> {
         &cwd,
         extensions.as_ref(),
     );
-    let (agent, target) = agent::build_agent(
+    let (agent, target, tool_projection) = agent::build_agent(
         &cwd,
         selected,
         extra_tools,
@@ -587,8 +587,18 @@ async fn async_main() -> Result<()> {
             crate::slash_extra::mark_interactive_ui();
         }
         let result = match extensions.as_ref() {
-            Some(e) => rpc::run_with(agent, target, cwd, persistence, Some(e.rpc_on_start())).await,
-            None => rpc::run(agent, target, cwd, persistence).await,
+            Some(e) => {
+                rpc::run_with(
+                    agent,
+                    target,
+                    cwd,
+                    persistence,
+                    Some(e.rpc_on_start()),
+                    tool_projection,
+                )
+                .await
+            }
+            None => rpc::run(agent, target, cwd, persistence, tool_projection).await,
         };
         if let Some(e) = &extensions {
             e.shutdown().await;
@@ -627,6 +637,7 @@ async fn async_main() -> Result<()> {
             target,
             cwd,
             persistence,
+            tool_projection,
             resume_target,
             extensions.clone(),
         )
@@ -661,6 +672,7 @@ async fn async_main() -> Result<()> {
     let run = run_print(
         agent,
         target,
+        tool_projection,
         cwd,
         session,
         resume_target,
@@ -803,6 +815,7 @@ static PRINTED_COMMAND_OUTPUT: std::sync::atomic::AtomicBool =
 async fn run_print(
     agent: pa_agent::agent::Agent,
     target: agent::Target,
+    tool_projection: crate::methodology::ToolProjection,
     cwd: PathBuf,
     persist: Option<persist::Persistence>,
     resume: Option<PathBuf>,
@@ -853,7 +866,8 @@ async fn run_print(
     }
     let agent = std::sync::Arc::new(agent);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-    let rt = runtime::Runtime::start(agent.clone(), target, cwd, persist, tx).await;
+    let rt =
+        runtime::Runtime::start(agent.clone(), target, cwd, persist, tx, tool_projection).await;
     if let Some(path) = resume {
         // `--resume`/`--continue` keep appending to the same session file; `--fork`
         // writes a new one (in the `--session-dir` store when relocated).

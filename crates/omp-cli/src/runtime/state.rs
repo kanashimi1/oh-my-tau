@@ -5,7 +5,7 @@ use pa_agent::types::{AgentMessage, Message, StopReason};
 use serde_json::{json, Map, Value};
 
 use super::queue::queue_mode;
-use super::usage::{context_usage, prompt_overhead_chars};
+use super::usage::{context_usage, prompt_overhead};
 use super::{level_name, lock, message_text, Runtime};
 
 impl Runtime {
@@ -55,7 +55,7 @@ impl Runtime {
         if let Some(obj) = v.as_object() {
             out.extend(obj.clone());
         }
-        let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
+        let base = prompt_overhead(&s.system_prompt, &s.tools, self.tool_projection);
         let window = s.model.context_window;
         if let Some(usage) = self
             .agent
@@ -93,7 +93,7 @@ impl Runtime {
 
     pub async fn session_stats(&self) -> Value {
         let (s, total) = self.agent.status().await;
-        let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
+        let base = prompt_overhead(&s.system_prompt, &s.tools, self.tool_projection);
         let window = s.model.context_window;
         // One in-place pass over the transcript under the state lock (no copy).
         let (user, assistant, calls, results, input, output, cache_read, cache_write, cost, usage) =

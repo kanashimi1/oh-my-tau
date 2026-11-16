@@ -202,6 +202,7 @@ mod a2a_delivery_tests {
             cwd.path().to_path_buf(),
             persist,
             tx,
+            crate::methodology::ToolProjection::Full,
         )
         .await;
         Harness {

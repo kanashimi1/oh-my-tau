@@ -114,6 +114,7 @@ struct Settings {
 
 pub struct Runtime {
     pub agent: Arc<Agent>,
+    pub(super) tool_projection: crate::methodology::ToolProjection,
     target: Target,
     pub cwd: PathBuf,
     persist: Persistence,
@@ -396,6 +397,7 @@ impl Runtime {
         cwd: PathBuf,
         persist: Persistence,
         out: UnboundedSender<Value>,
+        tool_projection: crate::methodology::ToolProjection,
     ) -> Arc<Self> {
         Self::start_with(
             agent,
@@ -405,6 +407,7 @@ impl Runtime {
             out,
             recovery::default_resolver(),
             None,
+            tool_projection,
         )
         .await
     }
@@ -420,6 +423,7 @@ impl Runtime {
         out: UnboundedSender<Value>,
         resolver: Resolver,
         recovery_cfg: Option<RecoveryConfig>,
+        tool_projection: crate::methodology::ToolProjection,
     ) -> Arc<Self> {
         // Tests: registering the a2a delivery owner is a process-global side
         // effect; serialize with the bus tests so their owner stays stable
@@ -457,6 +461,7 @@ impl Runtime {
         });
         let rt = Arc::new(Self {
             agent,
+            tool_projection,
             target,
             cwd,
             persist,

@@ -992,7 +992,15 @@ mod tests {
             credential_id: None,
         })));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let rt = Runtime::start(Arc::new(agent), target, cwd, persist, tx).await;
+        let rt = Runtime::start(
+            Arc::new(agent),
+            target,
+            cwd,
+            persist,
+            tx,
+            crate::methodology::ToolProjection::Full,
+        )
+        .await;
         // keep the provider alive for the runtime's lifetime
         std::mem::forget(provider);
         Harness { rt, rx }

@@ -1809,8 +1809,14 @@ pub type OnStart = Box<
 ///
 /// # Errors
 /// Fails on stdin read errors or a failed control-socket bind.
-pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistence) -> Result<()> {
-    run_with(agent, target, cwd, persist, None).await
+pub async fn run(
+    agent: Agent,
+    target: Target,
+    cwd: PathBuf,
+    persist: Persistence,
+    tool_projection: crate::methodology::ToolProjection,
+) -> Result<()> {
+    run_with(agent, target, cwd, persist, None, tool_projection).await
 }
 
 /// [`run`] with a start-up hook (see [`OnStart`]).
@@ -1824,6 +1830,7 @@ pub async fn run_with(
     cwd: PathBuf,
     persist: Persistence,
     on_start: Option<OnStart>,
+    tool_projection: crate::methodology::ToolProjection,
 ) -> Result<()> {
     // `OMP_RPC_SOCKET` (set by `omp-rs web`'s spawn): serve frames on a
     // per-agent Unix socket and outlive the hub. Binding before the runtime
@@ -1836,7 +1843,15 @@ pub async fn run_with(
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     let agent = Arc::new(agent);
     RUNTIME_TX.with(|slot| *slot.borrow_mut() = Some(tx.clone()));
-    let rt = Runtime::start(agent.clone(), target, cwd, persist, tx.clone()).await;
+    let rt = Runtime::start(
+        agent.clone(),
+        target,
+        cwd,
+        persist,
+        tx.clone(),
+        tool_projection,
+    )
+    .await;
     if let Some(gate) = crate::approval::Gate::get() {
         gate.bind(&rt, true);
     }

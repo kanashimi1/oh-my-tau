@@ -167,7 +167,7 @@ pub async fn build_agent(
     ext_hooks: Option<&Arc<crate::ext::Extensions>>,
     sysprompt_opts: &crate::sysprompt::Options,
     context_strategy: crate::context::Kind,
-) -> Result<(Agent, Target)> {
+) -> Result<(Agent, Target, crate::methodology::ToolProjection)> {
     let agent_model: pa_agent::types::Model = json_round_trip(&selected.model)
         .context("model does not convert to the agent model shape")?;
     let settings = omp_settings::Settings::load(cwd);
@@ -252,6 +252,13 @@ pub async fn build_agent(
         Some(gate) => gate.wrap_tools(tools),
         None => tools,
     };
+    let tool_projection = if code_mode {
+        crate::methodology::ToolProjection::CodeMode
+    } else if core_profile {
+        crate::methodology::ToolProjection::Core
+    } else {
+        crate::methodology::ToolProjection::Full
+    };
     let target: Target = Arc::new(RwLock::new(Some(ProviderTarget {
         api_key: selected.api_key,
         model: selected.model,
@@ -306,13 +313,7 @@ pub async fn build_agent(
         }),
         stream_fn: Some(crate::methodology::wrap_stream(
             switchable_stream_fn(target.clone()),
-            if code_mode {
-                crate::methodology::ToolProjection::CodeMode
-            } else if core_profile {
-                crate::methodology::ToolProjection::Core
-            } else {
-                crate::methodology::ToolProjection::Full
-            },
+            tool_projection,
             ext_hooks.cloned(),
         )),
         transform_context,
@@ -320,7 +321,7 @@ pub async fn build_agent(
         after_tool_call,
         ..AgentOptions::default()
     });
-    Ok((agent, target))
+    Ok((agent, target, tool_projection))
 }
 
 /// Concatenated text of the last assistant message, plus its error (if any).

@@ -2,16 +2,16 @@
 
 use omp_tui::magic::Ultra;
 use pa_agent::types::{AgentMessage, AssistantContent, Message, StopReason};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
-use super::{level_name, message_text, Runtime};
+use super::{Runtime, level_name, message_text};
 
 impl Runtime {
     /// TS `ctx.getContextUsage()`: `{tokens, contextWindow, percent}` (None without a window).
     pub async fn context_usage_value(&self) -> Option<Value> {
         let (s, _) = self.agent.status().await;
-        let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
+        let base = prompt_overhead(&s.system_prompt, &s.tools, self.tool_projection);
         let window = s.model.context_window;
         self.agent
             .with_messages(|m| context_usage(m.iter(), window, base))
@@ -24,7 +24,7 @@ impl Runtime {
     /// `getSessionCompactionBoundaries`).
     pub async fn context_usage_frame(&self) -> Value {
         let (s, _) = self.agent.status().await;
-        let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
+        let base = prompt_overhead(&s.system_prompt, &s.tools, self.tool_projection);
         let window = s.model.context_window;
         let usage = self
             .agent
@@ -91,16 +91,33 @@ impl Runtime {
     }
 }
 
-/// Characters the system prompt and tool schemas add to every request.
-pub(super) fn prompt_overhead_chars(
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct PromptOverhead {
+    /// Characters serialized into the provider request: system prompt plus
+    /// schemas exposed by the active tool projection.
+    pub wire_chars: usize,
+    /// Characters in every registered schema, including deferred tools.
+    pub catalog_chars: usize,
+}
+
+pub(super) fn prompt_overhead(
     system_prompt: &str,
     tools: &[Arc<dyn pa_agent::types::AgentTool>],
-) -> usize {
-    system_prompt.chars().count()
-        + tools
-            .iter()
-            .map(|t| t.name().len() + t.description().len() + t.parameters().to_string().len())
-            .sum::<usize>()
+    projection: crate::methodology::ToolProjection,
+) -> PromptOverhead {
+    let mut overhead = PromptOverhead {
+        wire_chars: system_prompt.chars().count(),
+        catalog_chars: 0,
+    };
+    for tool in tools {
+        let chars =
+            tool.name().len() + tool.description().len() + tool.parameters().to_string().len();
+        overhead.catalog_chars += chars;
+        if projection.includes(tool.name()) {
+            overhead.wire_chars += chars;
+        }
+    }
+    overhead
 }
 
 /// Rough token count of a message (omp `estimateTokens`: ~4 chars per token).
@@ -121,38 +138,48 @@ fn estimate_tokens(m: &AgentMessage) -> u64 {
 }
 
 /// omp `getContextUsage`: the last assistant usage plus an estimate of what followed it, or an
-/// estimate of the whole request (`overhead_chars` = system prompt + tools) before any usage exists.
 /// Last provider-reported usage plus an estimate of everything after it (or the whole
 /// transcript + prompt overhead when no assistant reported usage). One reverse pass, so
 /// it reads the transcript in place (`Agent::with_messages`).
 pub(super) fn context_usage<'a>(
     messages: impl DoubleEndedIterator<Item = &'a AgentMessage>,
     window: u64,
-    overhead_chars: usize,
+    overhead: PromptOverhead,
 ) -> Option<Value> {
     if window == 0 {
         return None;
     }
     let mut trailing = 0u64;
+    let mut resident = 0u64;
     let mut reported = None;
     for m in messages.rev() {
-        match m {
-            AgentMessage::Standard(Message::Assistant(a))
-                if a.usage.total_tokens > 0 && a.stop_reason != StopReason::Aborted =>
-            {
-                reported = Some(a.usage.total_tokens);
-                break;
+        resident += estimate_tokens(m);
+        if reported.is_none() {
+            match m {
+                AgentMessage::Standard(Message::Assistant(a))
+                    if a.usage.total_tokens > 0 && a.stop_reason != StopReason::Aborted =>
+                {
+                    reported = Some(a.usage.total_tokens);
+                }
+                _ => trailing += estimate_tokens(m),
             }
-            _ => trailing += estimate_tokens(m),
         }
     }
     let tokens = match reported {
         Some(total) => total + trailing,
-        None => u64::try_from(overhead_chars.div_ceil(4)).unwrap_or(u64::MAX) + trailing,
+        None => u64::try_from(overhead.wire_chars.div_ceil(4)).unwrap_or(u64::MAX) + trailing,
     };
     #[allow(clippy::cast_precision_loss)]
     let percent = tokens as f64 / window as f64 * 100.0;
-    Some(json!({"tokens": tokens, "contextWindow": window, "percent": percent}))
+    Some(json!({
+        "tokens": tokens,
+        "contextWindow": window,
+        "percent": percent,
+        "wireTokens": tokens,
+        "residentHistoryTokens": resident,
+        "availableCatalogTokens": u64::try_from(overhead.catalog_chars.div_ceil(4)).unwrap_or(u64::MAX),
+        "source": if reported.is_some() { "provider+estimate" } else { "estimate" },
+    }))
 }
 
 #[cfg(test)]
@@ -162,7 +189,11 @@ mod context_usage_tests {
     use serde_json::json;
 
     /// The previous slice-based implementation, kept as the equivalence oracle.
-    fn reference(messages: &[AgentMessage], window: u64, overhead_chars: usize) -> Option<Value> {
+    fn reference(
+        messages: &[AgentMessage],
+        window: u64,
+        overhead: PromptOverhead,
+    ) -> Option<Value> {
         if window == 0 {
             return None;
         }
@@ -177,13 +208,22 @@ mod context_usage_tests {
                 a.usage.total_tokens + messages[i + 1..].iter().map(estimate_tokens).sum::<u64>()
             }
             None => {
-                u64::try_from(overhead_chars.div_ceil(4)).unwrap_or(u64::MAX)
+                u64::try_from(overhead.wire_chars.div_ceil(4)).unwrap_or(u64::MAX)
                     + messages.iter().map(estimate_tokens).sum::<u64>()
             }
         };
         #[allow(clippy::cast_precision_loss)]
         let percent = tokens as f64 / window as f64 * 100.0;
-        Some(json!({"tokens": tokens, "contextWindow": window, "percent": percent}))
+        let resident = messages.iter().map(estimate_tokens).sum::<u64>();
+        Some(json!({
+            "tokens": tokens,
+            "contextWindow": window,
+            "percent": percent,
+            "wireTokens": tokens,
+            "residentHistoryTokens": resident,
+            "availableCatalogTokens": u64::try_from(overhead.catalog_chars.div_ceil(4)).unwrap_or(u64::MAX),
+            "source": if last_usage.is_some() { "provider+estimate" } else { "estimate" },
+        }))
     }
 
     fn assistant(text: &str, total: u64, stop: &str) -> AgentMessage {
@@ -195,6 +235,52 @@ mod context_usage_tests {
         }))
         .expect("assistant json");
         AgentMessage::Standard(Message::Assistant(a))
+    }
+
+    #[test]
+    fn deferred_tool_schemas_stay_out_of_wire_overhead() {
+        let cwd = std::path::Path::new("/tmp");
+        let settings = omp_settings::Settings::load(cwd);
+        let tools = crate::tools::session_builtin_tools(cwd, pi_edit::EditMode::Replace, &settings);
+        let full = prompt_overhead("system", &tools, crate::methodology::ToolProjection::Full);
+        let code = prompt_overhead(
+            "system",
+            &tools,
+            crate::methodology::ToolProjection::CodeMode,
+        );
+        let expected_wire = "system".len()
+            + tools
+                .iter()
+                .filter(|tool| crate::methodology::is_code_mode_tool(tool.name()))
+                .map(|tool| {
+                    tool.name().len()
+                        + tool.description().len()
+                        + tool.parameters().to_string().len()
+                })
+                .sum::<usize>();
+        assert!(tools.iter().any(|tool| tool.name() == "eval"));
+        assert_eq!(code.wire_chars, expected_wire);
+        assert_eq!(code.catalog_chars, full.wire_chars - "system".len());
+        assert!(code.wire_chars < full.wire_chars);
+    }
+
+    #[test]
+    fn wire_and_catalog_tokens_are_independent() {
+        let messages = vec![AgentMessage::user("hello")];
+        let usage = context_usage(
+            messages.iter(),
+            1000,
+            PromptOverhead {
+                wire_chars: 40,
+                catalog_chars: 4000,
+            },
+        )
+        .unwrap();
+        assert_eq!(usage["tokens"], 12);
+        assert_eq!(usage["wireTokens"], 12);
+        assert_eq!(usage["residentHistoryTokens"], 2);
+        assert_eq!(usage["availableCatalogTokens"], 1000);
+        assert_eq!(usage["source"], "estimate");
     }
 
     #[test]
@@ -224,9 +310,13 @@ mod context_usage_tests {
         ];
         for (k, msgs) in cases.iter().enumerate() {
             for window in [0u64, 1000] {
+                let overhead = PromptOverhead {
+                    wire_chars: 37,
+                    catalog_chars: 148,
+                };
                 assert_eq!(
-                    context_usage(msgs.iter(), window, 37),
-                    reference(msgs, window, 37),
+                    context_usage(msgs.iter(), window, overhead),
+                    reference(msgs, window, overhead),
                     "case {k} window {window}"
                 );
             }

@@ -1151,6 +1151,7 @@ mod tests {
             tx,
             resolver,
             Some(cfg),
+            crate::methodology::ToolProjection::Full,
         )
         .await;
         Harness {

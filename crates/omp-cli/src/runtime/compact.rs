@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::prompt::AUTO_CONTINUE_PROMPT;
 use super::session::seed_resumed_message;
-use super::usage::prompt_overhead_chars;
+use super::usage::prompt_overhead;
 use super::{lock, rss_kb, CmdError, CompactionHooks, Runtime};
 
 /// Adapts [`CompactionHooks`] to the per-compaction [`crate::compact::CompactHook`] (adds the branch).
@@ -201,8 +201,12 @@ impl Runtime {
         let (non_message_tokens, model_id) = {
             let (st, _) = self.agent.status().await;
             (
-                u64::try_from(prompt_overhead_chars(&st.system_prompt, &st.tools).div_ceil(4))
-                    .unwrap_or(0),
+                u64::try_from(
+                    prompt_overhead(&st.system_prompt, &st.tools, self.tool_projection)
+                        .wire_chars
+                        .div_ceil(4),
+                )
+                .unwrap_or(0),
                 st.model.id,
             )
         };
@@ -505,6 +509,7 @@ mod compaction_guard_tests {
             dir.path().to_path_buf(),
             persist,
             tx,
+            crate::methodology::ToolProjection::Full,
         )
         .await;
         std::mem::forget(provider);

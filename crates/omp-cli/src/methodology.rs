@@ -34,6 +34,19 @@ pub enum ToolProjection {
     CodeMode,
 }
 
+impl ToolProjection {
+    /// Whether this tool's full schema is serialized into the provider request.
+    /// Deferred tools remain registered and executable through the eval bridge.
+    #[must_use]
+    pub fn includes(self, name: &str) -> bool {
+        match self {
+            Self::Full => true,
+            Self::Core => is_core_tool(name),
+            Self::CodeMode => is_code_mode_tool(name),
+        }
+    }
+}
+
 #[derive(Default)]
 struct AuditState {
     requests: u64,
@@ -64,12 +77,8 @@ pub fn is_code_mode_tool(name: &str) -> bool {
     CODE_MODE_TOOLS.contains(&name)
 }
 
-fn project_core(tools: &mut Vec<ToolDefinition>) {
-    tools.retain(|tool| is_core_tool(&tool.name));
-}
-
-fn project_code_mode(tools: &mut Vec<ToolDefinition>) {
-    tools.retain(|tool| is_code_mode_tool(&tool.name));
+fn project(tools: &mut Vec<ToolDefinition>, projection: ToolProjection) {
+    tools.retain(|tool| projection.includes(&tool.name));
 }
 
 fn hash(value: &str) -> String {
@@ -143,11 +152,7 @@ pub fn wrap_stream(
         let extensions = extensions.clone();
         let base = base.clone();
         Box::pin(async move {
-            match projection {
-                ToolProjection::Full => {}
-                ToolProjection::Core => project_core(&mut context.tools),
-                ToolProjection::CodeMode => project_code_mode(&mut context.tools),
-            }
+            project(&mut context.tools, projection);
             audit(&context);
             if std::env::var("METHOD_PROVIDER_EVENTS").is_ok_and(|v| v == "1") {
                 if let Some(ext) = extensions {
@@ -176,7 +181,7 @@ mod tests {
                 parameters: json!({"type":"object"}),
             })
             .collect();
-        project_core(&mut tools);
+        project(&mut tools, ToolProjection::Core);
         assert_eq!(
             tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
             ["read", "eval", "wait"]
@@ -207,7 +212,7 @@ mod tests {
             parameters: json!({"type":"object"}),
         })
         .collect();
-        project_code_mode(&mut tools);
+        project(&mut tools, ToolProjection::CodeMode);
         assert_eq!(
             tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
             [

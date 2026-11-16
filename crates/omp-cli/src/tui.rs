@@ -27,6 +27,7 @@ pub async fn run(
     target: Target,
     cwd: PathBuf,
     persist: Persistence,
+    tool_projection: crate::methodology::ToolProjection,
     resume: Option<PathBuf>,
     extensions: Option<Arc<crate::ext::Extensions>>,
 ) -> Result<()> {
@@ -37,7 +38,15 @@ pub async fn run(
     let session_sources = session_sources(&cwd, &persist);
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
     let models = picker_models();
-    let rt = Runtime::start(Arc::new(agent), target, cwd.clone(), persist, tx).await;
+    let rt = Runtime::start(
+        Arc::new(agent),
+        target,
+        cwd.clone(),
+        persist,
+        tx,
+        tool_projection,
+    )
+    .await;
     if let Some(gate) = crate::approval::Gate::get() {
         gate.bind(&rt, true);
     }
@@ -916,6 +925,7 @@ mod tests {
             tx,
             resolver,
             Some(RecoveryConfig::default()),
+            crate::methodology::ToolProjection::Full,
         )
         .await;
         Harness {
