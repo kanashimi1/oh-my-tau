@@ -40,7 +40,7 @@ impl ToolProjection {
     #[must_use]
     pub fn includes(self, name: &str) -> bool {
         match self {
-            Self::Full => true,
+            Self::Full => crate::tools::mcp::wire_includes(name),
             Self::Core => is_core_tool(name),
             Self::CodeMode => is_code_mode_tool(name),
         }
@@ -153,6 +153,11 @@ pub fn wrap_stream(
         let base = base.clone();
         Box::pin(async move {
             project(&mut context.tools, projection);
+            // Lazy MCP (`tools.mcpLazy` / `OMP_MCP_LAZY=1`): withhold not-yet-loaded
+            // `mcp__*` schemas from the provider list; the registry keeps them all.
+            if crate::tools::mcp::lazy_active() {
+                crate::tools::mcp::project_lazy(&mut context.tools);
+            }
             audit(&context);
             if std::env::var("METHOD_PROVIDER_EVENTS").is_ok_and(|v| v == "1") {
                 if let Some(ext) = extensions {

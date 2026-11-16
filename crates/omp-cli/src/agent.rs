@@ -11,7 +11,7 @@ use pa_agent::types::{AgentMessage, AgentTool, DeveloperMessage, Message, UserCo
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-use crate::adapter::{json_round_trip, switchable_stream_fn, ProviderTarget};
+use crate::adapter::{ProviderTarget, json_round_trip, switchable_stream_fn};
 use crate::model::Selected;
 use crate::tools::edit_mode_for;
 
@@ -177,7 +177,26 @@ pub async fn build_agent(
     if let Some(csv) = sysprompt_opts.tools_csv.as_deref() {
         crate::tools::mcp::set_requested_tools(csv);
     }
+    // Profile / lazy-MCP switchboard, computed before tool assembly. An
+    // explicit `--tools <csv>` list wins over both the profiles and lazy MCP.
+    let explicit_tools = sysprompt_opts.tools_csv.is_some();
+    let code_mode = !explicit_tools && settings.get_bool("tools.codeMode").unwrap_or(true);
+    let core_profile = !explicit_tools && crate::methodology::core_profile_requested();
+    // Lazy MCP opt-in (Full-profile sessions only: under `tools.codeMode` /
+    // core the existing deferred-tools mechanism already keeps MCP reachable
+    // through the eval bridge). Registry/discovery are unchanged; only the
+    // provider-facing list is withheld until `load_tools` selects tools.
+    let mcp_lazy = !explicit_tools
+        && !code_mode
+        && !core_profile
+        && crate::tools::mcp::lazy_requested(&settings);
+    crate::tools::mcp::set_lazy(mcp_lazy);
     tools.extend(crate::tools::mcp::mcp_tools(cwd).await);
+    if mcp_lazy {
+        if let Some(load_tools) = crate::tools::mcp::load_tools_tool() {
+            tools.push(load_tools);
+        }
+    }
     // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
     // after the built-ins; a `--tools <csv>` list admits hidden names too
     // (subagent runs carry `yield` in their csv), like TS's requestedTools
@@ -208,9 +227,6 @@ pub async fn build_agent(
     let mut prompt = system_prompt(cwd, sysprompt_opts, &hidden);
     crate::tools::set_session_jobs(session_jobs);
     tools.extend(hidden);
-    let explicit_tools = sysprompt_opts.tools_csv.is_some();
-    let code_mode = !explicit_tools && settings.get_bool("tools.codeMode").unwrap_or(true);
-    let core_profile = !explicit_tools && crate::methodology::core_profile_requested();
     if code_mode || core_profile {
         let deferred: Vec<String> = tools
             .iter()
@@ -231,6 +247,10 @@ pub async fn build_agent(
             prompt.push_str("\n\n");
             prompt.push_str(&deferred_tools_note(&deferred));
         }
+    }
+    if let Some(note) = crate::tools::mcp::catalog_note() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&note);
     }
     let ctx = (context_strategy != crate::context::Kind::Append).then(|| {
         let policy = crate::context_policy::Policy::resolve(&settings, &|k| std::env::var(k).ok())

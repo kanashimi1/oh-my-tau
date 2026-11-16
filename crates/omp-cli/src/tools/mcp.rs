@@ -10,14 +10,16 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use omp_mcp::manager::McpManager;
 use omp_mcp::names::create_tool_name;
 use omp_mcp::schema::normalize_schema_for_mcp;
-use pa_agent::abort::AbortSignal;
-use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
 use pa_agent::BoxFut;
+use pa_agent::abort::AbortSignal;
+use pa_agent::stream::ToolDefinition;
+use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
 use serde_json::Value;
 
 /// Discover MCP tools from omp's config locations (`~/.omp/agent/mcp.json`
@@ -37,6 +39,22 @@ pub async fn mcp_tools(cwd: &Path) -> Vec<Arc<dyn AgentTool>> {
 /// servers for the status line).
 async fn register_tools(manager: Arc<McpManager>) -> Vec<Arc<dyn AgentTool>> {
     let discovered = manager.tools().await;
+    // Lazy-mode catalog: names + one-line descriptions of everything
+    // discovered, independent of what the provider projection withholds.
+    *CATALOG.lock() = discovered
+        .iter()
+        .map(|tool| {
+            let description = tool
+                .definition
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("MCP tool from {}", tool.server));
+            (
+                create_tool_name(&tool.server, &tool.definition.name),
+                description,
+            )
+        })
+        .collect();
     let mut connected = Vec::new();
     for (name, status) in manager.statuses().await {
         match status {
@@ -97,6 +115,231 @@ static CONNECTED_SERVERS: parking_lot::Mutex<Vec<(String, usize)>> =
 #[must_use]
 pub fn connected_servers() -> Vec<(String, usize)> {
     CONNECTED_SERVERS.lock().clone()
+}
+
+/// Lazy MCP loading (opt-in via `tools.mcpLazy: true` or `OMP_MCP_LAZY=1`):
+/// discovery and the registry stay exactly as before — every discovered tool
+/// is registered and fully executable — but the provider-facing tool list
+/// withholds `mcp__*` schemas until the model loads them through
+/// [`LoadTools`]. The startup catalog is one compact system-prompt line.
+static LAZY: AtomicBool = AtomicBool::new(false);
+
+/// Discovered MCP tools in registration order: `(registry name, description)`.
+static CATALOG: parking_lot::Mutex<Vec<(String, String)>> = parking_lot::Mutex::new(Vec::new());
+
+/// Registry names whose schemas the model has requested via `load_tools`.
+static LOADED: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+/// Record whether this run opted into lazy MCP. Called once by the agent
+/// builder; `false` (the default) leaves every behavior unchanged.
+pub fn set_lazy(active: bool) {
+    LAZY.store(active, Ordering::Relaxed);
+    // A newly built agent starts a fresh projection lifecycle. Model switches
+    // rediscover tools without calling this, preserving deliberate loads.
+    LOADED.lock().clear();
+}
+
+/// Whether lazy MCP loading is active for the current run.
+#[must_use]
+pub fn lazy_active() -> bool {
+    LAZY.load(Ordering::Relaxed)
+}
+
+/// Opt-in probe: `OMP_MCP_LAZY=1` or the `tools.mcpLazy` setting. An
+/// explicit `--tools <csv>` list wins over lazy loading, exactly like it
+/// wins over the `tools.profile` projections (checked by the caller).
+#[must_use]
+pub fn lazy_requested(settings: &omp_settings::Settings) -> bool {
+    std::env::var("OMP_MCP_LAZY").is_ok_and(|v| v == "1")
+        || settings.get_bool("tools.mcpLazy").unwrap_or(false)
+}
+
+/// Provider-side projection for lazy MCP: drop not-yet-loaded `mcp__*`
+/// schemas from the serialized tool list. The registry keeps the full
+/// persistent set, so eval-bridge execution and post-load structured calls
+/// are unaffected.
+pub fn project_lazy(tools: &mut Vec<ToolDefinition>) {
+    if !lazy_active() {
+        return;
+    }
+    let loaded = LOADED.lock();
+    tools.retain(|tool| {
+        !tool.name.starts_with("mcp__") || loaded.iter().any(|name| name == &tool.name)
+    });
+}
+
+/// Whether the current provider request includes this tool's full schema.
+/// Kept in sync with [`project_lazy`] so startup context accounting uses the
+/// same projection as provider serialization.
+#[must_use]
+pub fn wire_includes(name: &str) -> bool {
+    !lazy_active()
+        || !name.starts_with("mcp__")
+        || LOADED.lock().iter().any(|loaded| loaded == name)
+}
+
+/// Compact startup catalog: every discovered MCP tool as
+/// `name — first description sentence`, with the load instruction.
+#[must_use]
+pub fn catalog_note() -> Option<String> {
+    if !lazy_active() {
+        return None;
+    }
+    let catalog = CATALOG.lock();
+    if catalog.is_empty() {
+        return None;
+    }
+    let items = catalog
+        .iter()
+        .map(|(name, description)| {
+            let first = description.split(['.', '\n']).next().unwrap_or(description);
+            let truncated: String = first.chars().take(80).collect();
+            format!("{name} — {truncated}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!(
+        "MCP tools are lazy. Call `load_tools` with any of these names to expose their full schemas: {items}."
+    ))
+}
+
+/// The `load_tools` agent tool; registered only under lazy MCP.
+#[must_use]
+pub fn load_tools_tool() -> Option<Arc<dyn AgentTool>> {
+    lazy_active().then(|| {
+        Arc::new(LoadTools {
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Registry names to load: `mcp__<server>_<tool>`, or `mcp__<server>` to load every discovered tool of that server.",
+                    },
+                },
+                "required": ["names"],
+            }),
+        }) as Arc<dyn AgentTool>
+    })
+}
+
+/// `load_tools`: move selected MCP tools from the compact catalog into the
+/// provider tool list. Marks names loaded for [`project_lazy`]; unknown
+/// names are reported per entry without failing the batch.
+struct LoadTools {
+    parameters: Value,
+}
+
+impl AgentTool for LoadTools {
+    fn name(&self) -> &'static str {
+        "load_tools"
+    }
+    fn description(&self) -> &'static str {
+        "Load MCP tools by registry name (mcp__<server>_<tool>, or mcp__<server> for all of a server's tools) so their full schemas are sent to the model from the next request on."
+    }
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+    fn execute(
+        self: Arc<Self>,
+        _tool_call_id: String,
+        params: Value,
+        _signal: AbortSignal,
+        _on_update: AgentToolUpdateCallback,
+    ) -> BoxFut<'static, Result<AgentToolResult>> {
+        Box::pin(async move {
+            let requested = match params.get("names") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect::<Vec<_>>(),
+                Some(Value::String(csv)) => csv
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            if requested.is_empty() {
+                let names = CATALOG
+                    .lock()
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>();
+                let text = format!(
+                    "No names given. Discovered MCP tools: {}.",
+                    if names.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        names.join(", ")
+                    }
+                );
+                return Ok(AgentToolResult {
+                    content: vec![ToolResultContent::text(text)],
+                    details: serde_json::json!({"loaded": [], "unknown": []}),
+                    terminate: None,
+                    is_error: None,
+                });
+            }
+            let catalog = CATALOG.lock();
+            let mut loaded = LOADED.lock();
+            let mut loaded_names = Vec::new();
+            let mut unknown = Vec::new();
+            for name in requested {
+                if catalog.iter().any(|(known, _)| known == &name) {
+                    if !loaded_names.contains(&name) {
+                        if !loaded.contains(&name) {
+                            loaded.push(name.clone());
+                        }
+                        loaded_names.push(name);
+                    }
+                } else if name.starts_with("mcp__") {
+                    // Server prefix `mcp__<server>`: load every tool of it.
+                    let prefix = format!("{name}_");
+                    let matches = catalog
+                        .iter()
+                        .map(|(known, _)| known.clone())
+                        .filter(|known| known.starts_with(&prefix))
+                        .collect::<Vec<_>>();
+                    if matches.is_empty() {
+                        unknown.push(name);
+                    } else {
+                        for known in matches {
+                            if !loaded_names.contains(&known) {
+                                if !loaded.contains(&known) {
+                                    loaded.push(known.clone());
+                                }
+                                loaded_names.push(known);
+                            }
+                        }
+                    }
+                } else {
+                    unknown.push(name);
+                }
+            }
+            let mut text = if loaded_names.is_empty() {
+                "No MCP tools loaded.".to_string()
+            } else {
+                format!(
+                    "Loaded {} MCP tool(s): {}.",
+                    loaded_names.len(),
+                    loaded_names.join(", ")
+                )
+            };
+            if !unknown.is_empty() {
+                text.push_str(" Unknown (not discovered): ");
+                text.push_str(&unknown.join(", "));
+                text.push('.');
+            }
+            Ok(AgentToolResult {
+                content: vec![ToolResultContent::text(text)],
+                details: serde_json::json!({"loaded": loaded_names, "unknown": unknown}),
+                terminate: None,
+                is_error: None,
+            })
+        })
+    }
 }
 
 /// One registered MCP tool: schema/description come from `tools/list`, the
@@ -335,5 +578,227 @@ for line in sys.stdin:
             frame["partialResult"]["details"]["mcpProgress"]["progress"],
             1.0
         );
+    }
+
+    // ----- lazy MCP loading -----
+
+    /// Serializes the lazy tests: they flip process-global LAZY/CATALOG/LOADED.
+    static LAZY_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    fn reset_lazy_state() {
+        set_lazy(false);
+        CATALOG.lock().clear();
+        LOADED.lock().clear();
+    }
+
+    /// Fake manager wired to the shared stdio fixture (same as the
+    /// registration test above).
+    fn fake_manager(project: &std::path::Path, script: &std::path::Path) -> Arc<McpManager> {
+        let config: omp_mcp::McpServerConfig = serde_json::from_value(serde_json::json!({
+            "command": "python3", "args": [script.to_string_lossy()], "timeout": 15000
+        }))
+        .expect("server config");
+        let configs = std::iter::once(("fake".to_string(), config)).collect();
+        Arc::new(McpManager::new(Arc::new(project.to_path_buf()), configs))
+    }
+
+    fn def(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lazy_projection_withholds_until_load_tools_then_executes() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("python3 not available; skipping");
+            return;
+        }
+        let _guard = LAZY_TEST_LOCK.lock();
+        reset_lazy_state();
+        let root = tempfile::tempdir().expect("tempdir");
+        let script = root.path().join("fake.py");
+        std::fs::File::create(&script)
+            .unwrap()
+            .write_all(FAKE_SERVER_PY.as_bytes())
+            .unwrap();
+        set_lazy(true);
+
+        // Discovery registers the full persistent list and fills the catalog.
+        let tools = register_tools(fake_manager(root.path(), &script)).await;
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "mcp__fake_echo");
+        assert_eq!(
+            CATALOG.lock().as_slice(),
+            [("mcp__fake_echo".to_string(), "Echo args".to_string())]
+        );
+        assert!(load_tools_tool().is_some(), "lazy on registers load_tools");
+        assert!(catalog_note().is_some());
+        assert!(!wire_includes("mcp__fake_echo"));
+        assert!(wire_includes("read"));
+
+        // Provider projection withholds unloaded MCP schemas, keeps built-ins.
+        let mut provider_tools = vec![def("mcp__fake_echo"), def("read")];
+        project_lazy(&mut provider_tools);
+        assert_eq!(
+            provider_tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["read"],
+            "unloaded mcp__* withheld, built-ins kept"
+        );
+
+        // load_tools by server prefix marks the tool loaded.
+        let loader = load_tools_tool().expect("loader");
+        let result = loader
+            .execute(
+                "load-1".to_string(),
+                serde_json::json!({"names": ["mcp__fake"]}),
+                AbortSignal::never(),
+                Arc::new(|_| {}),
+            )
+            .await
+            .expect("load_tools execute");
+        assert_eq!(
+            result.details["loaded"],
+            serde_json::json!(["mcp__fake_echo"])
+        );
+        assert_eq!(result.details["unknown"], serde_json::json!([]));
+        let text = match &result.content[0] {
+            ToolResultContent::Text(t) => t.text.clone(),
+            ToolResultContent::Image(_) => panic!("unexpected image"),
+        };
+        assert!(text.contains("mcp__fake_echo"), "result text: {text}");
+
+        // After loading, the full schema is serialized: structured calls work.
+        let mut provider_tools = vec![def("mcp__fake_echo"), def("read")];
+        project_lazy(&mut provider_tools);
+        assert_eq!(provider_tools.len(), 2, "loaded tool projected");
+        assert!(wire_includes("mcp__fake_echo"));
+
+        // The persistent registry still executes the tool end to end.
+        let executed = tools[0]
+            .clone()
+            .execute(
+                "call-e2e".to_string(),
+                serde_json::json!({"text": "E2E"}),
+                AbortSignal::never(),
+                Arc::new(|_| {}),
+            )
+            .await
+            .expect("execute after load");
+        let executed_text = match &executed.content[0] {
+            ToolResultContent::Text(t) => t.text.clone(),
+            ToolResultContent::Image(_) => panic!("unexpected image"),
+        };
+        assert!(executed_text.contains("E2E"));
+
+        reset_lazy_state();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn load_tools_reports_unknown_and_is_idempotent() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("python3 not available; skipping");
+            return;
+        }
+        let _guard = LAZY_TEST_LOCK.lock();
+        reset_lazy_state();
+        let root = tempfile::tempdir().expect("tempdir");
+        let script = root.path().join("fake.py");
+        std::fs::File::create(&script)
+            .unwrap()
+            .write_all(FAKE_SERVER_PY.as_bytes())
+            .unwrap();
+        set_lazy(true);
+        register_tools(fake_manager(root.path(), &script)).await;
+
+        let loader = load_tools_tool().expect("loader");
+        // Unknown names are reported without failing the batch.
+        let miss = loader
+            .clone()
+            .execute(
+                "load-miss".to_string(),
+                serde_json::json!({"names": ["mcp__ghost", "read"]}),
+                AbortSignal::never(),
+                Arc::new(|_| {}),
+            )
+            .await
+            .expect("execute");
+        assert_eq!(miss.details["loaded"], serde_json::json!([]));
+        assert_eq!(
+            miss.details["unknown"],
+            serde_json::json!(["mcp__ghost", "read"])
+        );
+        assert!(LOADED.lock().is_empty());
+
+        // Direct name + repeat stays single-entry (idempotent).
+        let hit = loader
+            .clone()
+            .execute(
+                "load-hit".to_string(),
+                serde_json::json!({"names": ["mcp__fake_echo", "mcp__fake_echo"]}),
+                AbortSignal::never(),
+                Arc::new(|_| {}),
+            )
+            .await
+            .expect("execute");
+        assert_eq!(hit.details["loaded"], serde_json::json!(["mcp__fake_echo"]));
+        assert_eq!(LOADED.lock().as_slice(), ["mcp__fake_echo"]);
+
+        // Empty request lists the catalog instead of loading anything.
+        let none = loader
+            .execute(
+                "load-none".to_string(),
+                serde_json::json!({}),
+                AbortSignal::never(),
+                Arc::new(|_| {}),
+            )
+            .await
+            .expect("execute");
+        assert!(match &none.content[0] {
+            ToolResultContent::Text(t) => t.text.contains("Discovered MCP tools"),
+            ToolResultContent::Image(_) => false,
+        });
+        assert_eq!(LOADED.lock().as_slice(), ["mcp__fake_echo"]);
+
+        reset_lazy_state();
+    }
+
+    #[test]
+    fn lazy_off_keeps_projection_and_tool_registration_noop() {
+        let _guard = LAZY_TEST_LOCK.lock();
+        reset_lazy_state();
+        let mut provider_tools = vec![def("mcp__fake_echo"), def("read")];
+        project_lazy(&mut provider_tools);
+        assert_eq!(provider_tools.len(), 2, "lazy off: nothing withheld");
+        assert!(wire_includes("mcp__fake_echo"));
+        assert!(load_tools_tool().is_none(), "lazy off: no load_tools");
+        assert!(catalog_note().is_none(), "lazy off: no catalog note");
+    }
+
+    #[test]
+    fn lazy_requested_reads_setting_and_defaults_false() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.yml"),
+            "tools:\n  codeMode: false\n  mcpLazy: true\n",
+        )
+        .unwrap();
+        let settings = omp_settings::Settings::load_from(None, dir.path());
+        assert!(lazy_requested(&settings), "opt-in via tools.mcpLazy");
+        let empty = omp_settings::Settings::load_from(None, std::path::Path::new("/"));
+        assert!(!lazy_requested(&empty), "default off without opt-in");
     }
 }
