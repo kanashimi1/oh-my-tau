@@ -19,6 +19,7 @@ const CORE_TOOLS: &[&str] = &[
 ];
 const CODE_MODE_TOOLS: &[&str] = &[
     "eval",
+    "macro_step",
     "ask",
     "todo",
     "yield",
@@ -194,12 +195,13 @@ mod tests {
     }
 
     #[test]
-    fn code_mode_exposes_only_eval_and_session_control_tools() {
+    fn code_mode_exposes_eval_macro_step_and_session_control_tools() {
         let mut tools = [
             "read",
             "bash",
             "edit",
             "eval",
+            "macro_step",
             "ask",
             "todo",
             "yield",
@@ -222,6 +224,7 @@ mod tests {
             tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
             [
                 "eval",
+                "macro_step",
                 "ask",
                 "todo",
                 "yield",
