@@ -18,10 +18,9 @@
 //!
 //! The [`Spool`] hashes and windows the output incrementally over arbitrary
 //! byte chunks, retaining only a bounded head/tail in RAM. Cell output
-//! currently arrives batched as one `CellResult.output` (the NDJSON frame
-//! loop lives in omp-eval, whose `ExecOptions` has no streaming hook), so
-//! `feed_bytes` sees a single chunk today; the chunked interface is the
-//! integration point for true frame-level spooling without an API change.
+//! arrives as complete text because semantic classification needs the whole
+//! document. The chunked interface still hashes/windows it incrementally;
+//! the default non-pack path uses the separate frame-level output spool.
 
 use sha2::{Digest, Sha256};
 

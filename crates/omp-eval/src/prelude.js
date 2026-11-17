@@ -124,14 +124,17 @@
           buffer += "\r";
         }
       }
-      for (let idx = s.indexOf("\n"); idx !== -1 && !done; idx = s.indexOf("\n")) {
-        let piece = s.slice(0, idx);
-        s = s.slice(idx + 1);
+      let from = 0;
+      while (!done) {
+        const idx = s.indexOf("\n", from);
+        if (idx === -1) break;
+        let piece = s.slice(from, idx);
+        from = idx + 1;
         if (piece.endsWith("\r")) piece = piece.slice(0, -1);
         buffer += piece;
         finishLine();
       }
-      if (!done) buffer += s;
+      if (!done) buffer += s.slice(from);
     };
     let pos = 0;
     while (!done && pos < size) {
