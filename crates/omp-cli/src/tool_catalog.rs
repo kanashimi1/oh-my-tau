@@ -201,9 +201,8 @@ fn ts_type(schema: &Value, depth: usize) -> String {
     if depth > MAX_DEPTH {
         return "unknown".to_string();
     }
-    let obj = match schema.as_object() {
-        Some(obj) => obj,
-        None => return "unknown".to_string(),
+    let Some(obj) = schema.as_object() else {
+        return "unknown".to_string();
     };
     if let Some(values) = obj.get("enum").and_then(Value::as_array) {
         // List caps keep the note valid TS: the overflow marker widens the
@@ -212,7 +211,7 @@ fn ts_type(schema: &Value, depth: usize) -> String {
             values
                 .iter()
                 .take(MAX_ENUM)
-                .map(|v| literal(v))
+                .map(literal)
                 .chain((values.len() > MAX_ENUM).then(|| "(string)".to_string())),
         );
     }
@@ -258,8 +257,7 @@ fn scalar(t: &str, obj: &serde_json::Map<String, Value>, depth: usize) -> String
         "array" => {
             let item = obj
                 .get("items")
-                .map(|items| ts_type(items, depth + 1))
-                .unwrap_or_else(|| "unknown".to_string());
+                .map_or_else(|| "unknown".to_string(), |items| ts_type(items, depth + 1));
             format!("{item}[]")
         }
         "object" => object_body(obj, depth),
@@ -268,7 +266,7 @@ fn scalar(t: &str, obj: &serde_json::Map<String, Value>, depth: usize) -> String
 }
 
 /// `{ key: T; key2?: U; [k: string]: V }` / `Record<string, V>` fallback.
-/// Property names are sorted for determinism (serde_json maps are
+/// Property names are sorted for determinism (`serde_json` maps are
 /// insertion-ordered in this workspace).
 fn object_body(obj: &serde_json::Map<String, Value>, depth: usize) -> String {
     let required: Vec<&str> = obj
@@ -389,7 +387,7 @@ mod tests {
     use std::sync::Arc;
 
     fn t(schema: &Value) -> String {
-        ts_type(&schema, 0)
+        ts_type(schema, 0)
     }
 
     #[test]
@@ -673,8 +671,7 @@ mod tests {
             return std::path::Path::new(cmd).is_file();
         }
         std::env::var_os("PATH")
-            .map(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
-            .unwrap_or(false)
+            .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
     }
 
     #[test]
@@ -755,7 +752,7 @@ mod tests {
         }
     }
 
-    /// Minimal AgentTool for tests (execute is never called).
+    /// Minimal `AgentTool` for tests (execute is never called).
     fn synth_tool(name: &str, schema: &Value) -> Arc<dyn AgentTool> {
         struct Synth {
             name: String,
@@ -765,7 +762,7 @@ mod tests {
             fn name(&self) -> &str {
                 &self.name
             }
-            fn description(&self) -> &str {
+            fn description(&self) -> &'static str {
                 "synthetic tool used by catalog tests"
             }
             fn parameters(&self) -> &Value {

@@ -9,17 +9,17 @@
 //! manager reconnects on demand and isolates per-server errors.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::Result;
 use omp_mcp::manager::McpManager;
 use omp_mcp::names::create_tool_name;
 use omp_mcp::schema::normalize_schema_for_mcp;
-use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::stream::ToolDefinition;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
+use pa_agent::BoxFut;
 use serde_json::Value;
 
 /// Discover MCP tools from omp's config locations (`~/.omp/agent/mcp.json`
@@ -583,7 +583,8 @@ for line in sys.stdin:
     // ----- lazy MCP loading -----
 
     /// Serializes the lazy tests: they flip process-global LAZY/CATALOG/LOADED.
-    static LAZY_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    static LAZY_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
     fn reset_lazy_state() {
         set_lazy(false);
@@ -620,7 +621,7 @@ for line in sys.stdin:
             eprintln!("python3 not available; skipping");
             return;
         }
-        let _guard = LAZY_TEST_LOCK.lock();
+        let _guard = LAZY_TEST_LOCK.lock().await;
         reset_lazy_state();
         let root = tempfile::tempdir().expect("tempdir");
         let script = root.path().join("fake.py");
@@ -713,7 +714,7 @@ for line in sys.stdin:
             eprintln!("python3 not available; skipping");
             return;
         }
-        let _guard = LAZY_TEST_LOCK.lock();
+        let _guard = LAZY_TEST_LOCK.lock().await;
         reset_lazy_state();
         let root = tempfile::tempdir().expect("tempdir");
         let script = root.path().join("fake.py");
@@ -778,7 +779,7 @@ for line in sys.stdin:
 
     #[test]
     fn lazy_off_keeps_projection_and_tool_registration_noop() {
-        let _guard = LAZY_TEST_LOCK.lock();
+        let _guard = LAZY_TEST_LOCK.blocking_lock();
         reset_lazy_state();
         let mut provider_tools = vec![def("mcp__fake_echo"), def("read")];
         project_lazy(&mut provider_tools);

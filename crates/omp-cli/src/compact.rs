@@ -7,6 +7,7 @@
 //! `shake`, remote and speculative/idle compaction are not (a `methodOrder` without `soft` therefore
 //! disables automatic compaction).
 
+use std::fmt::Write as _;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
@@ -760,7 +761,7 @@ fn trajectory_squash_requested() -> bool {
 
 #[must_use]
 fn trajectory_squash_gate(value: Option<&str>) -> bool {
-    matches!(value, Some("1") | Some("true"))
+    matches!(value, Some("1" | "true"))
 }
 
 /// The deterministic structured digest replacing the LLM summarizer under the
@@ -770,6 +771,7 @@ fn trajectory_squash_gate(value: Option<&str>) -> bool {
 /// results), and artifact/handle refs (`archived at …`, `--fetch …`,
 /// `artifact://…`, `path=…`). Same region, same bytes.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 fn trajectory_squash_result(prep: &CompactionPreparation) -> CompactionResult {
     const MAX_ITEM_CHARS: usize = 240;
     const MAX_REFS: usize = 12;
@@ -793,7 +795,7 @@ fn trajectory_squash_result(prep: &CompactionPreparation) -> CompactionResult {
                             out.push(t.to_owned());
                         }
                     }
-                    Some("tool_result") | Some("toolResult") => {
+                    Some("tool_result" | "toolResult") => {
                         if let Some(t) = block.get("text").and_then(Value::as_str) {
                             out.push(t.to_owned());
                         } else if let Some(t) = block.get("content").and_then(Value::as_str) {
@@ -896,21 +898,21 @@ fn trajectory_squash_result(prep: &CompactionPreparation) -> CompactionResult {
         prep.recent_messages.len(),
     );
     if let Some(goal) = &goal {
-        summary.push_str(&format!("\n\nGOAL: {goal}"));
+        let _ = write!(summary, "\n\nGOAL: {goal}");
     }
     if let Some(state) = &state {
-        summary.push_str(&format!("\n\nLATEST STATE: {state}"));
+        let _ = write!(summary, "\n\nLATEST STATE: {state}");
     }
     if !errors.is_empty() {
-        summary.push_str(&format!("\n\nUNRESOLVED ERRORS ({}):", errors.len()));
+        let _ = write!(summary, "\n\nUNRESOLVED ERRORS ({}):", errors.len());
         for e in &errors {
-            summary.push_str(&format!("\n- {e}"));
+            let _ = write!(summary, "\n- {e}");
         }
     }
     if !refs.is_empty() {
-        summary.push_str(&format!("\n\nARTIFACT/HANDLE REFS ({}):", refs.len()));
+        let _ = write!(summary, "\n\nARTIFACT/HANDLE REFS ({}):", refs.len());
         for r in &refs {
-            summary.push_str(&format!("\n- {r}"));
+            let _ = write!(summary, "\n- {r}");
         }
     }
     if let Some(prev) = prep
@@ -918,7 +920,7 @@ fn trajectory_squash_result(prep: &CompactionPreparation) -> CompactionResult {
         .as_deref()
         .filter(|p| !p.trim().is_empty())
     {
-        summary.push_str(&format!("\n\nPRIOR SUMMARY: {}", truncate(prev, 600)));
+        let _ = write!(summary, "\n\nPRIOR SUMMARY: {}", truncate(prev, 600));
     }
 
     let short_summary = format!(
@@ -2009,6 +2011,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn trajectory_squash_view_is_shorter_and_keeps_digest() {
         const TS: &str = "2026-01-01T00:00:00.000Z";
         let dir = tempfile::tempdir().expect("tmp");
@@ -2250,8 +2253,8 @@ mod tests {
             .expect("ser")
             .len();
         println!(
-            "trajectory-squash evidence: pre-squash next-request {pre_bytes}B -> post-squash {post_bytes}B ({:.0}% smaller)",
-            100.0 - 100.0 * post_bytes as f64 / pre_bytes as f64
+            "trajectory-squash evidence: pre-squash next-request {pre_bytes}B -> post-squash {post_bytes}B ({}% smaller)",
+            100usize.saturating_sub(100 * post_bytes / pre_bytes)
         );
         assert!(
             post_bytes * 2 < pre_bytes,
@@ -2283,8 +2286,7 @@ mod tests {
         let entries2 = h.rt.entries().expect("entries");
         let comp2 = entries2
             .iter()
-            .filter(|e| e["type"] == "compaction")
-            .next_back()
+            .rfind(|e| e["type"] == "compaction")
             .expect("second compaction");
         assert_eq!(comp2["method"], "soft");
         assert!(counter.load(Ordering::SeqCst) >= 1, "LLM summarizer used");

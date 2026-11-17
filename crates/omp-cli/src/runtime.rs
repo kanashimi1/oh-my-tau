@@ -416,7 +416,7 @@ impl Runtime {
 
     /// [`Self::start`] with an explicit model resolver (fallback candidates, `set_model`) and,
     /// optionally, the retry/fallback configuration (default: derived from the live model).
-    #[allow(clippy::too_many_lines)] // one constructor: resolver, retry config, persistence, event wiring, in order
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one constructor: resolver, retry config, persistence, event wiring, in order
     pub async fn start_with(
         agent: Arc<Agent>,
         target: Target,

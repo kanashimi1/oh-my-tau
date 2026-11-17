@@ -2,10 +2,10 @@
 
 use omp_tui::magic::Ultra;
 use pa_agent::types::{AgentMessage, AssistantContent, Message, StopReason};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::{Runtime, level_name, message_text};
+use super::{level_name, message_text, Runtime};
 
 impl Runtime {
     /// TS `ctx.getContextUsage()`: `{tokens, contextWindow, percent}` (None without a window).
@@ -266,7 +266,7 @@ mod context_usage_tests {
 
     #[test]
     fn wire_and_catalog_tokens_are_independent() {
-        let messages = vec![AgentMessage::user("hello")];
+        let messages = [AgentMessage::user("hello")];
         let usage = context_usage(
             messages.iter(),
             1000,
