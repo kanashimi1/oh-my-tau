@@ -119,6 +119,7 @@ fn py_idle_timeout_pauses_during_host_call_but_fires_on_busy_loop() {
         idle_timeout: true,
         bridge: Some(&b),
         cancel: None,
+        ..ExecOptions::default()
     };
     let r = k
         .execute_with("__omp_host_call('slow', {})", opts)
@@ -135,6 +136,7 @@ fn py_idle_timeout_pauses_during_host_call_but_fires_on_busy_loop() {
         idle_timeout: true,
         bridge: Some(&b),
         cancel: None,
+        ..ExecOptions::default()
     };
     let r = k.execute_with("while True:\n    pass", opts).expect("cell");
     assert!(r.cancelled, "busy cell must time out: {:?}", r.status);

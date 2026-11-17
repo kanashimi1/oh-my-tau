@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use omp_eval::js::{default_runtime, JsKernel};
-use omp_eval::{CellResult, CellStatus};
+use omp_eval::{CellResult, CellStatus, ExecOptions};
 mod common;
 
 fn kernel(tag: &str) -> JsKernel {
@@ -74,6 +74,32 @@ fn state_persists_across_cells() {
 
     let r3 = k.execute("accum + double(1)", None).expect("cell 3");
     assert_eq!(r3.output, "43\n");
+    k.shutdown();
+}
+
+#[test]
+fn output_sink_receives_stdout_and_result_without_retaining_output() {
+    if !common::require_bun("output_sink_receives_stdout_and_result_without_retaining_output") {
+        return;
+    }
+    let k = kernel("output-sink");
+    let chunks = std::sync::Mutex::new(Vec::new());
+    let sink = |text: &str| chunks.lock().expect("chunks").push(text.to_owned());
+    let result = k
+        .execute_with(
+            "print('before')\n'sink-result'",
+            ExecOptions {
+                output_sink: Some(&sink),
+                ..ExecOptions::default()
+            },
+        )
+        .expect("cell");
+    assert!(chunks.lock().expect("chunks").concat().contains("before"));
+    assert_eq!(
+        chunks.lock().expect("chunks").concat(),
+        "before\n\"sink-result\"\n"
+    );
+    assert!(result.output.is_empty());
     k.shutdown();
 }
 

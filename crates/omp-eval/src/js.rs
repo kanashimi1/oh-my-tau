@@ -297,13 +297,13 @@ impl JsKernel {
             };
             match frame {
                 Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => {
-                    output.push_str(&data);
+                    crate::emit_output(&mut output, &opts, &data);
                 }
                 Frame::Result { bundle, .. } => {
                     if let Some(serde_json::Value::String(text)) = bundle.get("text/plain") {
-                        output.push_str(text);
+                        crate::emit_output(&mut output, &opts, text);
                         if !text.ends_with('\n') {
-                            output.push('\n');
+                            crate::emit_output(&mut output, &opts, "\n");
                         }
                     }
                 }
@@ -377,8 +377,8 @@ impl JsKernel {
                 } => {
                     status = CellStatus::Error;
                     // omp executor pushes `error.stack` as the cell output.
-                    output.push_str(&traceback.join("\n"));
-                    output.push('\n');
+                    crate::emit_output(&mut output, &opts, &traceback.join("\n"));
+                    crate::emit_output(&mut output, &opts, "\n");
                     error = Some(KernelError {
                         name: ename,
                         value: evalue,

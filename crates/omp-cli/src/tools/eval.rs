@@ -15,6 +15,7 @@
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -32,6 +33,8 @@ use super::eval_bridge::{EvalBridge, OpCtx};
 use super::eval_journal::{self, Lang};
 use super::util::{notice_with_artifact, save_artifact, sink_window, spill_window, SpillConfig};
 use super::Env;
+#[path = "eval_output.rs"]
+mod eval_output;
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
@@ -217,16 +220,52 @@ fn python_kernel_env(cwd: &std::path::Path) -> Vec<(String, String)> {
 
 /// Cell options: the bridge lives in the blocking task next to the cell it
 /// serves; TS idle-timeout semantics (host calls pause the deadline).
-fn run_opts(
-    bridge: &EvalBridge,
+fn run_opts<'a>(
+    bridge: &'a EvalBridge,
     timeout: Option<Duration>,
     cancel: CancelToken,
-) -> ExecOptions<'_> {
+    output_sink: Option<&'a dyn Fn(&str)>,
+) -> ExecOptions<'a> {
     ExecOptions {
         timeout,
         idle_timeout: true,
         bridge: Some(bridge),
         cancel: Some(cancel),
+        output_sink,
+    }
+}
+
+fn output_prefix(notice: Option<&str>, replayed: bool, cells: usize) -> String {
+    let mut text = String::new();
+    if let Some(notice) = notice {
+        text.push_str(notice);
+        text.push('\n');
+    }
+    if replayed {
+        let _ = write!(
+            text,
+            "Replayed {cells} setup cell{}.",
+            if cells == 1 { "" } else { "s" }
+        );
+    }
+    text
+}
+
+fn push_timeout_annotation(
+    output: &mut eval_output::StreamingOutput,
+    result: &CellResult,
+    is_js: bool,
+    timeout: Option<Duration>,
+) {
+    if is_js {
+        if result.timed_out {
+            output.push(&format!(
+                "\n[{}]",
+                CellResult::js_timeout_annotation(timeout)
+            ));
+        }
+    } else if let Some(annotation) = result.kernel_timeout_annotation() {
+        output.push(&format!("\n[{annotation}]"));
     }
 }
 
@@ -280,7 +319,6 @@ fn cell_is_error(result: &CellResult) -> bool {
 // invariant: the execution loop above always pushes at least one cell result.
 #[allow(clippy::expect_used)]
 pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolResult> {
-    use std::fmt::Write as _;
     // omp's schema requires `language`; a missing one fails TS input
     // validation before execute, so reject it here too (no silent default).
     let language = args
@@ -367,6 +405,8 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         )
     };
 
+    let stream_output = !crate::methodology::raw_tool_output_requested();
+    let output_cfg = SpillConfig::load(&cwd);
     let mut kernel_loss_notice: Option<String> = None;
     let mut results: Vec<CellResult> = Vec::with_capacity(codes.len());
     if is_js {
@@ -380,16 +420,44 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             kernel_loss_notice = eval_journal::kernel_started(&cwd, lang);
             fresh
         };
-        for cell_code in &codes {
+        for (cell_index, cell_code) in codes.iter().enumerate() {
             let code_c = cell_code.clone();
             let k = Arc::clone(&kernel);
             let bridge = make_bridge();
             let cell_cancel = cancel.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                k.execute_with(&code_c, run_opts(&bridge, timeout, cell_cancel))
+            let buffered = stream_output.then(|| {
+                let mut output = eval_output::StreamingOutput::new(output_cfg);
+                output.push(&output_prefix(
+                    kernel_loss_notice.as_deref(),
+                    replayed,
+                    cell_index + 1,
+                ));
+                Arc::new(Mutex::new(Some(output)))
+            });
+            let task_buffered = buffered.clone();
+            let (result, task_buffered) = tokio::task::spawn_blocking(move || {
+                let sink = |text: &str| {
+                    if let Some(buffer) = &task_buffered {
+                        if let Some(output) = buffer.lock().as_mut() {
+                            output.push(text);
+                        }
+                    }
+                };
+                let output_sink = task_buffered.as_ref().map(|_| &sink as &dyn Fn(&str));
+                let result = k.execute_with(
+                    &code_c,
+                    run_opts(&bridge, timeout, cell_cancel, output_sink),
+                );
+                (result, task_buffered)
             })
             .await
-            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
+            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))?;
+            let (mut result, buffered) = (result?, task_buffered);
+            if let Some(buffer) = buffered {
+                let mut output = buffer.lock().take().expect("cell output buffer");
+                push_timeout_annotation(&mut output, &result, true, timeout);
+                result.output = output.finish();
+            }
             eval_journal::record_cell(&cwd, lang, cell_code, &result);
             let failed = result.status != CellStatus::Ok;
             results.push(result);
@@ -410,16 +478,44 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             kernel_loss_notice = eval_journal::kernel_started(&cwd, lang);
             fresh
         };
-        for cell_code in &codes {
+        for (cell_index, cell_code) in codes.iter().enumerate() {
             let code_c = cell_code.clone();
             let k = Arc::clone(&kernel);
             let bridge = make_bridge();
             let cell_cancel = cancel.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                k.execute_with(&code_c, run_opts(&bridge, timeout, cell_cancel))
+            let buffered = stream_output.then(|| {
+                let mut output = eval_output::StreamingOutput::new(output_cfg);
+                output.push(&output_prefix(
+                    kernel_loss_notice.as_deref(),
+                    replayed,
+                    cell_index + 1,
+                ));
+                Arc::new(Mutex::new(Some(output)))
+            });
+            let task_buffered = buffered.clone();
+            let (result, task_buffered) = tokio::task::spawn_blocking(move || {
+                let sink = |text: &str| {
+                    if let Some(buffer) = &task_buffered {
+                        if let Some(output) = buffer.lock().as_mut() {
+                            output.push(text);
+                        }
+                    }
+                };
+                let output_sink = task_buffered.as_ref().map(|_| &sink as &dyn Fn(&str));
+                let result = k.execute_with(
+                    &code_c,
+                    run_opts(&bridge, timeout, cell_cancel, output_sink),
+                );
+                (result, task_buffered)
             })
             .await
-            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
+            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))?;
+            let (mut result, buffered) = (result?, task_buffered);
+            if let Some(buffer) = buffered {
+                let mut output = buffer.lock().take().expect("cell output buffer");
+                push_timeout_annotation(&mut output, &result, false, timeout);
+                result.output = output.finish();
+            }
             eval_journal::record_cell(&cwd, lang, cell_code, &result);
             let failed = result.status != CellStatus::Ok;
             results.push(result);
@@ -430,29 +526,6 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
     }
 
     let result = results.last().expect("at least one cell result");
-    let mut text = String::new();
-    if let Some(notice) = kernel_loss_notice {
-        // Prepend so the model reads the state-loss warning first (TS
-        // `eval-prelude-notice`).
-        text.push_str(&notice);
-        text.push('\n');
-    }
-    if replayed {
-        let _ = write!(
-            text,
-            "Replayed {} setup cell{}.",
-            results.len(),
-            if results.len() == 1 { "" } else { "s" }
-        );
-    }
-    text.push_str(&result.output);
-    if is_js {
-        if result.timed_out {
-            let _ = write!(text, "\n[{}]", CellResult::js_timeout_annotation(timeout));
-        }
-    } else if let Some(annotation) = result.kernel_timeout_annotation() {
-        let _ = write!(text, "\n[{annotation}]");
-    }
     if result.status == CellStatus::KernelKilled {
         // Kernel state is gone; drop it so the next call starts fresh.
         if is_js {
@@ -461,12 +534,29 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             state.py = None;
         }
     }
-    let text = cap_output_with(&text, &SpillConfig::load(&cwd));
+    let text = if stream_output {
+        result.output.clone()
+    } else {
+        let mut text = output_prefix(kernel_loss_notice.as_deref(), replayed, results.len());
+        text.push_str(&result.output);
+        if is_js {
+            if result.timed_out {
+                let _ = write!(text, "\n[{}]", CellResult::js_timeout_annotation(timeout));
+            }
+        } else if let Some(annotation) = result.kernel_timeout_annotation() {
+            let _ = write!(text, "\n[{annotation}]");
+        }
+        cap_output_with(&text, &output_cfg)
+    };
     // Images a cell displayed (PIL/_repr_png_ values, bridged `read` of an image file, image bundles)
     // reach the model as image content; the cell text alone cannot carry pixels.
     let images = display_images(&result.displays);
     let mut content = vec![pa_agent::types::ToolResultContent::text(text)];
-    content.extend(images.into_iter().map(pa_agent::types::ToolResultContent::Image));
+    content.extend(
+        images
+            .into_iter()
+            .map(pa_agent::types::ToolResultContent::Image),
+    );
     Ok(AgentToolResult {
         content,
         details: cell_details(result, replayed),
@@ -496,9 +586,12 @@ const IMAGE_MIMES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/g
 fn image_of(v: &Value) -> Option<pa_agent::types::ImageContent> {
     let data = v.get("data")?.as_str()?;
     let mime = v.get("mimeType").or_else(|| v.get("mime_type"))?.as_str()?;
-    (IMAGE_MIMES.contains(&mime) && !data.is_empty() && data.len() <= MAX_DISPLAY_IMAGE_B64).then(|| {
-        pa_agent::types::ImageContent { data: data.to_string(), mime_type: mime.to_string() }
-    })
+    (IMAGE_MIMES.contains(&mime) && !data.is_empty() && data.len() <= MAX_DISPLAY_IMAGE_B64).then(
+        || pa_agent::types::ImageContent {
+            data: data.to_string(),
+            mime_type: mime.to_string(),
+        },
+    )
 }
 
 /// Image content from a cell's display bundles: `application/x-omp-image` ({data, mimeType}),
@@ -519,15 +612,24 @@ fn display_images(displays: &[Value]) -> Vec<pa_agent::types::ImageContent> {
             .find_map(|m| bundle.get(*m).and_then(Value::as_str).map(|d| (*m, d)))
         {
             if !data.is_empty() && data.len() <= MAX_DISPLAY_IMAGE_B64 {
-                out.push(pa_agent::types::ImageContent { data: data.to_string(), mime_type: mime.to_string() });
+                out.push(pa_agent::types::ImageContent {
+                    data: data.to_string(),
+                    mime_type: mime.to_string(),
+                });
             }
             continue;
         }
         if let Some(json) = bundle.get("application/json") {
-            if let Some(img) = image_of(json).filter(|_| json.get("type").and_then(Value::as_str) == Some("image")) {
+            if let Some(img) =
+                image_of(json).filter(|_| json.get("type").and_then(Value::as_str) == Some("image"))
+            {
                 out.push(img);
             } else if let Some(list) = json.get("images").and_then(Value::as_array) {
-                out.extend(list.iter().filter_map(image_of).take(MAX_DISPLAY_IMAGES - out.len()));
+                out.extend(
+                    list.iter()
+                        .filter_map(image_of)
+                        .take(MAX_DISPLAY_IMAGES - out.len()),
+                );
             }
         }
     }
@@ -544,8 +646,21 @@ fn displays_for_details(displays: &[Value]) -> Vec<Value> {
                 m.iter()
                     .map(|(k, x)| {
                         let big = matches!(x, Value::String(s) if s.len() > 4096);
-                        let keep = !(big && (k == "data" || k == "text/plain" || IMAGE_MIMES.contains(&k.as_str())));
-                        (k.clone(), if keep { elide(x) } else { Value::String(format!("<{} bytes elided>", x.as_str().map_or(0, str::len))) })
+                        let keep = !(big
+                            && (k == "data"
+                                || k == "text/plain"
+                                || IMAGE_MIMES.contains(&k.as_str())));
+                        (
+                            k.clone(),
+                            if keep {
+                                elide(x)
+                            } else {
+                                Value::String(format!(
+                                    "<{} bytes elided>",
+                                    x.as_str().map_or(0, str::len)
+                                ))
+                            },
+                        )
                     })
                     .collect(),
             ),
@@ -583,13 +698,19 @@ mod display_image_tests {
             json!({"application/json": {"type": "image", "data": "SktM", "mimeType": "image/gif"}}),
             json!({"application/json": {"images": [{"data": "QUJD", "mimeType": "text/html"}]}}),
         ];
-        let got: Vec<(String, String)> = display_images(&d).into_iter().map(|i| (i.mime_type, i.data)).collect();
-        assert_eq!(got, vec![
-            ("image/png".into(), "QUJD".into()),
-            ("image/jpeg".into(), "REVG".into()),
-            ("image/webp".into(), "R0hJ".into()),
-            ("image/gif".into(), "SktM".into()),
-        ]);
+        let got: Vec<(String, String)> = display_images(&d)
+            .into_iter()
+            .map(|i| (i.mime_type, i.data))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("image/png".into(), "QUJD".into()),
+                ("image/jpeg".into(), "REVG".into()),
+                ("image/webp".into(), "R0hJ".into()),
+                ("image/gif".into(), "SktM".into()),
+            ]
+        );
     }
 
     #[test]

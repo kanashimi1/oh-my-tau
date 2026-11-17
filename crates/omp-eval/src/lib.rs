@@ -116,6 +116,17 @@ pub struct ExecOptions<'a> {
     pub bridge: Option<&'a dyn HostBridge>,
     /// Optional cooperative cancel, polled while the cell runs.
     pub cancel: Option<CancelToken>,
+    /// Streaming output consumer. When set, output is delivered here instead
+    /// of being accumulated in `CellResult::output`; displays stay in the result.
+    pub output_sink: Option<&'a dyn Fn(&str)>,
+}
+
+fn emit_output(output: &mut String, opts: &ExecOptions<'_>, text: &str) {
+    if let Some(sink) = opts.output_sink {
+        sink(text);
+    } else {
+        output.push_str(text);
+    }
 }
 
 /// Terminal status of one executed cell.
@@ -722,13 +733,13 @@ impl PythonKernel {
             match self.recv(deadline, &id, cancel.as_ref()) {
                 Ok(frame) => match frame {
                     Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => {
-                        output.push_str(&data);
+                        emit_output(&mut output, opts, &data);
                     }
                     Frame::Result { bundle, .. } => {
                         if let Some(Value::String(text)) = bundle.get("text/plain") {
-                            output.push_str(text);
+                            emit_output(&mut output, opts, text);
                             if !text.ends_with('\n') {
-                                output.push('\n');
+                                emit_output(&mut output, opts, "\n");
                             }
                         }
                     }
@@ -786,8 +797,8 @@ impl PythonKernel {
                     } => {
                         status = CellStatus::Error;
                         // omp kernel-base: traceback lines joined by \n + trailing \n
-                        output.push_str(&traceback.join("\n"));
-                        output.push('\n');
+                        emit_output(&mut output, opts, &traceback.join("\n"));
+                        emit_output(&mut output, opts, "\n");
                         error = Some(KernelError {
                             name: ename,
                             value: evalue,
