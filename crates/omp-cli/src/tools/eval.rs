@@ -559,7 +559,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             let _ = write!(text, "\n[{annotation}]");
         }
         if pack_output {
-            let (packed, observed) = eval_observation::render(eval_observation::PackInput {
+            let (packed, observed) = eval_observation::render(&eval_observation::PackInput {
                 text: &text,
                 cell_error: cell_is_error(result),
                 raw: raw_output,
@@ -568,7 +568,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             });
             // An error/raw result breaks the consecutive-output chain.
             state.last_observation = observed;
-            packed.map_or_else(|| cap_output_with(&text, &output_cfg), |t| t)
+            packed.unwrap_or_else(|| cap_output_with(&text, &output_cfg))
         } else {
             cap_output_with(&text, &output_cfg)
         }

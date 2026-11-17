@@ -23,6 +23,7 @@
 //! the default non-pack path uses the separate frame-level output spool.
 
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 
 /// Only the exact string `1` enables packs (same convention as the other
 /// opt-in env gates).
@@ -48,7 +49,7 @@ const MAX_JSON_BYTES: usize = 8 * 1024 * 1024;
 
 /// Serializes tests that touch [`GATE_ENV`] / the raw-output env var.
 #[cfg(test)]
-pub(crate) static GATE_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+pub(crate) static GATE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Gate value resolution (pure; [`pack_requested`] feeds it the env value).
 #[must_use]
@@ -126,6 +127,7 @@ impl Spool {
     }
 
     /// Stream one chunk (any size, any UTF-8 boundary).
+    #[allow(clippy::naive_bytecount)] // Keep this hot loop dependency-free.
     pub(crate) fn feed_bytes(&mut self, chunk: &[u8]) {
         self.hasher.update(chunk);
         self.bytes = self.bytes.saturating_add(chunk.len());
@@ -227,7 +229,7 @@ pub(crate) struct PackInput<'a> {
 /// `(provider text, key to record)`: `None` text = use the default
 /// [`super::cap_output_with`] rendering unchanged; a key is recorded for
 /// every enabled non-error cell so the next identical output dedups.
-pub(crate) fn render(input: PackInput<'_>) -> (Option<String>, Option<ObservationKey>) {
+pub(crate) fn render(input: &PackInput<'_>) -> (Option<String>, Option<ObservationKey>) {
     if !input.enabled || input.raw || input.cell_error {
         return (None, None);
     }
@@ -362,10 +364,10 @@ fn classify_cargo_tests(text: &str) -> Option<(&'static str, String)> {
     }
     let mut summary = format!("suites={suites} passed={passed} failed={failed} ignored={ignored}");
     if measured > 0 {
-        summary.push_str(&format!(" measured={measured}"));
+        let _ = write!(summary, " measured={measured}");
     }
     if filtered > 0 {
-        summary.push_str(&format!(" filtered_out={filtered}"));
+        let _ = write!(summary, " filtered_out={filtered}");
     }
     summary.push_str(if any_failed || failed > 0 {
         " FAILED"
@@ -427,7 +429,7 @@ fn classify_pytest(text: &str) -> Option<(&'static str, String)> {
             .collect::<Vec<_>>()
             .join(" ");
         if let Some(d) = duration {
-            summary.push_str(&format!(" duration={d}"));
+            let _ = write!(summary, " duration={d}");
         }
         return Some(("pytest", summary));
     }
@@ -454,9 +456,9 @@ fn classify_grep(text: &str) -> Option<(&'static str, String)> {
     let mut summary = format!("~{matched} matches in {} files", files.len());
     if !files.is_empty() {
         let listed: Vec<&str> = files.iter().take(MAX_LISTED_FILES).copied().collect();
-        summary.push_str(&format!(": {}", listed.join(", ")));
+        let _ = write!(summary, ": {}", listed.join(", "));
         if files.len() > MAX_LISTED_FILES {
-            summary.push_str(&format!(" …(+{})", files.len() - MAX_LISTED_FILES));
+            let _ = write!(summary, " …(+{})", files.len() - MAX_LISTED_FILES);
         }
     }
     Some(("grep-lines", summary))
@@ -555,9 +557,10 @@ mod tests {
 
     #[test]
     fn grep_lines_need_majority() {
-        let good: String = (0..10)
-            .map(|i| format!("src/f{i}.rs:{i}:let x = {i};\n"))
-            .collect();
+        let good = (0..10).fold(String::new(), |mut text, i| {
+            let _ = writeln!(text, "src/f{i}.rs:{i}:let x = {i};");
+            text
+        });
         let (kind, summary) = classify(&good).unwrap();
         assert_eq!(kind, "grep-lines");
         assert!(
@@ -573,7 +576,7 @@ mod tests {
     fn render_falls_back_unless_enabled_or_clean() {
         let key = ObservationKey::new("seed");
         let mk = |text: &str, error: bool, raw: bool, enabled: bool| {
-            render(PackInput {
+            render(&PackInput {
                 text,
                 cell_error: error,
                 raw,
@@ -598,7 +601,7 @@ mod tests {
     #[test]
     fn dedup_collapses_only_identical_and_keeps_reference() {
         let text = "{\"a\": 1}\n";
-        let (first_text, first_key) = render(PackInput {
+        let (first_text, first_key) = render(&PackInput {
             text,
             cell_error: false,
             raw: false,
@@ -609,7 +612,7 @@ mod tests {
             .expect("first run packs")
             .starts_with("[eval observation"));
         let first_key = first_key.expect("key recorded");
-        let (second_text, second_key) = render(PackInput {
+        let (second_text, second_key) = render(&PackInput {
             text,
             cell_error: false,
             raw: false,
@@ -629,7 +632,7 @@ mod tests {
             .expect("reference line");
         let body = std::fs::read_to_string(reference).unwrap();
         assert_eq!(body, text);
-        let (changed_text, changed_key) = render(PackInput {
+        let (changed_text, changed_key) = render(&PackInput {
             text: "{\"a\": 2}\n",
             cell_error: false,
             raw: false,
@@ -643,7 +646,7 @@ mod tests {
         // Unknown formats dedup too: the first occurrence records its key,
         // the identical second one collapses behind the notice.
         let plain = "plain prose output\n";
-        let (t1, k1) = render(PackInput {
+        let (t1, k1) = render(&PackInput {
             text: plain,
             cell_error: false,
             raw: false,
@@ -651,7 +654,7 @@ mod tests {
             prev: None,
         });
         assert!(t1.is_none(), "unknown keeps the default rendering");
-        let (t2, _) = render(PackInput {
+        let (t2, _) = render(&PackInput {
             text: plain,
             cell_error: false,
             raw: false,

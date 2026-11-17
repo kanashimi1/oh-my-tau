@@ -418,9 +418,9 @@ mod tests {
         let body = std::fs::read(dir.path().join("8.log")).expect("capped body");
         let half = ARTIFACT_MAX_BYTES / 2;
         let marker = format!("\n[…{}B elided…]\n", full.len() - ARTIFACT_MAX_BYTES);
-        let mut expected = full[..half].as_bytes().to_vec();
+        let mut expected = full.as_bytes()[..half].to_vec();
         expected.extend_from_slice(marker.as_bytes());
-        expected.extend_from_slice(full[full.len() - half..].as_bytes());
+        expected.extend_from_slice(&full.as_bytes()[full.len() - half..]);
         assert_eq!(body, expected);
     }
 

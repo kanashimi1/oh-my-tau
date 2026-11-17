@@ -344,7 +344,7 @@ async fn kernel_wait_is_raced_against_abort() {
 /// Run one cell with the pack gate pinned through the test-only override (no
 /// process-env mutation, so concurrently running kernel tests see no flips).
 async fn run_packed(env: &Arc<Env>, args: Value, enabled: bool) -> String {
-    let _guard = eval_observation::GATE_ENV_LOCK.lock();
+    let _guard = eval_observation::GATE_ENV_LOCK.lock().await;
     *eval_observation::PACK_OVERRIDE.lock() = Some(enabled);
     let r = run(env, args).await;
     *eval_observation::PACK_OVERRIDE.lock() = None;
@@ -500,6 +500,7 @@ fn js_string(s: &str) -> String {
 /// `&&`-chain ending in a boolean, so the test exercises `read`, not the
 /// cell transform.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Table-driven differential covers one shared kernel.
 async fn js_ranged_read_matches_whole_read_semantics() {
     if !require_bun("js_ranged_read_matches_whole_read_semantics") {
         return;
@@ -508,15 +509,15 @@ async fn js_ranged_read_matches_whole_read_semantics() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut big = String::new();
     for i in 1..=70000 {
-        big.push_str(&format!("entry {i}\n"));
+        let _ = writeln!(big, "entry {i}");
     }
     let mut lf = String::new();
     for i in 1..=500 {
-        lf.push_str(&format!("line {i}\n"));
+        let _ = writeln!(lf, "line {i}");
     }
     let mut crlf = String::new();
     for i in 1..=300 {
-        crlf.push_str(&format!("row {i}\r\n"));
+        let _ = write!(crlf, "row {i}\r\n");
     }
     let contents: Vec<(&str, String)> = vec![
         ("lf.txt", lf),
@@ -524,7 +525,7 @@ async fn js_ranged_read_matches_whole_read_semantics() {
         ("lonecr.txt", "x\ry\r\nz\r\nw".to_owned()),
         ("notrail.txt", "a\nb".to_owned()),
         ("empty.txt", String::new()),
-        ("mb.txt", format!("{}é\nbé\ncé\n", "a".repeat(1048575))),
+        ("mb.txt", format!("{}é\nbé\ncé\n", "a".repeat(1_048_575))),
         ("big.txt", big),
     ];
     for (name, content) in &contents {
@@ -533,7 +534,7 @@ async fn js_ranged_read_matches_whole_read_semantics() {
     let env = test_env("p6-jsread");
     // Pin the pack gate off for the whole test: sibling kernel tests flip the
     // test-only override concurrently in the same process.
-    let _gate = eval_observation::GATE_ENV_LOCK.lock();
+    let _gate = eval_observation::GATE_ENV_LOCK.lock().await;
     *eval_observation::PACK_OVERRIDE.lock() = Some(false);
     let path = |name: &str| js_string(&format!("{}/{name}", dir.display()));
 
