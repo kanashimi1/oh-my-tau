@@ -41,6 +41,13 @@ impl Runtime {
         *lock(&self.summarizer) = f;
     }
 
+    /// Override the `OMP_TRAJECTORY_SQUASH` gate for this runtime (`None`:
+    /// defer to the environment).
+    #[allow(dead_code)]
+    pub fn set_trajectory_squash(&self, enabled: Option<bool>) {
+        *lock(&self.trajectory_squash) = enabled;
+    }
+
     async fn summarizer(&self) -> Result<crate::compact::Summarizer> {
         if let Some(f) = lock(&self.summarizer).clone() {
             return Ok(crate::compact::Summarizer::Injected(f));
@@ -242,6 +249,7 @@ impl Runtime {
             context_window: Some(self.live_window()).filter(|w| *w > 0),
             custom_instructions,
             non_message_tokens,
+            trajectory_squash: *lock(&self.trajectory_squash),
             hook: bridge
                 .as_ref()
                 .map(|b| b as &dyn crate::compact::CompactHook),

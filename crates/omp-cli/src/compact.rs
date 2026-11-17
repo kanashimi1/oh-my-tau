@@ -17,8 +17,8 @@ use omp_compact::settings::{calculate_context_tokens, compaction_context_tokens}
 use omp_compact::tokens::CountOptions;
 use omp_compact::{
     build_session_context_path, plan_boundary, plan_region, project_tokens_after, should_compact,
-    synthetic_compaction_entry, ApplyOptions, BoundaryEntry, ByteEstimate, CompactionResult,
-    CompactionSettings, Completer, Leaf, SummaryParams, SummaryRequest,
+    synthetic_compaction_entry, ApplyOptions, BoundaryEntry, ByteEstimate, CompactionPreparation,
+    CompactionResult, CompactionSettings, Completer, Leaf, SummaryParams, SummaryRequest,
 };
 use pa_agent::types::AgentMessage;
 use pa_types::ai::{AssistantMessage, Model};
@@ -319,6 +319,9 @@ pub struct CompactParams<'a> {
     pub context_window: Option<u64>,
     /// `/compact <instructions>`.
     pub custom_instructions: Option<&'a str>,
+    /// Per-runtime override of the trajectory-squash gate. `None` defers to
+    /// the `OMP_TRAJECTORY_SQUASH` env gate (the operator-facing surface).
+    pub trajectory_squash: Option<bool>,
     /// System prompt + tool schema tokens, added to the `tokensAfter` projection.
     pub non_message_tokens: u64,
     /// Extension `session_before_compact` gate (see [`CompactHook`]).
@@ -693,7 +696,20 @@ pub async fn compact_now(
         .unwrap_or(omp_compact::settings::DEFAULT_RESERVE_TOKENS);
     summary_params.context_window = params.context_window;
     summary_params.custom_instructions = params.custom_instructions;
-    let result = omp_compact::compact(completer, &prep, &summary_params).await?;
+    // Opt-in trajectory squash: `OMP_TRAJECTORY_SQUASH=1` replaces the LLM
+    // summarizer with the deterministic structured digest. Plan, cut
+    // (`firstKeptEntryId`), commit gate, journal entry and rebuild are the
+    // existing soft-compaction pipeline's; only the summary producer and the
+    // method marker differ. Default (gate unset) is byte-identical.
+    let squash = params
+        .trajectory_squash
+        .unwrap_or_else(trajectory_squash_requested);
+    let method: &'static str = if squash { "trajectory-squash" } else { "soft" };
+    let result = if squash {
+        trajectory_squash_result(&prep)
+    } else {
+        omp_compact::compact(completer, &prep, &summary_params).await?
+    };
     // Commit gate (TS `sessionId() !== sourceSessionId || getBranch().at(-1)?.id
     // !== sourceLeafId`): a session switch, a `/tree` move, a concurrent append
     // or an abort since the plan was captured discards the pass — the summary
@@ -708,9 +724,10 @@ pub async fn compact_now(
         kept_entries,
         params.non_message_tokens,
         &tokenizer,
+        method,
     );
     let options = ApplyOptions {
-        method: Some("soft".to_owned()),
+        method: Some(method.to_owned()),
         tokens_after,
         from_extension: Some(false),
     };
@@ -730,6 +747,210 @@ pub async fn compact_now(
     Ok((result, data, view))
 }
 
+/// Opt-in trajectory-squash gate: set `OMP_TRAJECTORY_SQUASH=1` (or `true`)
+/// to replace the compaction summarizer with a deterministic structured
+/// digest (goal, latest state, unresolved errors, artifact/handle refs; the
+/// recent tail is kept verbatim by the existing cut). No LLM call summarizes
+/// history; the plan, cut, commit guard, journal entry and rebuild are the
+/// existing soft-compaction pipeline's. Unset keeps `/compact` byte-identical.
+#[must_use]
+fn trajectory_squash_requested() -> bool {
+    trajectory_squash_gate(std::env::var("OMP_TRAJECTORY_SQUASH").ok().as_deref())
+}
+
+#[must_use]
+fn trajectory_squash_gate(value: Option<&str>) -> bool {
+    matches!(value, Some("1") | Some("true"))
+}
+
+/// The deterministic structured digest replacing the LLM summarizer under the
+/// trajectory-squash gate. Everything it states is quoted verbatim from the
+/// summarized region: the first user message (goal), the last assistant text
+/// (state), unresolved errors (error-stop assistant turns and error tool
+/// results), and artifact/handle refs (`archived at …`, `--fetch …`,
+/// `artifact://…`, `path=…`). Same region, same bytes.
+#[must_use]
+fn trajectory_squash_result(prep: &CompactionPreparation) -> CompactionResult {
+    const MAX_ITEM_CHARS: usize = 240;
+    const MAX_REFS: usize = 12;
+    const MAX_ERRORS: usize = 12;
+
+    let truncate = |s: &str, max: usize| -> String {
+        if s.chars().count() <= max {
+            s.to_owned()
+        } else {
+            format!("{}…", s.chars().take(max).collect::<String>())
+        }
+    };
+    // Text fragments of one omp message, in block order.
+    let texts = |message: &Value, out: &mut Vec<String>| match message.get("content") {
+        Some(Value::String(s)) => out.push(s.clone()),
+        Some(Value::Array(blocks)) => {
+            for block in blocks {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(t) = block.get("text").and_then(Value::as_str) {
+                            out.push(t.to_owned());
+                        }
+                    }
+                    Some("tool_result") | Some("toolResult") => {
+                        if let Some(t) = block.get("text").and_then(Value::as_str) {
+                            out.push(t.to_owned());
+                        } else if let Some(t) = block.get("content").and_then(Value::as_str) {
+                            out.push(t.to_owned());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    };
+    // Real tool errors ride top-level `isError`/`is_error` on the tool-result
+    // message; assistant turns carry `stopReason: "error"` or an
+    // `errorMessage`. Content-block-level flags are matched too.
+    let is_error = |message: &Value| -> bool {
+        message.get("stopReason").and_then(Value::as_str) == Some("error")
+            || message.get("isError").and_then(Value::as_bool) == Some(true)
+            || message.get("is_error").and_then(Value::as_bool) == Some(true)
+            || message
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .is_some_and(|m| !m.trim().is_empty())
+            || message
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|b| {
+                        b.get("isError").and_then(Value::as_bool) == Some(true)
+                            || b.get("is_error").and_then(Value::as_bool) == Some(true)
+                    })
+                })
+    };
+    let push_ref = |text: &str, refs: &mut Vec<String>| {
+        for (marker, skip) in [
+            ("archived at ", "archived at ".len()),
+            ("--fetch ", "--fetch ".len()),
+            ("artifact://", "artifact://".len()),
+            ("path=", "path=".len()),
+        ] {
+            let mut from = 0;
+            while let Some(at) = text[from..].find(marker) {
+                let start = from + at + skip;
+                let rest = &text[start..];
+                let end = rest
+                    .find(|c: char| c.is_whitespace() || matches!(c, '"' | ')' | ']' | ',' | ';'))
+                    .unwrap_or(rest.len());
+                if end > 0 {
+                    let r = truncate(&rest[..end], MAX_ITEM_CHARS);
+                    if !refs.contains(&r) {
+                        refs.push(r);
+                    }
+                }
+                from = start + end;
+                if from >= text.len() || refs.len() >= MAX_REFS {
+                    break;
+                }
+            }
+            if refs.len() >= MAX_REFS {
+                break;
+            }
+        }
+    };
+
+    let mut goal: Option<String> = None;
+    let mut state: Option<String> = None;
+    let mut errors: Vec<String> = Vec::new();
+    let mut refs: Vec<String> = Vec::new();
+    for message in &prep.messages_to_summarize {
+        let mut fragments = Vec::new();
+        texts(message, &mut fragments);
+        if let Some(em) = message.get("errorMessage").and_then(Value::as_str) {
+            fragments.push(em.to_owned());
+        }
+        let error_turn = is_error(message);
+        for t in &fragments {
+            if error_turn && !t.trim().is_empty() && errors.len() < MAX_ERRORS {
+                errors.push(truncate(t.trim(), MAX_ITEM_CHARS));
+            }
+            // Artifact/handle refs are extracted from error fragments too:
+            // an error trace that names an archived log must stay reachable.
+            push_ref(t, &mut refs);
+        }
+        let role = message.get("role").and_then(Value::as_str);
+        if role == Some("user") && goal.is_none() {
+            if let Some(first) = fragments.first().filter(|t| !t.trim().is_empty()) {
+                goal = Some(truncate(first.trim(), 300));
+            }
+        }
+        if role == Some("assistant") && !error_turn {
+            if let Some(last) = fragments.last().filter(|t| !t.trim().is_empty()) {
+                state = Some(truncate(last.trim(), 400));
+            }
+        }
+    }
+
+    let mut summary = format!(
+        "[Trajectory squash] Deterministic digest of {} earlier messages; the {} most recent messages are kept verbatim below this summary.",
+        prep.messages_to_summarize.len(),
+        prep.recent_messages.len(),
+    );
+    if let Some(goal) = &goal {
+        summary.push_str(&format!("\n\nGOAL: {goal}"));
+    }
+    if let Some(state) = &state {
+        summary.push_str(&format!("\n\nLATEST STATE: {state}"));
+    }
+    if !errors.is_empty() {
+        summary.push_str(&format!("\n\nUNRESOLVED ERRORS ({}):", errors.len()));
+        for e in &errors {
+            summary.push_str(&format!("\n- {e}"));
+        }
+    }
+    if !refs.is_empty() {
+        summary.push_str(&format!("\n\nARTIFACT/HANDLE REFS ({}):", refs.len()));
+        for r in &refs {
+            summary.push_str(&format!("\n- {r}"));
+        }
+    }
+    if let Some(prev) = prep
+        .previous_summary
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+    {
+        summary.push_str(&format!("\n\nPRIOR SUMMARY: {}", truncate(prev, 600)));
+    }
+
+    let short_summary = format!(
+        "Trajectory squash: {} messages digested, {} unresolved errors, {} artifact refs; recent tail ({} messages) kept verbatim.",
+        prep.messages_to_summarize.len(),
+        errors.len(),
+        refs.len(),
+        prep.recent_messages.len(),
+    );
+    let details = json!({
+        "kind": "trajectory-squash",
+        "readFiles": prep.file_ops.read,
+        "modifiedFiles": prep
+            .file_ops
+            .written
+            .union(&prep.file_ops.edited)
+            .cloned()
+            .collect::<Vec<_>>(),
+        "unresolvedErrors": errors.len(),
+        "artifactRefs": refs,
+    });
+
+    CompactionResult {
+        summary,
+        short_summary,
+        first_kept_entry_id: prep.first_kept_entry_id.clone(),
+        tokens_before: prep.tokens_before,
+        details,
+        preserve_data: prep.previous_preserve_data.clone(),
+    }
+}
+
 /// Build the synthetic compaction entry plus the post-compaction rebuild view
 /// (the kept tail re-parented to it, mirroring the file the append writes) and
 /// the projected token count for that view.
@@ -739,6 +960,7 @@ fn build_rebuild_view(
     kept_entries: Vec<Value>,
     non_message_tokens: u64,
     tokenizer: &dyn omp_compact::Tokenizer,
+    method: &'static str,
 ) -> (String, Vec<Value>, Option<u64>) {
     let ts = iso_from_ms(i64::try_from(now_ms()).unwrap_or(0));
     let rebuild_entry = synthetic_compaction_entry(
@@ -750,7 +972,7 @@ fn build_rebuild_view(
         },
         &ts,
         result,
-        Some("soft"),
+        Some(method),
     );
     let compaction_id = rebuild_entry
         .get("id")
@@ -769,7 +991,7 @@ fn build_rebuild_view(
     let tokens_after = project_tokens_after(
         &view_refs,
         result,
-        Some("soft"),
+        Some(method),
         &ts,
         non_message_tokens,
         tokenizer,
@@ -1705,5 +1927,366 @@ mod tests {
         guard3.cancel();
         assert!(guard3.is_cancelled());
         assert!(guard3.check_commit(&persist).is_err(), "cancel discards");
+    }
+
+    fn squash_prep(messages: Vec<Value>) -> CompactionPreparation {
+        CompactionPreparation {
+            cut: omp_compact::CutPoint {
+                first_kept_entry_index: 0,
+                turn_start_index: None,
+                is_split_turn: false,
+            },
+            first_kept_entry_id: "keep-me".to_owned(),
+            messages_to_summarize: messages,
+            turn_prefix_messages: Vec::new(),
+            recent_messages: Vec::new(),
+            recent_entry_ids: Vec::new(),
+            is_split_turn: false,
+            tokens_before: 4321,
+            previous_summary: Some("earlier chapter".to_owned()),
+            previous_summary_timestamp: None,
+            previous_preserve_data: None,
+            file_ops: omp_compact::files::FileOperations::default(),
+            settings: CompactionSettings::default(),
+        }
+    }
+
+    #[test]
+    fn trajectory_squash_gate_is_explicit() {
+        assert!(!trajectory_squash_gate(None));
+        assert!(!trajectory_squash_gate(Some("0")));
+        assert!(!trajectory_squash_gate(Some("on")));
+        assert!(!trajectory_squash_gate(Some("")));
+        assert!(trajectory_squash_gate(Some("1")));
+        assert!(trajectory_squash_gate(Some("true")));
+    }
+
+    #[test]
+    fn trajectory_squash_digest_is_deterministic_and_preserves_state() {
+        let messages = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "Ship the parser fix"}], "timestamp": 1}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "build failed: E0432"}], "stopReason": "error", "timestamp": 2}),
+            json!({"role": "user", "content": [{"type": "text", "text": "log archived at /h/obs/20261117/ab12cd34.bin (fetch with --fetch /h/obs/20261117/ab12cd34.bin); path=/tmp/state.json"}], "timestamp": 3}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "checks green so far"}], "timestamp": 4}),
+            // Real tool-error shapes: top-level flags on the tool-result message…
+            json!({"role": "user", "isError": true, "content": [{"type": "tool_result", "text": "cargo test failed: E0432 (trace archived at /h/obs/20261117/cc99ee88.bin)"}], "timestamp": 5}),
+            // …snake_case variant…
+            json!({"role": "assistant", "is_error": true, "content": [{"type": "text", "text": "tool loop aborted"}], "timestamp": 6}),
+            // …and an assistant errorMessage.
+            json!({"role": "assistant", "errorMessage": "provider stream aborted mid-turn", "content": [{"type": "text", "text": ""}], "timestamp": 7}),
+        ];
+        let prep = squash_prep(messages);
+        let a = trajectory_squash_result(&prep);
+        let b = trajectory_squash_result(&prep);
+        assert_eq!(a, b, "deterministic: same region, same bytes");
+        let s = &a.summary;
+        assert!(s.contains("[Trajectory squash]"), "{s}");
+        assert!(s.contains("GOAL: Ship the parser fix"), "{s}");
+        assert!(s.contains("UNRESOLVED ERRORS (4):"), "{s}");
+        assert!(s.contains("- build failed: E0432"), "{s}");
+        assert!(
+            s.contains(
+                "- cargo test failed: E0432 (trace archived at /h/obs/20261117/cc99ee88.bin)"
+            ),
+            "{s}"
+        );
+        assert!(s.contains("- tool loop aborted"), "{s}");
+        assert!(s.contains("- provider stream aborted mid-turn"), "{s}");
+        assert!(s.contains("LATEST STATE: checks green so far"), "{s}");
+        // The same handle referenced twice is deduped to one ref line.
+        assert_eq!(s.matches("/h/obs/20261117/ab12cd34.bin").count(), 1, "{s}");
+        assert!(s.contains("- /h/obs/20261117/ab12cd34.bin"), "{s}");
+        assert!(s.contains("- /tmp/state.json"), "{s}");
+        // The handle inside the tool-error fragment is extracted too.
+        assert!(s.contains("- /h/obs/20261117/cc99ee88.bin"), "{s}");
+        assert!(s.contains("PRIOR SUMMARY: earlier chapter"), "{s}");
+        // The cut, the token accounting and the carried archive state are the
+        // pipeline's, unchanged by the deterministic producer.
+        assert_eq!(a.first_kept_entry_id, "keep-me");
+        assert_eq!(a.tokens_before, 4321);
+        assert_eq!(a.details["kind"], json!("trajectory-squash"));
+        assert_eq!(a.short_summary, "Trajectory squash: 7 messages digested, 4 unresolved errors, 3 artifact refs; recent tail (0 messages) kept verbatim.");
+    }
+
+    #[test]
+    fn trajectory_squash_view_is_shorter_and_keeps_digest() {
+        const TS: &str = "2026-01-01T00:00:00.000Z";
+        let dir = tempfile::tempdir().expect("tmp");
+        let mut w =
+            omp_session::SessionWriter::create(dir.path(), "/w", "sess-sq", TS).expect("create");
+        let mk = |role: &str, text: Value| -> pa_types::session::AgentMessage {
+            let mut m =
+                json!({"role": role, "content": [{"type": "text", "text": text}], "timestamp": 1});
+            if role == "assistant" {
+                m["api"] = json!("openai-completions");
+                m["provider"] = json!("p");
+                m["model"] = json!("a");
+                m["usage"] = json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}});
+                m["stopReason"] = json!("stop");
+            }
+            serde_json::from_value(m).expect("msg")
+        };
+        let big = "z".repeat(2400);
+        w.append_message(&mk("user", json!("Ship the parser fix")), TS)
+            .expect("m1");
+        // A real error assistant turn (stopReason: "error").
+        w.append_entry(
+            "message",
+            json!({"message": {"role": "assistant", "content": [{"type": "text", "text": format!("build failed: E0432 {big}")}], "api": "openai-completions", "provider": "p", "model": "a", "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}, "stopReason": "error", "timestamp": 1}}),
+            TS,
+        )
+        .expect("m2");
+        w.append_message(
+            &mk(
+                "user",
+                json!(format!(
+                    "log archived at /h/obs/20261117/ab12cd34.bin; path=/tmp/state.json"
+                )),
+            ),
+            TS,
+        )
+        .expect("m3");
+        // A real tool-error message: top-level `isError` on the tool-result.
+        w.append_entry(
+            "message",
+            json!({"message": {"role": "user", "isError": true, "content": [{"type": "tool_result", "text": "cargo test failed: E0432 (trace archived at /h/obs/20261117/cc99ee88.bin)"}], "timestamp": 1}}),
+            TS,
+        )
+        .expect("m_tool_err");
+        w.append_message(&mk("assistant", json!(format!("partial state {big}"))), TS)
+            .expect("m4");
+        w.append_message(&mk("user", json!(format!("final question {big}"))), TS)
+            .expect("m5");
+        let session_path = w.path().to_path_buf();
+        drop(w);
+        let entries: Vec<Value> = omp_session::read_values(&session_path)
+            .expect("read session")
+            .into_iter()
+            .filter(|e| e["type"] == "message")
+            .collect();
+        assert_eq!(entries.len(), 6);
+        let msg = |i: usize| entries[i]["message"].clone();
+        let prep = CompactionPreparation {
+            cut: omp_compact::CutPoint {
+                first_kept_entry_index: 5,
+                turn_start_index: None,
+                is_split_turn: false,
+            },
+            first_kept_entry_id: entries[5]["id"].as_str().expect("id").to_owned(),
+            messages_to_summarize: vec![msg(0), msg(1), msg(2), msg(3)],
+            turn_prefix_messages: Vec::new(),
+            recent_messages: vec![msg(5)],
+            recent_entry_ids: vec![entries[5]["id"].as_str().expect("id").to_owned()],
+            is_split_turn: false,
+            tokens_before: 2000,
+            previous_summary: None,
+            previous_summary_timestamp: None,
+            previous_preserve_data: None,
+            file_ops: omp_compact::files::FileOperations::default(),
+            settings: CompactionSettings::default(),
+        };
+        let before = rebuild_context(&entries).expect("rebuild before");
+        let before_tokens = estimate_context_tokens(&before);
+
+        let result = trajectory_squash_result(&prep);
+        let (ts, view, tokens_after) = build_rebuild_view(
+            "",
+            &result,
+            vec![entries[5].clone()],
+            0,
+            &ByteEstimate,
+            "trajectory-squash",
+        );
+        let after = rebuild_context(&view).expect("rebuild after");
+        let after_tokens = estimate_context_tokens(&after);
+        assert!(
+            after_tokens < before_tokens,
+            "squashed context {after_tokens} must be shorter than {before_tokens}"
+        );
+        assert!(
+            tokens_after.is_some_and(|t| t < before_tokens),
+            "{tokens_after:?}"
+        );
+        let digest = serde_json::to_value(&after[0]).expect("ser");
+        let digest_text = digest.to_string();
+        assert!(
+            digest_text.contains("GOAL: Ship the parser fix"),
+            "{digest_text}"
+        );
+        assert!(
+            digest_text.contains("UNRESOLVED ERRORS (2):"),
+            "{digest_text}"
+        );
+        assert!(digest_text.contains("build failed: E0432"), "{digest_text}");
+        // The tool-error turn (top-level isError) survived with its trace handle.
+        assert!(
+            digest_text.contains("cargo test failed: E0432"),
+            "{digest_text}"
+        );
+        assert!(
+            digest_text.contains("/h/obs/20261117/cc99ee88.bin"),
+            "{digest_text}"
+        );
+        assert!(
+            digest_text.contains("/h/obs/20261117/ab12cd34.bin"),
+            "{digest_text}"
+        );
+        assert!(digest_text.contains("- /tmp/state.json"), "{digest_text}");
+        let _ = ts;
+    }
+
+    async fn harness_with_provider(turns: usize) -> (Harness, Arc<ScriptedProvider>) {
+        let model = pa_model();
+        let provider = Arc::new(ScriptedProvider::new(
+            json_round_trip(&model).expect("agent model"),
+        ));
+        for i in 0..turns {
+            provider.push_text_turn(&format!("answer {i} {}", "y".repeat(400)));
+        }
+        let agent = Agent::new(AgentOptions {
+            initial_state: AgentInitialState {
+                system_prompt: Some("test".into()),
+                model: json_round_trip(&model),
+                thinking_level: Some(pa_agent::types::ThinkingLevel::Off),
+                tools: Some(Vec::new()),
+                messages: None,
+            },
+            stream_fn: Some(provider.stream_fn()),
+            ..AgentOptions::default()
+        });
+        let cwd = std::env::temp_dir();
+        let persist = crate::persist::attach_with(&agent, &cwd, true)
+            .await
+            .expect("session");
+        let target = Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
+            api_key: Some("k".into()),
+            model,
+            service_tier: None,
+            headers: None,
+            credential_id: None,
+        })));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let rt = Runtime::start(
+            Arc::new(agent),
+            target,
+            cwd,
+            persist,
+            tx,
+            crate::methodology::ToolProjection::Full,
+        )
+        .await;
+        (Harness { rt, rx }, provider)
+    }
+
+    #[tokio::test]
+    async fn trajectory_squash_gate_skips_llm_and_default_compact_unchanged() {
+        let (mut h, provider) = harness_with_provider(4).await;
+        h.rt.set_compaction_settings(CompactionSettings {
+            enabled: false,
+            ..small_keep()
+        });
+        talk(&mut h, 3).await;
+        assert_eq!(provider.calls().len(), 3, "one provider call per prompt");
+        // Grow the resident history so the post-squash reduction is decisive
+        // (two 1500-char exchanges on top of the three 400-char ones).
+        for label in ["big1", "big2"] {
+            provider.push_text_turn(&format!("answer {label} {}", "y".repeat(1500)));
+            h.rt.prompt(
+                None,
+                &format!("question {label} {}", "x".repeat(1500)),
+                None,
+                Vec::new(),
+            )
+            .await
+            .expect("prompt");
+            until_settled(&mut h.rx).await;
+        }
+        let before_msgs = h.rt.messages().await.len();
+        let pre_last = provider.calls()[4].clone();
+        let pre_bytes = serde_json::to_string(&pre_last.messages)
+            .expect("ser")
+            .len();
+
+        // --- Gate ON: deterministic squash, no summarizer injected at all ---
+        // Injected per runtime: no process-global env mutation, so parallel
+        // compaction tests cannot observe or race this gate.
+        h.rt.set_trajectory_squash(Some(true));
+        let result = h.rt.compact(None).await.expect("compact under gate");
+        h.rt.set_trajectory_squash(None);
+        assert!(
+            result["summary"]
+                .as_str()
+                .unwrap()
+                .contains("Trajectory squash"),
+            "{result}"
+        );
+        assert_eq!(result["details"]["kind"], json!("trajectory-squash"));
+        let entries = h.rt.entries().expect("entries");
+        let comp = entries
+            .iter()
+            .find(|e| e["type"] == "compaction")
+            .expect("compaction entry");
+        assert_eq!(comp["method"], "trajectory-squash");
+        assert_eq!(
+            provider.calls().len(),
+            5,
+            "no LLM summarizer call under the gate"
+        );
+        let after_msgs = h.rt.messages().await;
+        assert!(
+            after_msgs.len() < before_msgs + 1 && after_msgs[0].to_string().contains("GOAL:"),
+            "{after_msgs:?}"
+        );
+
+        // --- The next real provider request carries the digest, not the history ---
+        provider.push_text_turn("post squash answer");
+        h.rt.prompt(None, "final question after squash", None, Vec::new())
+            .await
+            .expect("prompt");
+        until_settled(&mut h.rx).await;
+        let calls = provider.calls();
+        assert_eq!(calls.len(), 6);
+        let post_bytes = serde_json::to_string(&calls[5].messages)
+            .expect("ser")
+            .len();
+        println!(
+            "trajectory-squash evidence: pre-squash next-request {pre_bytes}B -> post-squash {post_bytes}B ({:.0}% smaller)",
+            100.0 - 100.0 * post_bytes as f64 / pre_bytes as f64
+        );
+        assert!(
+            post_bytes * 2 < pre_bytes,
+            "next request {post_bytes}B must be much smaller than pre-squash {pre_bytes}B"
+        );
+        let post = serde_json::to_string(&calls[5].messages).expect("ser");
+        assert!(
+            post.contains("GOAL:"),
+            "digest resident in next request: {post}"
+        );
+        assert!(
+            post.contains("final question after squash"),
+            "live turn still resident: {post}"
+        );
+
+        // --- Gate OFF: default /compact is unchanged (LLM summarizer, soft) ---
+        let (fake, counter) = fake_summarizer("FAKE DEFAULT");
+        h.rt.set_summarizer(Some(fake));
+        provider.push_text_turn("default path answer");
+        talk(&mut h, 1).await;
+        let result2 = h.rt.compact(None).await.expect("default compact");
+        assert!(
+            result2["summary"]
+                .as_str()
+                .unwrap()
+                .contains("FAKE DEFAULT"),
+            "{result2}"
+        );
+        let entries2 = h.rt.entries().expect("entries");
+        let comp2 = entries2
+            .iter()
+            .filter(|e| e["type"] == "compaction")
+            .next_back()
+            .expect("second compaction");
+        assert_eq!(comp2["method"], "soft");
+        assert!(counter.load(Ordering::SeqCst) >= 1, "LLM summarizer used");
     }
 }

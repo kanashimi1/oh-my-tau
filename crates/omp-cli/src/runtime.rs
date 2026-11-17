@@ -150,6 +150,8 @@ pub struct Runtime {
     switch_generation: Arc<std::sync::atomic::AtomicU64>,
     /// Injected summarizer (default: the live model).
     summarizer: Mutex<Option<crate::compact::SummarizeFn>>,
+    /// Per-runtime trajectory-squash gate override (`None`: env decides).
+    trajectory_squash: Mutex<Option<bool>>,
     /// This session's owner token on the a2a delivery bus: children spawned
     /// while this runtime is the registered owner belong to it, and only its
     /// park/wake/wait legs consume their deliveries.
@@ -517,6 +519,7 @@ impl Runtime {
             compaction_done: tokio::sync::Notify::new(),
             switch_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             summarizer: Mutex::new(None),
+            trajectory_squash: Mutex::new(None),
             a2a_owner: crate::persist::uuid_v7().into(),
             first_prompt_admitted: std::sync::atomic::AtomicBool::new(false),
         });
