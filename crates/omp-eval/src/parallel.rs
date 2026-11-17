@@ -81,6 +81,10 @@ const DRAIN_POLL: Duration = Duration::from_micros(200);
 /// Upper bound on one concurrent batch (and therefore on transient scoped
 /// threads); frames beyond the cap are served by the following pass.
 const MAX_BATCH: usize = 32;
+/// Cap in-flight blocking host calls. Large reads may each retain a full
+/// file plus serialized reply, so unbounded Promise.all waves otherwise
+/// multiply peak RSS (and spawn unbounded threads).
+const MAX_CONCURRENT: usize = 4;
 
 /// Dispatch the batch's calls concurrently on scoped threads and return the
 /// results in batch order. A lone call stays inline (no thread). All threads
@@ -95,15 +99,18 @@ pub(crate) fn dispatch(bridge: &dyn HostBridge, batch: &[HostCall]) -> Vec<Resul
     }
     let slots: Mutex<Vec<Option<Result<Value, String>>>> =
         Mutex::new((0..batch.len()).map(|_| None).collect());
-    std::thread::scope(|scope| {
-        for (index, call) in batch.iter().enumerate() {
-            let slots = &slots;
-            scope.spawn(move || {
-                let result = bridge.call(&call.op, call.args.clone());
-                slots.lock()[index] = Some(result);
-            });
-        }
-    });
+    for (start, chunk) in batch.chunks(MAX_CONCURRENT).enumerate() {
+        let offset = start * MAX_CONCURRENT;
+        std::thread::scope(|scope| {
+            for (index, call) in chunk.iter().enumerate() {
+                let slots = &slots;
+                scope.spawn(move || {
+                    let result = bridge.call(&call.op, call.args.clone());
+                    slots.lock()[offset + index] = Some(result);
+                });
+            }
+        });
+    }
     slots
         .into_inner()
         .into_iter()
@@ -445,5 +452,19 @@ mod tests {
             elapsed < Duration::from_millis(150),
             "batch wall time: {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn concurrent_dispatch_bounds_in_flight_calls() {
+        let bridge = OverlapBridge {
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            max_in_flight: Arc::new(AtomicUsize::new(0)),
+        };
+        let batch = batch_of(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+        let results = dispatch(&bridge, &batch);
+        assert_eq!(results.len(), 8);
+        assert!(results.iter().all(Result::is_ok));
+        let peak = bridge.max_in_flight.load(Ordering::SeqCst);
+        assert!((2..=super::MAX_CONCURRENT).contains(&peak), "peak={peak}");
     }
 }

@@ -320,7 +320,7 @@ rs.length
 }
 
 /// Output frames drained around a wave keep their arrival order, and a
-/// 40-call wave (batch cap 32) plus a sequential tail all round-trip.
+/// 40-call wave (batch cap 32, four in flight) plus a sequential tail all round-trip.
 #[test]
 fn output_order_and_wave_cap_stress() {
     if !common::require_bun("output_order_and_wave_cap_stress") {
@@ -374,10 +374,8 @@ wave.map(r => r.read).join(",") + ";" + seq.map(r => r.read).join(",")
         "all 50 replies correlated in call order: {:?}",
         r.output
     );
-    assert!(
-        bridge.max_reads_in_flight.load(Ordering::SeqCst) >= 8,
-        "stress wave must overlap"
-    );
+    let peak = bridge.max_reads_in_flight.load(Ordering::SeqCst);
+    assert!((2..=4).contains(&peak), "bounded overlap, peak={peak}");
     assert!(
         !bridge.overlap_violation.load(Ordering::SeqCst),
         "no write overlap expected"
