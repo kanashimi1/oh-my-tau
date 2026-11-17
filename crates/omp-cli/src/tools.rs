@@ -640,7 +640,7 @@ mod tests {
         for off in ["ast_grep", "checkpoint", "rewind"] {
             assert!(!defaults.iter().any(|n| n == off), "{off} on by default");
         }
-        for on in ["read", "bash", "ast_edit", "lsp", "todo"] {
+        for on in ["read", "bash", "ast_edit", "lsp", "todo", "macro_step"] {
             assert!(defaults.iter().any(|n| n == on), "{on} off by default");
         }
         let custom = names(

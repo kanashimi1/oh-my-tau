@@ -20,9 +20,7 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 
 use super::Env;
-use crate::approval::{
-    deny_message, parse_mode, resolve_approval, tool_decision, Gate, Policy,
-};
+use crate::approval::{deny_message, parse_mode, resolve_approval, tool_decision, Gate, Policy};
 use omp_ext::lifecycle::ApprovalMode;
 
 static CALL_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -202,19 +200,54 @@ async fn cargo_check(project: &Path, timeout: Duration) -> Result<Check> {
     Ok(parse_check(&output))
 }
 
+async fn workspace_root(project: &Path, timeout: Duration) -> Result<PathBuf> {
+    let output = tokio::time::timeout(
+        timeout,
+        Command::new("cargo")
+            .args(["locate-project", "--workspace", "--message-format", "plain"])
+            .current_dir(project)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "cargo locate-project timed out after {}s",
+            timeout.as_secs()
+        )
+    })?
+    .context("failed to spawn cargo locate-project")?;
+    if !output.status.success() {
+        bail!(
+            "cargo locate-project failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let manifest = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    manifest
+        .parent()
+        .ok_or_else(|| anyhow!("cargo locate-project returned no workspace root"))?
+        .canonicalize()
+        .context("cannot resolve Cargo workspace root")
+}
+
 struct PendingWrite {
     path: PathBuf,
     bytes: Vec<u8>,
     count: usize,
 }
 
-fn prepare_writes(project: &Path, suggestions: &[Suggestion]) -> Result<Vec<PendingWrite>> {
+fn prepare_writes(
+    project: &Path,
+    workspace_root: &Path,
+    suggestions: &[Suggestion],
+) -> Result<Vec<PendingWrite>> {
     let mut grouped = BTreeMap::<PathBuf, Vec<Suggestion>>::new();
     for suggestion in suggestions {
         let path = if suggestion.file.is_absolute() {
             suggestion.file.clone()
         } else {
-            project.join(&suggestion.file)
+            workspace_root.join(&suggestion.file)
         };
         grouped.entry(path).or_default().push(suggestion.clone());
     }
@@ -344,6 +377,10 @@ pub async fn macro_step(
             .unwrap_or(120.0)
             .clamp(1.0, 600.0),
     );
+    let workspace_root = workspace_root(&project, timeout).await?;
+    if !workspace_root.starts_with(&cwd) {
+        bail!("Cargo workspace root escapes the session cwd");
+    }
     let call_id = next_call_id("macro_step");
     let bash_args = json!({"command": "cargo check --message-format=json", "cwd": project});
     let mut before = None;
@@ -401,7 +438,7 @@ pub async fn macro_step(
                 &full_log,
             ));
         }
-        let writes = prepare_writes(&project, &check.suggestions)?;
+        let writes = prepare_writes(&project, &workspace_root, &check.suggestions)?;
         if writes.is_empty() {
             return Ok(compact_result(
                 RunSummary {
@@ -493,6 +530,7 @@ mod tests {
         std::fs::write(dir.path().join("src/lib.rs"), "abcdef\n").unwrap();
         let writes = prepare_writes(
             dir.path(),
+            dir.path(),
             &[
                 Suggestion {
                     file: "src/lib.rs".into(),
@@ -514,5 +552,30 @@ mod tests {
             std::fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
             "aXXcdf\n"
         );
+    }
+
+    #[test]
+    fn resolves_workspace_relative_spans_inside_the_requested_crate() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("crates/demo");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(
+            project.join("src/lib.rs"),
+            "use std::fmt::Debug;
+",
+        )
+        .unwrap();
+        let writes = prepare_writes(
+            &project,
+            dir.path(),
+            &[Suggestion {
+                file: "crates/demo/src/lib.rs".into(),
+                start: 0,
+                end: 4,
+                replacement: String::new(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(writes[0].path, project.join("src/lib.rs"));
     }
 }
