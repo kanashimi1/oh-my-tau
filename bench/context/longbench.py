@@ -16,6 +16,7 @@ Arms: append | clm | clm-host (legacy per-step maintenance) | offload (rule: off
 import argparse
 import concurrent.futures as cf
 import datetime
+import hashlib
 import json
 import os
 import random
@@ -64,6 +65,13 @@ ARMS = {
                             recall=24000)),
     # L3 only: no sub-model recursion; the root reads the log through the read tool and counts itself (does RLM recursion pay?).
     "direct": dict(strategy="append"),
+    # Actual ultra modes, activated through the same RPC command as the desktop selector.
+    "deep": dict(strategy="append", ultra="ultradeep"),
+    "long": dict(strategy="append", ultra="ultralong"),
+    "hyper": dict(strategy="append", ultra="hypercode"),
+    # Hypercode with its existing rule/offload knobs enabled; no new memory architecture.
+    "hyper-offload": dict(strategy="append", ultra="hypercode", policy="rule",
+                          rule=dict(offload=8000, age=3, restated=0, tokens=8000, every=0)),
 }
 
 
@@ -303,8 +311,37 @@ def gen_l3(seed, steps=24):
                        "exactly. Reply with exactly: ACK"), meta=dict(truth=truth, chars=len(corpus)))
 
 
-GENS = {"L1": gen_l1, "L2": gen_l2, "L3": gen_l3}
-DEFAULT_STEPS = {"L1": 48, "L2": 40, "L3": 24, "L4": 14}
+def gen_l5(seed, steps=22):
+    """Mixed long-context episode: L1 sparse recall interleaved with L2 tool evidence."""
+    if steps != 22:
+        raise ValueError("L5 has a fixed 22-step interleaved schedule")
+    handbook = gen_l1(seed, 22)
+    modules = gen_l2(seed, 12)  # eight real modules, four failing
+    msgs = dict(handbook["msgs"])
+    # Keep all five scheduled handbook questions; replace eight progress-only turns.
+    module_steps = [2, 3, 4, 5, 7, 9, 10, 12]
+    for k, step in enumerate(module_steps, 1):
+        msgs[step] = (f"STEP {step}/22: run `python3 run_tests.py {k}` in the work directory with the bash tool and read "
+                      f"`proj/mod_{k:02d}.py` with the read tool. Do not write findings in your reply; reply with exactly: noted")
+    msgs[22] = handbook["msgs"][22] + "\n\n" + modules["msgs"][12]
+
+    def scorer(replies):
+        h = handbook["scorer"](replies)
+        m = modules["scorer"]({12: replies.get(22, "")})
+        return {"score": (h["score"] + m["score"]) / 2,
+                "pass": h["pass"] and m["pass"],
+                "detail": f"handbook[{h['detail']}] modules[{m['detail']}]", "valid": True}
+
+    return dict(files=modules["files"], msgs=msgs, steps=22, scorer=scorer, sub="relay", timeout=600,
+                brief=("You are an agent in a sandbox work directory with tools (bash, read, eval). A long HANDBOOK arrives "
+                       "in the next message; later steps interleave sparse handbook questions with module tests. Preserve both "
+                       "handbook facts and test findings in the provided context/RLM mechanisms. Do not create or modify files, "
+                       "and never repair modules or tests. Never invent missing data. Follow each STEP exactly. Reply with exactly: ACK"),
+                meta=dict(doc_chars=handbook["meta"]["doc_chars"], bad=modules["meta"]["bad"], mixed=True))
+
+
+GENS = {"L1": gen_l1, "L2": gen_l2, "L3": gen_l3, "L5": gen_l5}
+DEFAULT_STEPS = {"L1": 48, "L2": 40, "L3": 24, "L4": 14, "L5": 22}
 
 
 def get_episode(family, seed, steps=None):
@@ -367,6 +404,8 @@ def run_rollout(name, family, seed, arm, rep, steps=None, force=False, max_spend
             p = os.path.join(work, rel)
             os.makedirs(os.path.dirname(p), exist_ok=True)
             open(p, "w").write(content)
+        source_hashes = ({rel: hashlib.sha256(open(os.path.join(work, rel), "rb").read()).hexdigest() for rel in ep["files"]}
+                         if family == "L5" else {})
         plog = os.path.join(home, "policy.jsonl")
         env["OMP_CONTEXT_OFFLOAD_DIR"] = os.path.join(work, ".offload")
         env["OMP_CONTEXT_OFFLOAD_MODEL"] = "smol"
@@ -396,6 +435,28 @@ def run_rollout(name, family, seed, arm, rep, steps=None, force=False, max_spend
         if ep.get("resume"):
             first_step = 1
         rpc = R.Rpc(cmd, env, work)
+        if cfg.get("ultra"):
+            rid = rpc.next_id
+            rpc.next_id += 1
+            rpc.p.stdin.write(json.dumps({"id": rid, "type": "set_thinking_level", "level": cfg["ultra"]}) + "\n")
+            rpc.p.stdin.flush()
+            while True:
+                f = rpc.frame(60)
+                if f.get("type") == "response" and f.get("id") == rid:
+                    if not f.get("success"):
+                        raise RuntimeError(f"set ultra failed: {f}")
+                    break
+            rid = rpc.next_id
+            rpc.next_id += 1
+            rpc.p.stdin.write(json.dumps({"id": rid, "type": "get_state"}) + "\n")
+            rpc.p.stdin.flush()
+            while True:
+                f = rpc.frame(60)
+                if f.get("type") == "response" and f.get("id") == rid:
+                    state = f.get("data") or {}
+                    if state.get("ultra") != cfg["ultra"]:
+                        raise RuntimeError(f"ultra activation mismatch: {f}")
+                    break
         if ep.get("resume"):
             rid = rpc.next_id
             rpc.next_id += 1
@@ -462,6 +523,12 @@ def run_rollout(name, family, seed, arm, rep, steps=None, force=False, max_spend
             d = states.get(rec["step"])
             rec["policy"] = {"action": d["action"], "state": d["state"]} if d else None
         verdict = ep["scorer"](replies)
+        source_mutations = [rel for rel, digest in source_hashes.items()
+                            if not os.path.isfile(os.path.join(work, rel))
+                            or hashlib.sha256(open(os.path.join(work, rel), "rb").read()).hexdigest() != digest]
+        if source_mutations:
+            verdict["valid"] = False
+            verdict["detail"] += f" source_mutations={source_mutations}"
         tot = {k: sum(r.get(k, 0) for r in recs) for k in
                ("uncached", "cached", "cache_write", "completion", "calls", "cost", "edits_ok", "edits_rej",
                 "sub_calls", "sub_tokens", "sub_cost")}
@@ -471,7 +538,7 @@ def run_rollout(name, family, seed, arm, rep, steps=None, force=False, max_spend
                "sub_model": sub_model, "totals": tot, "cache_hit_pct": round(100 * tot["cached"] / denom, 1) if denom else 0.0,
                "latency_s": round(time.time() - t_cell, 1), "score": verdict["score"], "pass": verdict["pass"],
                "valid": verdict["valid"] and (family != "L3" or arm == "direct" or tot["sub_calls"] > 0), "score_detail": verdict["detail"],
-               "meta": ep.get("meta"), "records": recs}
+               "meta": ep.get("meta"), "source_mutations": source_mutations, "records": recs}
         os.makedirs(OUT, exist_ok=True)
         json.dump(res, open(out_path, "w"), ensure_ascii=False, indent=1)
         with LOCK:
