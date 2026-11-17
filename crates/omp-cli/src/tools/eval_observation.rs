@@ -1,8 +1,8 @@
 //! Optional semantic observation packs for `eval` output (submodule of the
 //! eval tool; registered only from `eval.rs`, so `tools/mod.rs` is untouched).
 //!
-//! Opt-in via `OMP_EVAL_OBSERVATION_PACK=1` (exact value; anything else keeps
-//! the default rendering byte-identical). When enabled, a recognized cell
+//! Opt in via `OMP_EVAL_OBSERVATION_PACK=1` for packs and dedup, or `=dedup`
+//! for dedup alone. Any other value keeps the default rendering byte-identical. When enabled, a recognized cell
 //! output — a single JSON document, a `cargo test`/`pytest` summary, or
 //! grep-style `path:line:` lines — is replaced by a deterministic observation
 //! pack that always carries a recoverable reference to the full text (the
@@ -25,8 +25,7 @@
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
-/// Only the exact string `1` enables packs (same convention as the other
-/// opt-in env gates).
+/// `1` enables semantic packs and dedup; `dedup` enables dedup alone.
 const GATE_ENV: &str = "OMP_EVAL_OBSERVATION_PACK";
 
 /// RAM budget of the retained head/tail window (preview material only).
@@ -54,7 +53,12 @@ pub(crate) static GATE_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::co
 /// Gate value resolution (pure; [`pack_requested`] feeds it the env value).
 #[must_use]
 fn gate_from(value: Option<&str>) -> bool {
-    value.is_some_and(|v| v == "1")
+    value.is_some_and(|v| matches!(v, "1" | "dedup"))
+}
+
+#[must_use]
+fn dedup_only_from(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v == "dedup")
 }
 
 /// Test-only override: integration tests pin the gate without mutating the
@@ -62,7 +66,7 @@ fn gate_from(value: Option<&str>) -> bool {
 #[cfg(test)]
 pub(crate) static PACK_OVERRIDE: parking_lot::Mutex<Option<bool>> = parking_lot::Mutex::new(None);
 
-/// `OMP_EVAL_OBSERVATION_PACK=1` (exact value) enables packs and dedup.
+/// `OMP_EVAL_OBSERVATION_PACK=1` enables packs and dedup; `=dedup` only dedup.
 #[must_use]
 pub(crate) fn pack_requested() -> bool {
     #[cfg(test)]
@@ -70,6 +74,11 @@ pub(crate) fn pack_requested() -> bool {
         return v;
     }
     gate_from(std::env::var(GATE_ENV).ok().as_deref())
+}
+
+#[must_use]
+pub(crate) fn dedup_only_requested() -> bool {
+    dedup_only_from(std::env::var(GATE_ENV).ok().as_deref())
 }
 
 /// Identity of one non-error cell output: full SHA-256 hex + byte size.
@@ -218,11 +227,13 @@ fn dedup_notice(key: &ObservationKey, lines: usize, reference: &str, head: &str)
 
 /// Input for [`render`]; env-derived flags are passed explicitly so tests
 /// never race on process-global env vars.
+#[allow(clippy::struct_excessive_bools)] // Independent cell-state and opt-in gates; all combinations are unit-tested.
 pub(crate) struct PackInput<'a> {
     pub text: &'a str,
     pub cell_error: bool,
     pub raw: bool,
     pub enabled: bool,
+    pub dedup_only: bool,
     pub prev: Option<ObservationKey>,
 }
 
@@ -249,6 +260,9 @@ pub(crate) fn render(input: &PackInput<'_>) -> (Option<String>, Option<Observati
             );
         }
         return (None, Some(key)); // persistence failed: show everything
+    }
+    if input.dedup_only {
+        return (None, Some(key));
     }
     if let Some((kind, summary)) = classify(input.text) {
         if let Some(reference) = persist_ref(input.text) {
@@ -581,6 +595,7 @@ mod tests {
                 cell_error: error,
                 raw,
                 enabled,
+                dedup_only: false,
                 prev: Some(key.clone()),
             })
         };
@@ -606,6 +621,7 @@ mod tests {
             cell_error: false,
             raw: false,
             enabled: true,
+            dedup_only: false,
             prev: None,
         });
         assert!(first_text
@@ -617,6 +633,7 @@ mod tests {
             cell_error: false,
             raw: false,
             enabled: true,
+            dedup_only: false,
             prev: Some(first_key.clone()),
         });
         let second_text = second_text.expect("identical run dedups");
@@ -637,6 +654,7 @@ mod tests {
             cell_error: false,
             raw: false,
             enabled: true,
+            dedup_only: false,
             prev: Some(second_key.expect("key recorded")),
         });
         assert!(!changed_text
@@ -651,6 +669,7 @@ mod tests {
             cell_error: false,
             raw: false,
             enabled: true,
+            dedup_only: false,
             prev: None,
         });
         assert!(t1.is_none(), "unknown keeps the default rendering");
@@ -659,6 +678,7 @@ mod tests {
             cell_error: false,
             raw: false,
             enabled: true,
+            dedup_only: false,
             prev: k1,
         });
         assert!(t2
@@ -673,5 +693,33 @@ mod tests {
         assert!(!gate_from(Some("0")));
         assert!(!gate_from(Some("")));
         assert!(gate_from(Some("1")));
+        assert!(gate_from(Some("dedup")));
+        assert!(dedup_only_from(Some("dedup")));
+        assert!(!dedup_only_from(Some("1")));
+        assert!(!dedup_only_from(None));
+    }
+    #[test]
+    fn dedup_only_never_semantically_packs_first_output() {
+        let text = "{\"a\": 1}\n";
+        let (first_text, first_key) = render(&PackInput {
+            text,
+            cell_error: false,
+            raw: false,
+            enabled: true,
+            dedup_only: true,
+            prev: None,
+        });
+        assert_eq!(first_text, None, "first JSON keeps the default body");
+        let (second_text, _) = render(&PackInput {
+            text,
+            cell_error: false,
+            raw: false,
+            enabled: true,
+            dedup_only: true,
+            prev: first_key,
+        });
+        assert!(second_text
+            .expect("identical second output")
+            .contains("identical to previous cell"));
     }
 }

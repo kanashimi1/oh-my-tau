@@ -415,6 +415,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
 
     let raw_output = crate::methodology::raw_tool_output_requested();
     let pack_output = eval_observation::pack_requested();
+    let dedup_only = eval_observation::dedup_only_requested();
     // Pack classification needs the complete text; the bounded streaming
     // spool composes with the default and raw paths, not with semantic packs.
     let stream_output = !raw_output && !pack_output;
@@ -564,6 +565,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
                 cell_error: cell_is_error(result),
                 raw: raw_output,
                 enabled: true,
+                dedup_only,
                 prev: state.last_observation.clone(),
             });
             // An error/raw result breaks the consecutive-output chain.
