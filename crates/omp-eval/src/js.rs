@@ -20,10 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-
 use crate::{
-    CancelToken, CellResult, CellStatus, ExecOptions, Frame, KernelError, KernelProcess,
+    parallel, CancelToken, CellResult, CellStatus, ExecOptions, Frame, KernelError, KernelProcess,
     RecvOutcome,
 };
 
@@ -229,143 +227,184 @@ impl JsKernel {
         let mut error: Option<KernelError> = None;
         let mut status = CellStatus::Ok;
         let mut deadline = opts.timeout.map(|t| Instant::now() + t);
+        // A read-only batch serve may consume a terminal frame (`Done`/
+        // `Error`/`Result`) behind a `Promise.all` wave; it is processed on
+        // the next pass so every semantic arm stays in the single match
+        // below.
+        let mut deferred: Option<Frame> = None;
+        // Adaptive drain hint for `parallel::serve_read_only_batch`: after a
+        // lone host call the next serve probes without a quiet window
+        // (sequential reads pay no added latency); after a wave it is
+        // `false`, so further waves batch fully.
+        let mut batch_hint = false;
 
         loop {
-            match recv(&self.process, deadline, &id, opts.cancel.as_ref()) {
-                Ok(frame) => match frame {
-                    Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => {
-                        output.push_str(&data);
-                    }
-                    Frame::Result { bundle, .. } => {
-                        if let Some(serde_json::Value::String(text)) = bundle.get("text/plain") {
-                            output.push_str(text);
-                            if !text.ends_with('\n') {
-                                output.push('\n');
+            let frame = match deferred.take() {
+                Some(frame) => frame,
+                None => match recv(&self.process, deadline, &id, opts.cancel.as_ref()) {
+                    Ok(frame) => frame,
+                    Err(RecvOutcome::TimedOut | RecvOutcome::Cancelled) => {
+                        if opts.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+                            // Turn cancel (omp JS semantics): force-kill the
+                            // worker — the cell is reported cancelled with the
+                            // kernel-killed status, and the next call recreates
+                            // it. `timed_out` stays false: this was not a
+                            // deadline expiry.
+                            if let Some(mut p) = self.process.lock().take() {
+                                p.kill_group();
+                                drop(p);
                             }
+                            return Ok(CellResult {
+                                cancelled: true,
+                                ..CellResult::partial(
+                                    output,
+                                    displays,
+                                    CellStatus::KernelKilled,
+                                    false,
+                                )
+                            });
                         }
-                    }
-                    Frame::Display { bundle, .. } => displays.push(bundle),
-                    Frame::Host {
-                        id: host_id,
-                        op,
-                        args,
-                        wait,
-                    } => {
-                        if wait {
-                            let reply = match opts.bridge {
-                                Some(bridge) => bridge.call(&op, args).map(
-                                    |result| serde_json::json!({ "ok": true, "result": result }),
-                                ),
-                                None => Err("host bridge unavailable".to_owned()),
-                            };
-                            let reply = reply.unwrap_or_else(
-                                |error| serde_json::json!({ "ok": false, "error": error }),
-                            );
-                            let mut guard = self.process.lock();
-                            if let Some(p) = guard.as_mut() {
-                                let frame = serde_json::json!({
-                                    "type": "host_reply",
-                                    "id": host_id,
-                                    "ok": reply["ok"],
-                                    "error": reply.get("error").cloned().unwrap_or(Value::Null),
-                                    "result": reply.get("result").cloned().unwrap_or(Value::Null),
-                                });
-                                // A dead runner here just means the cell will
-                                // end via the disconnected branch below.
-                                let _ = p.stdin.write_all(format!("{frame}\n").as_bytes());
-                                let _ = p.stdin.flush();
-                            }
-                        } else if let Some(bridge) = opts.bridge {
-                            bridge.notify(&op, args);
-                        }
-                        // Idle timeout: time inside a host call does not count,
-                        // so each served call resets a fresh full window.
-                        if opts.idle_timeout {
-                            deadline = opts.timeout.map(|t| Instant::now() + t);
-                        }
-                    }
-                    Frame::Error {
-                        ename,
-                        evalue,
-                        traceback,
-                        ..
-                    } => {
-                        status = CellStatus::Error;
-                        // omp executor pushes `error.stack` as the cell output.
-                        output.push_str(&traceback.join("\n"));
-                        output.push('\n');
-                        error = Some(KernelError {
-                            name: ename,
-                            value: evalue,
-                            traceback,
-                        });
-                    }
-                    Frame::Done {
-                        status: done_status,
-                        execution_count,
-                        cancelled,
-                        ..
-                    } => {
-                        if done_status == "error" && status == CellStatus::Ok {
-                            status = CellStatus::Error;
-                        }
-                        return Ok(CellResult {
-                            output,
-                            status,
-                            cancelled: cancelled.unwrap_or(false),
-                            execution_count: execution_count.unwrap_or_default(),
-                            error,
-                            displays,
-                            timed_out: false,
-                        });
-                    }
-                    Frame::Started { .. } => {}
-                },
-                Err(RecvOutcome::TimedOut | RecvOutcome::Cancelled) => {
-                    if opts.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
-                        // Turn cancel (omp JS semantics): force-kill the
-                        // worker — the cell is reported cancelled with the
-                        // kernel-killed status, and the next call recreates
-                        // it. `timed_out` stays false: this was not a
-                        // deadline expiry.
+                        // omp JS semantics: force-kill the worker (state is lost)
+                        // and report the cell as timed out. `Child::drop` does not
+                        // kill, so do it explicitly; otherwise a sync-spinning
+                        // cell would leak a live subprocess.
                         if let Some(mut p) = self.process.lock().take() {
                             p.kill_group();
                             drop(p);
                         }
-                        return Ok(CellResult {
-                            cancelled: true,
-                            ..CellResult::partial(output, displays, CellStatus::KernelKilled, false)
-                        });
+                        return Ok(CellResult::partial(
+                            output,
+                            displays,
+                            CellStatus::Interrupted,
+                            true,
+                        ));
                     }
-                    // omp JS semantics: force-kill the worker (state is lost)
-                    // and report the cell as timed out. `Child::drop` does not
-                    // kill, so do it explicitly; otherwise a sync-spinning
-                    // cell would leak a live subprocess.
-                    if let Some(mut p) = self.process.lock().take() {
-                        p.kill_group();
-                        drop(p);
+                    Err(RecvOutcome::Disconnected) => {
+                        // Worker died or wedged mid-cell: make sure it is reaped,
+                        // then report like omp so the caller recreates the kernel.
+                        if let Some(mut p) = self.process.lock().take() {
+                            p.kill_group();
+                            drop(p);
+                        }
+                        return Ok(CellResult::partial(
+                            output,
+                            displays,
+                            CellStatus::KernelKilled,
+                            false,
+                        ));
                     }
-                    return Ok(CellResult::partial(
-                        output,
-                        displays,
-                        CellStatus::Interrupted,
-                        true,
-                    ));
+                },
+            };
+            match frame {
+                Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => {
+                    output.push_str(&data);
                 }
-                Err(RecvOutcome::Disconnected) => {
-                    // Worker died or wedged mid-cell: make sure it is reaped,
-                    // then report like omp so the caller recreates the kernel.
-                    if let Some(mut p) = self.process.lock().take() {
-                        p.kill_group();
-                        drop(p);
+                Frame::Result { bundle, .. } => {
+                    if let Some(serde_json::Value::String(text)) = bundle.get("text/plain") {
+                        output.push_str(text);
+                        if !text.ends_with('\n') {
+                            output.push('\n');
+                        }
                     }
-                    return Ok(CellResult::partial(
-                        output,
-                        displays,
-                        CellStatus::KernelKilled,
-                        false,
-                    ));
                 }
+                Frame::Display { bundle, .. } => displays.push(bundle),
+                // Independent read-only calls (`Promise.all` over
+                // scheme-path reads / read-only tools): collect the
+                // frames the runner already queued, dispatch the batch
+                // concurrently on scoped threads, answer in frame order.
+                // The `Send + Sync` supertrait makes concurrent `call`
+                // sound for every implementor; mutating and notify frames
+                // keep their barrier semantics (see `parallel`).
+                Frame::Host {
+                    id: host_id,
+                    op,
+                    args,
+                    wait: true,
+                } if opts.bridge.is_some() && parallel::is_parallel_safe_host_op(&op) => {
+                    if let Some(bridge) = opts.bridge {
+                        let (terminal, served) = parallel::serve_read_only_batch(
+                            &self.process,
+                            bridge,
+                            &id,
+                            (host_id, op, args),
+                            &mut output,
+                            &mut displays,
+                            batch_hint,
+                            opts.cancel.as_ref(),
+                        );
+                        deferred = terminal;
+                        batch_hint = served == 1;
+                    }
+                    // Idle timeout: the batch counts as one host-call
+                    // episode; a fresh window starts once it completes.
+                    if opts.idle_timeout {
+                        deadline = opts.timeout.map(|t| Instant::now() + t);
+                    }
+                }
+                Frame::Host {
+                    id: host_id,
+                    op,
+                    args,
+                    wait,
+                } => {
+                    if wait {
+                        let reply = match opts.bridge {
+                            Some(bridge) => bridge
+                                .call(&op, args)
+                                .map(|result| serde_json::json!({ "ok": true, "result": result })),
+                            None => Err("host bridge unavailable".to_owned()),
+                        };
+                        let reply = reply.unwrap_or_else(
+                            |error| serde_json::json!({ "ok": false, "error": error }),
+                        );
+                        // A dead runner here just means the cell will
+                        // end via the disconnected branch below.
+                        parallel::write_host_reply(&self.process, &host_id, &reply);
+                    } else if let Some(bridge) = opts.bridge {
+                        bridge.notify(&op, args);
+                    }
+                    // Idle timeout: time inside a host call does not count,
+                    // so each served call resets a fresh full window.
+                    if opts.idle_timeout {
+                        deadline = opts.timeout.map(|t| Instant::now() + t);
+                    }
+                }
+                Frame::Error {
+                    ename,
+                    evalue,
+                    traceback,
+                    ..
+                } => {
+                    status = CellStatus::Error;
+                    // omp executor pushes `error.stack` as the cell output.
+                    output.push_str(&traceback.join("\n"));
+                    output.push('\n');
+                    error = Some(KernelError {
+                        name: ename,
+                        value: evalue,
+                        traceback,
+                    });
+                }
+                Frame::Done {
+                    status: done_status,
+                    execution_count,
+                    cancelled,
+                    ..
+                } => {
+                    if done_status == "error" && status == CellStatus::Ok {
+                        status = CellStatus::Error;
+                    }
+                    return Ok(CellResult {
+                        output,
+                        status,
+                        cancelled: cancelled.unwrap_or(false),
+                        execution_count: execution_count.unwrap_or_default(),
+                        error,
+                        displays,
+                        timed_out: false,
+                    });
+                }
+                Frame::Started { .. } => {}
             }
         }
     }

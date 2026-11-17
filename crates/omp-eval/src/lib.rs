@@ -57,6 +57,7 @@ pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNNER_SCRIPT: &str = include_str!("runner.py");
 
 pub mod js;
+pub mod parallel;
 
 /// Bridge between a running cell and the host process: the cell-side preludes
 /// emit `host` frames (`{"type":"host","id":"<cellId>:<n>","op","args","wait"}`)
@@ -65,6 +66,12 @@ pub mod js;
 /// This is the NDJSON stand-in for omp's loopback HTTP bridges
 /// (`eval/py/tool-bridge.ts` et al.); op names and `args`/`result` JSON shapes
 /// are verbatim TS bridge payloads.
+///
+/// Implementors must tolerate concurrent `call` invocations: the JS kernel
+/// dispatches independent read-only frames (`Promise.all` batches) to `call`
+/// on joined scoped threads — see [`parallel`]. The `Send + Sync` supertrait
+/// bounds already require `&self` access to be thread-safe; replies are
+/// written back in frame order under the kernel's process lock.
 pub trait HostBridge: Send + Sync {
     /// Blocking request from the running cell. `Err(message)` is raised in
     /// the cell as `OmpHostError` (Python) / a rejected `Error` (JS).
