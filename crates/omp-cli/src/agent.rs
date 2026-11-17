@@ -121,10 +121,14 @@ pub fn system_prompt(
 /// `tools.codeMode`; schemas come from `tool.describe` on demand.
 #[must_use]
 pub fn deferred_tools_note(deferred: &[String]) -> String {
-    format!(
+    let mut note = format!(
         "Deferred tools (not in the tool list; call from an eval cell: `await tool.<name>(args)`, schema via `tool.describe({{name}})`, all via `tool.list()`): {}.",
         deferred.join(", ")
-    )
+    );
+    if deferred.iter().any(|name| name == "macro_step") {
+        note.push_str(" For Rust `unused_imports`, prefer `await tool.macro_step({playbook: \"rust_unused_imports\", path: \"<cargo crate>\"})`: it applies only rustc MachineApplicable suggestions and returns clean/stuck.");
+    }
+    note
 }
 
 const CODE_MODE_PROMPT: &str = r#"Code mode is enabled. Use eval for file, shell, search, and platform operations. Batch independent calls with Promise.all in JavaScript; filter or slice raw results inside the cell and return only a small digest (2-4 fields), never raw files or full test/build output.
