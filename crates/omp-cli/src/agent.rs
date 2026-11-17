@@ -228,7 +228,7 @@ pub async fn build_agent(
     crate::tools::set_session_jobs(session_jobs);
     tools.extend(hidden);
     if code_mode || core_profile {
-        let deferred: Vec<String> = tools
+        let deferred_tools: Vec<&Arc<dyn AgentTool>> = tools
             .iter()
             .filter(|tool| {
                 if code_mode {
@@ -237,6 +237,9 @@ pub async fn build_agent(
                     !crate::methodology::is_core_tool(tool.name())
                 }
             })
+            .collect();
+        let deferred: Vec<String> = deferred_tools
+            .iter()
             .map(|tool| tool.name().to_string())
             .collect();
         if code_mode {
@@ -245,7 +248,10 @@ pub async fn build_agent(
         }
         if !deferred.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&deferred_tools_note(&deferred));
+            prompt.push_str(&crate::tool_catalog::deferred_note(
+                crate::tool_catalog::catalog_requested(),
+                &deferred_tools,
+            ));
         }
     }
     if let Some(note) = crate::tools::mcp::catalog_note() {

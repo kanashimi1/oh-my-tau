@@ -26,6 +26,7 @@ pub mod subcmd;
 mod sync_bridge;
 mod sysprompt;
 mod title;
+mod tool_catalog;
 mod tools;
 mod tree;
 mod tui;
