@@ -338,3 +338,333 @@ async fn kernel_wait_is_raced_against_abort() {
     drop(held);
     shutdown_slot(&env.cwd);
 }
+
+// ===== opt-in observation pack / same-session dedup (OMP_EVAL_OBSERVATION_PACK) =====
+
+/// Run one cell with the pack gate pinned through the test-only override (no
+/// process-env mutation, so concurrently running kernel tests see no flips).
+async fn run_packed(env: &Arc<Env>, args: Value, enabled: bool) -> String {
+    let _guard = eval_observation::GATE_ENV_LOCK.lock();
+    *eval_observation::PACK_OVERRIDE.lock() = Some(enabled);
+    let r = run(env, args).await;
+    *eval_observation::PACK_OVERRIDE.lock() = None;
+    text(&r)
+}
+
+#[tokio::test]
+async fn pack_gate_off_and_unknown_output_are_byte_identical() {
+    let env = test_env("p6-off");
+    let code = json!({"language": "py", "code": "print('hello world')\nprint('second line')"});
+    let off = run_packed(&env, code.clone(), false).await;
+    assert!(off.contains("hello world"));
+    assert!(!off.contains("[eval observation"));
+    let on_unknown = run_packed(&env, code, true).await;
+    assert_eq!(
+        on_unknown, off,
+        "unknown format must fall back byte-identical"
+    );
+    // Same for over-budget output on the elision path.
+    let big = json!({"language": "py", "code": "print('x' * 60000)"});
+    let off_big = run_packed(&env, big.clone(), false).await;
+    let on_big = run_packed(&env, big, true).await;
+    assert_eq!(
+        on_big, off_big,
+        "big unknown output must fall back byte-identical"
+    );
+    shutdown_slot(&env.cwd);
+}
+
+#[tokio::test]
+async fn json_output_packs_when_enabled() {
+    let env = test_env("p6-json");
+    let code = json!({"language": "py", "code": r#"print('{"a": 1, "b": [1, 2]}')"#});
+    let off = run_packed(&env, code.clone(), false).await;
+    assert!(off.contains(r#"{"a": 1, "b": [1, 2]}"#), "got: {off}");
+    let on = run_packed(&env, code, true).await;
+    assert!(on.contains("[eval observation: json]"), "got: {on}");
+    assert!(on.contains("keys: a, b"), "got: {on}");
+    assert!(
+        on.contains("full output: "),
+        "pack must link the full output: {on}"
+    );
+    assert!(!on.contains(r#"{"a": 1"#), "pack replaces the body: {on}");
+    shutdown_slot(&env.cwd);
+}
+
+#[tokio::test]
+async fn dedup_collapses_identical_output_and_shows_changes() {
+    let env = test_env("p6-dedup");
+    let a = json!({"language": "py", "code": "print('same-payload-42')"});
+    let first = run_packed(&env, a.clone(), true).await;
+    assert!(
+        first.contains("same-payload-42"),
+        "first occurrence is shown: {first}"
+    );
+    assert!(!first.contains("identical to previous cell"));
+    let second = run_packed(&env, a, true).await;
+    assert!(
+        second.contains("identical to previous cell"),
+        "got: {second}"
+    );
+    assert!(
+        second.contains("full output: "),
+        "dedup still links full output: {second}"
+    );
+    let changed = run_packed(
+        &env,
+        json!({"language": "py", "code": "print('changed-payload-43')"}),
+        true,
+    )
+    .await;
+    assert!(
+        changed.contains("changed-payload-43"),
+        "changes are never hidden: {changed}"
+    );
+    assert!(!changed.contains("identical to previous cell"));
+    shutdown_slot(&env.cwd);
+}
+
+#[tokio::test]
+async fn error_cells_never_pack_or_dedup() {
+    let env = test_env("p6-err");
+    let _ = run_packed(
+        &env,
+        json!({"language": "py", "code": "print('payload-x')"}),
+        true,
+    )
+    .await;
+    let raise = json!({"language": "py", "code": "raise ValueError('bad')"});
+
+    let first = run_packed(&env, raise.clone(), true).await;
+    assert!(first.contains("ValueError: bad"), "got: {first}");
+    assert!(
+        !first.contains("[eval observation"),
+        "errors are never packed: {first}"
+    );
+    assert!(!first.contains("identical to previous cell"));
+    let second = run_packed(&env, raise, true).await;
+    assert!(
+        second.contains("ValueError: bad"),
+        "repeated errors stay visible: {second}"
+    );
+    assert!(
+        !second.contains("identical to previous cell"),
+        "errors are never deduped"
+    );
+    shutdown_slot(&env.cwd);
+}
+
+/// Whole-read slice helper mirroring the prelude's line semantics exactly:
+/// split on /\r?\n/, window [offset, offset+limit), join with "\n".
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)] // offsets are small non-negative
+fn js_slice(text: &str, offset: i64, limit: Option<usize>) -> String {
+    if !(offset > 1 || limit.is_some()) {
+        return text.to_owned();
+    }
+    if limit.is_some_and(|l| l == 0) {
+        return String::new();
+    }
+    let lines: Vec<&str> = text
+        .split("\r\n")
+        .flat_map(|part| part.split('\n'))
+        .collect();
+    let start = (offset.saturating_sub(1).max(0)) as usize;
+    if start >= lines.len() {
+        return String::new();
+    }
+    let end = limit.map_or(lines.len(), |l| (start + l).min(lines.len()));
+    lines[start..end].join("\n")
+}
+
+/// Single-quoted JS string literal (expected values embedded in cells).
+fn js_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Ranged plain `read()` equals slicing the whole text (LF, CRLF, lone CR,
+/// no trailing newline, empty, multibyte at the 1 MiB chunk boundary, big
+/// file) and keeps whole-read failure semantics for `limit <= 0` and missing
+/// files. Expected values are computed in Rust; each cell is one simple
+/// `&&`-chain ending in a boolean, so the test exercises `read`, not the
+/// cell transform.
+#[tokio::test]
+async fn js_ranged_read_matches_whole_read_semantics() {
+    if !require_bun("js_ranged_read_matches_whole_read_semantics") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("omp-rs-p6-read-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut big = String::new();
+    for i in 1..=70000 {
+        big.push_str(&format!("entry {i}\n"));
+    }
+    let mut lf = String::new();
+    for i in 1..=500 {
+        lf.push_str(&format!("line {i}\n"));
+    }
+    let mut crlf = String::new();
+    for i in 1..=300 {
+        crlf.push_str(&format!("row {i}\r\n"));
+    }
+    let contents: Vec<(&str, String)> = vec![
+        ("lf.txt", lf),
+        ("crlf.txt", crlf),
+        ("lonecr.txt", "x\ry\r\nz\r\nw".to_owned()),
+        ("notrail.txt", "a\nb".to_owned()),
+        ("empty.txt", String::new()),
+        ("mb.txt", format!("{}é\nbé\ncé\n", "a".repeat(1048575))),
+        ("big.txt", big),
+    ];
+    for (name, content) in &contents {
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+    let env = test_env("p6-jsread");
+    // Pin the pack gate off for the whole test: sibling kernel tests flip the
+    // test-only override concurrently in the same process.
+    let _gate = eval_observation::GATE_ENV_LOCK.lock();
+    *eval_observation::PACK_OVERRIDE.lock() = Some(false);
+    let path = |name: &str| js_string(&format!("{}/{name}", dir.display()));
+
+    let cases: Vec<(&str, i64, Option<usize>)> = vec![
+        ("lf.txt", 1, Some(3)),
+        ("lf.txt", 10, Some(2)),
+        ("lf.txt", 498, Some(100)),
+        ("lf.txt", 499, None),
+        ("lf.txt", 2000, Some(5)),
+        ("crlf.txt", 10, Some(2)),
+        ("crlf.txt", 2, None),
+        ("crlf.txt", 1, Some(1)),
+        ("lonecr.txt", 1, Some(2)),
+        ("lonecr.txt", 2, None),
+        ("lonecr.txt", 1, Some(4)),
+        ("notrail.txt", 2, None),
+        ("notrail.txt", 1, Some(5)),
+        ("empty.txt", 1, Some(3)),
+        ("big.txt", 70000, Some(1)),
+        ("big.txt", 69998, Some(3)),
+        ("big.txt", 70001, Some(1)),
+    ];
+    // Named cases with Rust-computed expectations; each cell writes a JSON
+    // row set ({name, pass, got, want}) to a temp file so a failure reports
+    // the exact case instead of one opaque `false`.
+    let mut named: Vec<(String, String, i64, Option<usize>, String)> = cases
+        .iter()
+        .map(|(file, offset, limit)| {
+            let body = &contents.iter().find(|(n, _)| n == file).unwrap().1;
+            let want = js_slice(body, *offset, *limit);
+            (
+                format!("{file}@{offset}+{limit:?}"),
+                path(file),
+                *offset,
+                *limit,
+                js_string(&want),
+            )
+        })
+        .collect();
+    // Multibyte chars straddling the 1 MiB chunk boundary decode correctly.
+    // The 1 MiB first line is expressed as a repeat expression: embedding the
+    // literal in the cell source would put its own é at a 1 MiB stdin chunk
+    // edge, which the kernel transport (not read) mangles.
+    named.push((
+        "mb.txt@2+1".into(),
+        path("mb.txt"),
+        2,
+        Some(1),
+        js_string("bé"),
+    ));
+    named.push((
+        "mb.txt@3+1".into(),
+        path("mb.txt"),
+        3,
+        Some(1),
+        js_string("cé"),
+    ));
+    named.push((
+        "mb.txt@1+1".into(),
+        path("mb.txt"),
+        1,
+        Some(1),
+        "('a'.repeat(1048575) + 'é')".into(),
+    ));
+
+    let read_rows = |rows_path: &std::path::Path| -> Vec<Value> {
+        serde_json::from_str(&std::fs::read_to_string(rows_path).unwrap()).unwrap()
+    };
+    let rows_path = dir.join("rows.json");
+    let assert_rows = |rows: Vec<Value>| {
+        for row in rows {
+            assert!(
+                row["pass"].as_bool().unwrap_or(false),
+                "case {} failed: glen {} tail {}",
+                row["name"].as_str().unwrap_or("?"),
+                row["glen"],
+                row["tail"],
+            );
+        }
+    };
+    for group in named.chunks(4) {
+        let items = group
+            .iter()
+            .map(|(name, path_js, offset, limit, want)| {
+                format!(
+                    "(async () => {{ const got = await read({path_js}, {offset}, {limit}); \
+                     return {{ name: {name}, got: JSON.stringify(got), glen: got.length, tail: JSON.stringify(got.slice(-2)), want: String({want}), pass: got === ({want}) }}; }})()",
+                    path_js = path_js,
+                    offset = offset,
+                    limit = limit.map_or("undefined".to_owned(), |l| l.to_string()),
+                    name = js_string(name),
+                    want = want, // already a JS expression (literal or repeat-expr)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let code = format!(
+            "await write({}, JSON.stringify(await Promise.all([{}])))",
+            js_string(&rows_path.display().to_string()),
+            items
+        );
+        let r = run(&env, json!({"language": "js", "code": code})).await;
+        assert!(r.is_error.is_none(), "cell failed: {}", text(&r));
+        assert_rows(read_rows(&rows_path));
+    }
+
+    // Edge semantics: `limit <= 0` yields "" (but keeps whole-read failure
+    // behavior), a missing file throws in both the ranged and whole forms.
+    let edge_items = format!(
+        "(async () => {{ const got = await read({empty}, 1, 0); return {{ name: 'limit0', \
+         pass: got === '', got: JSON.stringify(got) }}; }})(), \
+         (async () => {{ const got = await read({lf}, 5, -2); return {{ name: 'neg-limit', \
+         pass: got === '', got: JSON.stringify(got) }}; }})(), \
+         (async () => {{ const got = await read({missing}, 1, 2).then(v => 'read', e => 'throw'); \
+         return {{ name: 'missing-ranged', pass: got === 'throw', got }}; }})(), \
+         (async () => {{ const got = await read({missing}).then(v => 'read', e => 'throw'); \
+         return {{ name: 'missing-whole', pass: got === 'throw', got }}; }})()",
+        empty = path("empty.txt"),
+        lf = path("lf.txt"),
+        missing = path("missing.txt"),
+    );
+    let code = format!(
+        "await write({}, JSON.stringify(await Promise.all([{}])))",
+        js_string(&rows_path.display().to_string()),
+        edge_items
+    );
+    let r = run(&env, json!({"language": "js", "code": code})).await;
+    assert!(r.is_error.is_none(), "edge cell failed: {}", text(&r));
+    assert_rows(read_rows(&rows_path));
+
+    *eval_observation::PACK_OVERRIDE.lock() = None;
+    shutdown_slot(&env.cwd);
+    let _ = std::fs::remove_dir_all(&dir);
+}

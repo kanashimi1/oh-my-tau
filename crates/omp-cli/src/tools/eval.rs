@@ -41,6 +41,11 @@ mod eval_output;
 #[path = "eval_tests.rs"]
 mod eval_tests;
 
+/// Optional semantic observation packs + same-session output dedup
+/// (`OMP_EVAL_OBSERVATION_PACK=1`); registered only here.
+#[path = "eval_observation.rs"]
+mod eval_observation;
+
 /// omp `TOOL_TIMEOUTS.eval` (`tools/tool-timeouts.ts`): default 30 s, clamped
 /// to 1–3600 s when the agent passes a value; `0` disables the deadline.
 const DEFAULT_TIMEOUT_SECS: f64 = 30.0;
@@ -145,6 +150,9 @@ pub(crate) struct CallCtx {
 struct KernelState {
     py: Option<Arc<PythonKernel>>,
     js: Option<Arc<JsKernel>>,
+    /// Last non-error output identity (opt-in `OMP_EVAL_OBSERVATION_PACK=1`
+    /// same-session dedup; see [`eval_observation`]).
+    last_observation: Option<eval_observation::ObservationKey>,
 }
 
 /// Retained kernels keyed by cwd (omp keeps them per session/interpreter;
@@ -405,7 +413,11 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         )
     };
 
-    let stream_output = !crate::methodology::raw_tool_output_requested();
+    let raw_output = crate::methodology::raw_tool_output_requested();
+    let pack_output = eval_observation::pack_requested();
+    // Pack classification needs the complete text; the bounded streaming
+    // spool composes with the default and raw paths, not with semantic packs.
+    let stream_output = !raw_output && !pack_output;
     let output_cfg = SpillConfig::load(&cwd);
     let mut kernel_loss_notice: Option<String> = None;
     let mut results: Vec<CellResult> = Vec::with_capacity(codes.len());
@@ -546,7 +558,20 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         } else if let Some(annotation) = result.kernel_timeout_annotation() {
             let _ = write!(text, "\n[{annotation}]");
         }
-        cap_output_with(&text, &output_cfg)
+        if pack_output {
+            let (packed, observed) = eval_observation::render(eval_observation::PackInput {
+                text: &text,
+                cell_error: cell_is_error(result),
+                raw: raw_output,
+                enabled: true,
+                prev: state.last_observation.clone(),
+            });
+            // An error/raw result breaks the consecutive-output chain.
+            state.last_observation = observed;
+            packed.map_or_else(|| cap_output_with(&text, &output_cfg), |t| t)
+        } else {
+            cap_output_with(&text, &output_cfg)
+        }
     };
     // Images a cell displayed (PIL/_repr_png_ values, bridged `read` of an image file, image bundles)
     // reach the model as image content; the cell text alone cannot carry pixels.

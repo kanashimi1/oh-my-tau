@@ -75,23 +75,102 @@
     return res && typeof res === "object" && "text" in res ? res.text : res;
   };
 
+  // Plain-path reads: whole-file when no slicing is requested; ranged reads
+  // (offset > 1 or a limit) stream the file in chunks and retain only the
+  // requested line window, so a large file is never fully materialized just
+  // to slice a few lines. Line semantics are identical to slicing the whole
+  // text: lines split on /\r?\n/ (CRLF pairs are cut before joining with
+  // "\n", a lone \r stays inside its line), a trailing newline contributes a
+  // final empty line, offset past EOF yields "", and a missing file fails
+  // exactly like the whole-file read does.
+  const READ_CHUNK_BYTES = 1 << 20;
+  const sliceWholeText = (text, offset, limit) => {
+    const lines = text.split(/\r?\n/);
+    const start = Math.max(0, offset - 1) || 0;
+    const end = limit !== undefined ? start + limit : lines.length;
+    return lines.slice(start, end).join("\n");
+  };
+  const readPlainRanged = async (filePath, offset, limit) => {
+    const file = Bun.file(filePath);
+    const size = file.size ?? 0;
+    // Unknown/empty size (missing or empty file): keep the whole-read path,
+    // reproducing both the empty result and the missing-file failure.
+    if (!size) return sliceWholeText(await file.text(), offset, limit);
+    const start = Math.max(0, offset - 1) || 0;
+    const keep = limit === undefined ? Infinity : limit > 0 ? limit : 0;
+    if (keep === 0) return "";
+    const decoder = new TextDecoder();
+    const kept = [];
+    let buffer = "";
+    let lineNo = 0;
+    let done = false;
+    let carriedCR = false;
+    const finishLine = () => {
+      lineNo += 1;
+      if (lineNo > start) {
+        kept.push(buffer);
+        if (kept.length >= keep) done = true;
+      }
+      buffer = "";
+    };
+    const consume = chunkText => {
+      let s = chunkText;
+      if (carriedCR) {
+        carriedCR = false;
+        if (s.startsWith("\n")) {
+          s = s.slice(1);
+          finishLine();
+        } else {
+          buffer += "\r";
+        }
+      }
+      for (let idx = s.indexOf("\n"); idx !== -1 && !done; idx = s.indexOf("\n")) {
+        let piece = s.slice(0, idx);
+        s = s.slice(idx + 1);
+        if (piece.endsWith("\r")) piece = piece.slice(0, -1);
+        buffer += piece;
+        finishLine();
+      }
+      if (!done) buffer += s;
+    };
+    let pos = 0;
+    while (!done && pos < size) {
+      const end = Math.min(size, pos + READ_CHUNK_BYTES);
+      const bytes = new Uint8Array(await file.slice(pos, end).arrayBuffer());
+      consume(decoder.decode(bytes, { stream: true }));
+      pos = end;
+      // A "\r" at the chunk edge may pair with the next chunk's "\n".
+      if (!done && buffer.endsWith("\r")) {
+        buffer = buffer.slice(0, -1);
+        carriedCR = true;
+      }
+    }
+    if (!done) {
+      if (carriedCR) buffer += "\r";
+      const tail = decoder.decode();
+      if (tail) consume(tail);
+      if (!done) finishLine(); // the trailing (possibly empty) line element
+    }
+    return kept.join("\n");
+  };
   const read = async (path, opts, ...rest) => {
     const options = optionsArg("read", opts, rest, ["offset", "limit"], "{ offset, limit }");
     if (hasScheme(path)) {
       const toolPath = withReadLineSelector(path, options);
       return toolPath === null ? "" : readToolText(toolPath);
     }
-    let text = await Bun.file(resolveCellPath(path)).text();
     const offset = typeof options.offset === "number" ? options.offset : 1;
     const limit = typeof options.limit === "number" ? options.limit : undefined;
-    if (limit !== undefined && limit <= 0) return "";
     if (offset > 1 || limit !== undefined) {
-      const lines = text.split(/\r?\n/);
-      const start = Math.max(0, offset - 1);
-      const end = limit !== undefined ? start + limit : lines.length;
-      text = lines.slice(start, end).join("\n");
+      // limit <= 0 is always "" but keeps the whole-read error semantics for
+      // a missing file, exactly like the previous implementation.
+      if (limit !== undefined && limit <= 0) {
+        await Bun.file(resolveCellPath(path)).text();
+        return "";
+      }
+      return readPlainRanged(resolveCellPath(path), offset, limit);
     }
-    return text;
+    return Bun.file(resolveCellPath(path)).text();
   };
 
   const write = async (path, data) => {
