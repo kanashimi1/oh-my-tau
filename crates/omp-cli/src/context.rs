@@ -575,7 +575,8 @@ impl Shared {
             }
         }
         let recall_budget = if action == crate::context_policy::Action::RlmRecall {
-            pol.recall_chars.max(crate::context_policy::POLICY_RECALL_CHARS)
+            pol.recall_chars
+                .max(crate::context_policy::POLICY_RECALL_CHARS)
         } else {
             pol.recall_chars
         };
@@ -1183,6 +1184,8 @@ fn result_text(c: &[ToolResultContent]) -> String {
 #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
+
+    static OFFLOAD_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
     use pa_agent::types::ToolResultMessage;
 
     fn user(t: &str) -> AgentMessage {
@@ -1549,6 +1552,7 @@ mod tests {
 
     #[test]
     fn policy_offload_replaces_largest_old_block_stickily() {
+        let _env_lock = OFFLOAD_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         let sh = Shared::with_policy(Kind::Clm, lim(), Some(sched(&[0, 0, 0, 2])));
         let big = "z".repeat(5000);
@@ -1584,6 +1588,7 @@ mod tests {
 
     #[test]
     fn batch_offload_evicts_oldest_blocks_once_down_to_low() {
+        let _env_lock = OFFLOAD_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         let mut pol = crate::context_policy::Policy::new(crate::context_policy::Kind::Rule);
         pol.rule_tokens = 0;
@@ -1625,6 +1630,7 @@ mod tests {
 
     #[test]
     fn recall_on_miss_reinlines_a_matching_block_once_and_sticky() {
+        let _env_lock = OFFLOAD_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         let mut pol = crate::context_policy::Policy::new(crate::context_policy::Kind::Rule);
         pol.rule_tokens = 0;
@@ -1690,6 +1696,7 @@ mod tests {
 
     #[test]
     fn explicit_policy_recall_restores_large_matching_block() {
+        let _env_lock = OFFLOAD_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         let settings = omp_settings::Settings::load_from(None, dir.path());
         let env = |key: &str| match key {
@@ -1697,7 +1704,9 @@ mod tests {
             "OMP_CONTEXT_POLICY_SCRIPT" => Some("0,0,2,3".to_owned()),
             _ => None,
         };
-        let pol = crate::context_policy::Policy::resolve(&settings, &env).unwrap().unwrap();
+        let pol = crate::context_policy::Policy::resolve(&settings, &env)
+            .unwrap()
+            .unwrap();
         let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
         let file = format!("def spawn_gate(limit_42):\n{}", "x".repeat(30_000));
         let mut h = vec![
