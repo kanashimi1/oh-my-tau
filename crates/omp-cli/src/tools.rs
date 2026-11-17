@@ -32,6 +32,7 @@ pub use todo::{phases_from_entries, TodoPhase, TodoTool};
 pub use todo::{Status, TodoItem};
 mod goal;
 mod lsp;
+mod macro_step;
 mod think;
 mod tree;
 mod util;
@@ -424,6 +425,12 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
         todo::tool(),
         web_search::tool(),
         lsp::tool(env.clone()),
+        mk(
+            "macro_step",
+            macro_step::DESCRIPTION.to_string(),
+            macro_step::schema(),
+            Arc::new(|env, args, signal| Box::pin(macro_step::macro_step(env, args, signal))),
+        ),
         checkpoint::checkpoint_tool(),
         checkpoint::rewind_tool(),
     ];
@@ -672,6 +679,7 @@ mod tests {
                 "todo",
                 "web_search",
                 "lsp",
+                "macro_step",
                 "checkpoint",
                 "rewind"
             ]
