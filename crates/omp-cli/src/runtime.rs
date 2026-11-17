@@ -115,6 +115,7 @@ struct Settings {
 pub struct Runtime {
     pub agent: Arc<Agent>,
     pub(super) tool_projection: crate::methodology::ToolProjection,
+    usage_cache: Mutex<usage::UsageCache>,
     target: Target,
     pub cwd: PathBuf,
     persist: Persistence,
@@ -464,6 +465,7 @@ impl Runtime {
         let rt = Arc::new(Self {
             agent,
             tool_projection,
+            usage_cache: Mutex::new(usage::UsageCache::default()),
             target,
             cwd,
             persist,

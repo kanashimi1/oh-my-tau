@@ -55,13 +55,8 @@ impl Runtime {
         if let Some(obj) = v.as_object() {
             out.extend(obj.clone());
         }
-        let base = prompt_overhead(&s.system_prompt, &s.tools, self.tool_projection);
         let window = s.model.context_window;
-        if let Some(usage) = self
-            .agent
-            .with_messages(|m| context_usage(m.iter(), window, base))
-            .await
-        {
+        if let Some(usage) = self.cached_context_usage(window).await {
             out.insert("contextUsage".into(), usage);
         }
         Value::Object(out)

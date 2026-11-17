@@ -9,7 +9,7 @@
 //! manager reconnects on demand and isolates per-server errors.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -123,6 +123,7 @@ pub fn connected_servers() -> Vec<(String, usize)> {
 /// withholds `mcp__*` schemas until the model loads them through
 /// [`LoadTools`]. The startup catalog is one compact system-prompt line.
 static LAZY: AtomicBool = AtomicBool::new(false);
+static PROJECTION_REVISION: AtomicU64 = AtomicU64::new(0);
 
 /// Discovered MCP tools in registration order: `(registry name, description)`.
 static CATALOG: parking_lot::Mutex<Vec<(String, String)>> = parking_lot::Mutex::new(Vec::new());
@@ -137,6 +138,13 @@ pub fn set_lazy(active: bool) {
     // A newly built agent starts a fresh projection lifecycle. Model switches
     // rediscover tools without calling this, preserving deliberate loads.
     LOADED.lock().clear();
+    PROJECTION_REVISION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Revision of process-global lazy projection state for derived caches.
+#[must_use]
+pub fn projection_revision() -> u64 {
+    PROJECTION_REVISION.load(Ordering::Relaxed)
 }
 
 /// Whether lazy MCP loading is active for the current run.
@@ -284,6 +292,7 @@ impl AgentTool for LoadTools {
             }
             let catalog = CATALOG.lock();
             let mut loaded = LOADED.lock();
+            let previous_loaded_count = loaded.len();
             let mut loaded_names = Vec::new();
             let mut unknown = Vec::new();
             for name in requested {
@@ -317,6 +326,9 @@ impl AgentTool for LoadTools {
                 } else {
                     unknown.push(name);
                 }
+            }
+            if loaded.len() != previous_loaded_count {
+                PROJECTION_REVISION.fetch_add(1, Ordering::Relaxed);
             }
             let mut text = if loaded_names.is_empty() {
                 "No MCP tools loaded.".to_string()

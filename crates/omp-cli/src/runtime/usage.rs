@@ -5,31 +5,90 @@ use pa_agent::types::{AgentMessage, AssistantContent, Message, StopReason};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use super::{level_name, message_text, Runtime};
+use super::{level_name, lock, message_text, Runtime};
+
+#[derive(Default)]
+pub(super) struct UsageCache {
+    overhead: Option<(
+        (u64, crate::methodology::ToolProjection, u64),
+        PromptOverhead,
+    )>,
+    history: Option<HistoryUsage>,
+}
+
+#[derive(Clone)]
+struct HistoryUsage {
+    revision: u64,
+    window: u64,
+    wire_chars: usize,
+    catalog_chars: usize,
+    usage: Value,
+}
 
 impl Runtime {
-    /// TS `ctx.getContextUsage()`: `{tokens, contextWindow, percent}` (None without a window).
-    pub async fn context_usage_value(&self) -> Option<Value> {
-        let (s, _) = self.agent.status().await;
-        let base = prompt_overhead(&s.system_prompt, &s.tools, self.tool_projection);
-        let window = s.model.context_window;
+    /// Cache prompt serialization and transcript estimation independently of
+    /// provider traffic. Agent transcript revisions catch appends, truncation,
+    /// retries and compaction; the MCP revision catches lazy-schema loads.
+    pub(super) async fn cached_context_usage(&self, window: u64) -> Option<Value> {
+        let overhead = self
+            .agent
+            .with_prompt_revision(|system_prompt, tools, prompt_revision| {
+                let key = (
+                    prompt_revision,
+                    self.tool_projection,
+                    crate::tools::mcp::projection_revision(),
+                );
+                let mut cache = lock(&self.usage_cache);
+                match &cache.overhead {
+                    Some((cached_key, overhead)) if *cached_key == key => *overhead,
+                    _ => {
+                        let overhead = prompt_overhead(system_prompt, tools, self.tool_projection);
+                        cache.overhead = Some((key, overhead));
+                        overhead
+                    }
+                }
+            })
+            .await;
         self.agent
-            .with_messages(|m| context_usage(m.iter(), window, base))
+            .with_messages_revision(|messages, revision| {
+                {
+                    let cache = lock(&self.usage_cache);
+                    if let Some(cached) = &cache.history {
+                        if cached.revision == revision
+                            && cached.window == window
+                            && cached.wire_chars == overhead.wire_chars
+                            && cached.catalog_chars == overhead.catalog_chars
+                        {
+                            return Some(cached.usage.clone());
+                        }
+                    }
+                }
+                let usage = context_usage(messages.iter(), window, overhead);
+                if let Some(usage) = &usage {
+                    lock(&self.usage_cache).history = Some(HistoryUsage {
+                        revision,
+                        window,
+                        wire_chars: overhead.wire_chars,
+                        catalog_chars: overhead.catalog_chars,
+                        usage: usage.clone(),
+                    });
+                }
+                usage
+            })
             .await
     }
 
-    /// The `context_usage` frame the TUI status line renders: active model
-    /// (selector + display name), context tokens/percent/window and the
-    /// auto-compaction gauge boundaries (TS `getContextUsage` +
-    /// `getSessionCompactionBoundaries`).
+    /// TS `ctx.getContextUsage()`: `{tokens, contextWindow, percent}`.
+    pub async fn context_usage_value(&self) -> Option<Value> {
+        let (s, _) = self.agent.status().await;
+        self.cached_context_usage(s.model.context_window).await
+    }
+
+    /// The `context_usage` frame the TUI status line renders.
     pub async fn context_usage_frame(&self) -> Value {
         let (s, _) = self.agent.status().await;
-        let base = prompt_overhead(&s.system_prompt, &s.tools, self.tool_projection);
         let window = s.model.context_window;
-        let usage = self
-            .agent
-            .with_messages(|m| context_usage(m.iter(), window, base))
-            .await;
+        let usage = self.cached_context_usage(window).await;
         let mut frame = json!({
             "type": "context_usage",
             "model": format!("{}/{}", s.model.provider, s.model.id),
@@ -70,9 +129,7 @@ impl Runtime {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Publish a fresh `context_usage` frame to the UI stream (off the
-    /// caller's task: the agent's state lock must not be re-entered from an
-    /// event callback).
+    /// Publish a fresh frame without holding the caller's agent-state lock.
     pub fn publish_context_usage(self: &Arc<Self>) {
         if !self
             .ui_context_frames
@@ -153,7 +210,8 @@ pub(super) fn context_usage<'a>(
     let mut resident = 0u64;
     let mut reported = None;
     for m in messages.rev() {
-        resident += estimate_tokens(m);
+        let estimated = estimate_tokens(m);
+        resident += estimated;
         if reported.is_none() {
             match m {
                 AgentMessage::Standard(Message::Assistant(a))
@@ -161,7 +219,7 @@ pub(super) fn context_usage<'a>(
                 {
                     reported = Some(a.usage.total_tokens);
                 }
-                _ => trailing += estimate_tokens(m),
+                _ => trailing += estimated,
             }
         }
     }

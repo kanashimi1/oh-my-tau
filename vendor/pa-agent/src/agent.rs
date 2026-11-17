@@ -106,11 +106,15 @@ pub struct AgentOptions {
 
 struct MutableAgentState {
     system_prompt: String,
+    /// Monotonic system-prompt/tool-registry mutation counter.
+    prompt_revision: u64,
     model: Model,
     thinking_level: ThinkingLevel,
     tools: Vec<Arc<dyn AgentTool>>,
     /// Shares frozen segments with the running loop's snapshot (no per-run deep copy).
     messages: crate::types::ContextMessages,
+    /// Monotonic transcript mutation counter for read-only derived-state caches.
+    messages_revision: u64,
     is_streaming: bool,
     streaming_message: Option<Arc<AgentMessage>>,
     pending_tool_calls: HashSet<String>,
@@ -121,10 +125,12 @@ impl Default for MutableAgentState {
     fn default() -> Self {
         MutableAgentState {
             system_prompt: String::new(),
+            prompt_revision: 0,
             model: Model::unknown(),
             thinking_level: ThinkingLevel::Off,
             tools: Vec::new(),
             messages: crate::types::ContextMessages::new(),
+            messages_revision: 0,
             is_streaming: false,
             streaming_message: None,
             pending_tool_calls: HashSet::new(),
@@ -977,6 +983,16 @@ impl Agent {
         )
     }
 
+    /// Current transcript and its monotonic mutation revision, read atomically.
+    /// Derived caches must invalidate on revision changes, not just message count.
+    pub async fn with_messages_revision<R>(
+        &self,
+        read: impl FnOnce(&crate::types::ContextMessages, u64) -> R,
+    ) -> R {
+        let shared = self.inner.shared.lock().await;
+        read(&shared.state.messages, shared.state.messages_revision)
+    }
+
     /// A shared snapshot of the transcript: freezes the state's tail and clones the
     /// segment pointers (no message is copied), so the caller can walk or serialize it
     /// without holding the state lock. Later appends do not show up in the snapshot.
@@ -995,8 +1011,23 @@ impl Agent {
         read(&self.inner.shared.lock().await.state.messages)
     }
 
+    /// Read system prompt and tools with their monotonic mutation revision.
+    pub async fn with_prompt_revision<R>(
+        &self,
+        read: impl FnOnce(&str, &[Arc<dyn AgentTool>], u64) -> R,
+    ) -> R {
+        let shared = self.inner.shared.lock().await;
+        read(
+            &shared.state.system_prompt,
+            &shared.state.tools,
+            shared.state.prompt_revision,
+        )
+    }
+
     pub async fn set_system_prompt(&self, system_prompt: impl Into<String>) {
-        self.inner.shared.lock().await.state.system_prompt = system_prompt.into();
+        let mut shared = self.inner.shared.lock().await;
+        shared.state.system_prompt = system_prompt.into();
+        shared.state.prompt_revision = shared.state.prompt_revision.wrapping_add(1);
     }
 
     pub async fn set_model(&self, model: Model) {
@@ -1034,7 +1065,9 @@ impl Agent {
     }
 
     pub async fn set_tools(&self, tools: Vec<Arc<dyn AgentTool>>) {
-        self.inner.shared.lock().await.state.tools = tools;
+        let mut shared = self.inner.shared.lock().await;
+        shared.state.tools = tools;
+        shared.state.prompt_revision = shared.state.prompt_revision.wrapping_add(1);
     }
 
     /// Current tool list (read-modify-write with [`Agent::set_tools`]).
@@ -1043,33 +1076,25 @@ impl Agent {
     }
 
     pub async fn set_messages(&self, messages: Vec<AgentMessage>) {
-        self.inner.shared.lock().await.state.messages = messages.into();
+        let mut shared = self.inner.shared.lock().await;
+        shared.state.messages = messages.into();
+        shared.state.messages_revision = shared.state.messages_revision.wrapping_add(1);
     }
 
     /// Append rows to the transcript under ONE state lock (the atomic
     /// form of the `state()` + `set_messages` read-modify-write).
     pub async fn append_messages(&self, messages: Vec<AgentMessage>) {
-        self.inner
-            .shared
-            .lock()
-            .await
-            .state
-            .messages
-            .extend(messages);
+        let mut shared = self.inner.shared.lock().await;
+        shared.state.messages.extend(messages);
+        shared.state.messages_revision = shared.state.messages_revision.wrapping_add(1);
     }
 
     /// Mutate the transcript under ONE state lock (the atomic form of the
     /// `state()` + `set_messages` read-modify-write).
     pub async fn mutate_messages(&self, mutate: impl FnOnce(&mut Vec<AgentMessage>)) {
-        mutate(
-            self.inner
-                .shared
-                .lock()
-                .await
-                .state
-                .messages
-                .make_contiguous(),
-        );
+        let mut shared = self.inner.shared.lock().await;
+        mutate(shared.state.messages.make_contiguous());
+        shared.state.messages_revision = shared.state.messages_revision.wrapping_add(1);
     }
 
     /// Locks recover from poisoning by reusing the guarded data.
@@ -1766,5 +1791,29 @@ mod tests {
             mixed, 0,
             "every snapshot carries a consistent (model, level) pair"
         );
+    }
+
+    #[tokio::test]
+    async fn derived_state_revisions_cover_prompt_and_transcript_mutations() {
+        let agent = Agent::new(AgentOptions::default());
+        let (_, prompt0) = agent
+            .with_prompt_revision(|_, _, revision| ((), revision))
+            .await;
+        let messages0 = agent.with_messages_revision(|_, revision| revision).await;
+        agent.set_system_prompt("new prompt").await;
+        agent.set_tools(Vec::new()).await;
+        let prompt1 = agent.with_prompt_revision(|_, _, revision| revision).await;
+        assert_eq!(prompt1, prompt0 + 2);
+        agent.append_messages(vec![AgentMessage::user("one")]).await;
+        let messages1 = agent.with_messages_revision(|_, revision| revision).await;
+        assert_eq!(messages1, messages0 + 1);
+        agent
+            .set_messages(vec![AgentMessage::user("replacement")])
+            .await;
+        let messages2 = agent.with_messages_revision(|_, revision| revision).await;
+        assert_eq!(messages2, messages1 + 1);
+        agent.mutate_messages(|messages| messages.clear()).await;
+        let messages3 = agent.with_messages_revision(|_, revision| revision).await;
+        assert_eq!(messages3, messages2 + 1);
     }
 }
