@@ -3,7 +3,9 @@
 //! header followed by `N:line` rows (omp `read.ts`, hashline display mode);
 //! directories render as omp's workspace tree.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::io::{BufRead, BufReader, Seek as _};
 use std::path::Path;
 use std::sync::{LazyLock, OnceLock};
 use std::time::SystemTime;
@@ -14,9 +16,10 @@ use omp_urls::{Registry, UrlCtx, UrlTarget};
 use anyhow::{bail, Context, Result};
 use pa_agent::types::AgentToolResult;
 use pi_edit::path_policy::canonical_key;
-use pi_edit::store::seen_lines_from_body;
+use pi_edit::store::{seen_lines_from_body, MAX_SNAPSHOT_FILE_BYTES};
 use pi_edit::text::{normalize_to_lf, strip_bom};
 use regex::Regex;
+use xxhash_rust::xxh32::Xxh32;
 
 use super::util::{
     format_age, format_bytes, format_path_relative_to_cwd, notice_with_artifact, resolve_to_cwd,
@@ -304,32 +307,46 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             is_error: None,
         });
     }
-    let bytes = std::fs::read(&absolute).with_context(|| format!("cannot read {path_part}"))?;
-    if bytes.contains(&0) {
-        bail!(
-            "Cannot read '{path_part}': binary file ({}).",
-            format_bytes(bytes.len())
-        );
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    let (_, without_bom) = strip_bom(&text);
-    let normalized = normalize_to_lf(without_bom);
-    let selector_base = path_part;
+    let selector_base = path_part.as_str();
     let display = format_path_relative_to_cwd(&absolute, &env.cwd, false);
     let display = if Path::new(&display).is_absolute() {
         shorten_path(&display)
     } else {
         display
     };
-    let result = format_read_output(
-        env,
-        &normalized,
-        &sel,
-        &selector_base,
-        &display,
-        env.hashline,
-        Some(&absolute),
-    )?;
+    let result = if meta.len() > MAX_SNAPSHOT_FILE_BYTES {
+        let source =
+            read_windowed_file(env, &absolute, &sel, env.hashline, &path_part, meta.len())?;
+        format_read_source(
+            env,
+            &ReadSource::Windowed(source),
+            &sel,
+            selector_base,
+            &display,
+            env.hashline,
+            Some(&absolute),
+        )?
+    } else {
+        let bytes = std::fs::read(&absolute).with_context(|| format!("cannot read {path_part}"))?;
+        if bytes.contains(&0) {
+            bail!(
+                "Cannot read '{path_part}': binary file ({}).",
+                format_bytes(bytes.len())
+            );
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let (_, without_bom) = strip_bom(&text);
+        let normalized = normalize_to_lf(without_bom);
+        format_read_output(
+            env,
+            &normalized,
+            &sel,
+            selector_base,
+            &display,
+            env.hashline,
+            Some(&absolute),
+        )?
+    };
     Ok(relevance_spill(env, result, save_artifact))
 }
 
@@ -376,30 +393,47 @@ fn relevance_spill(
     result
 }
 
-/// Format already-in-memory text the way omp's read pipeline does: selector
-/// windows, optional hashline header + numbered rows, continuation hints.
-/// `store_key` is the snapshot key for hashline recording (`None` for URLs
-/// with no local backing).
-///
-/// # Errors
-/// Never fails; the Result mirrors the tool surface.
-#[allow(clippy::too_many_lines)] // selector resolution + hashline snapshot recording; one flow, mirrors omp's formatReadOutput
-#[allow(clippy::unnecessary_wraps)] // Result mirrors the tool surface (see doc above)
-fn format_read_output(
-    env: &Env,
-    normalized: &str,
-    sel: &Selector,
-    selector_base: &str,
-    display: &str,
-    hashline: bool,
-    store_key: Option<&Path>,
-) -> Result<AgentToolResult> {
-    let lines = addressable_lines(normalized);
-    let total = lines.len();
-    let raw = is_raw(sel);
-    let hash_lines = !raw && hashline;
+/// A fully normalized small file or just the requested rows of a large file.
+/// Large files deliberately use the same 4 MiB snapshot ceiling as
+/// `EditStore::record_file`; their content tag is computed incrementally.
+enum ReadSource<'a> {
+    Full {
+        normalized: &'a str,
+        lines: Vec<&'a str>,
+    },
+    Windowed(WindowedFile),
+}
 
-    // Resolve the selector against the line count.
+struct WindowedFile {
+    lines: BTreeMap<usize, String>,
+    total: usize,
+    hash: String,
+}
+
+impl ReadSource<'_> {
+    fn total(&self) -> usize {
+        match self {
+            Self::Full { lines, .. } => lines.len(),
+            Self::Windowed(source) => source.total,
+        }
+    }
+
+    fn line(&self, number: usize) -> Option<&str> {
+        match self {
+            Self::Full { lines, .. } => lines.get(number.checked_sub(1)?).copied(),
+            Self::Windowed(source) => source.lines.get(&number).map(String::as_str),
+        }
+    }
+}
+
+/// Resolve tail selectors and calculate the exact display windows used by the
+/// formatter. The large-file reader uses the same plan to decide what to keep.
+fn selector_windows(
+    sel: &Selector,
+    total: usize,
+    default_lines: usize,
+    hash_lines: bool,
+) -> (Selector, Vec<(usize, usize)>) {
     let sel = match sel {
         Selector::Tail { count, raw } => {
             let (count, raw) = (*count, *raw);
@@ -418,14 +452,7 @@ fn format_read_output(
         Selector::Lines { ranges, .. } => ranges.clone(),
         _ => Vec::new(),
     };
-    let mut body = String::new();
-    let mut rows = 0usize;
-    let mut last_shown = 0usize; // 1-indexed last displayed line
-    let mut empty_window = false;
-    let first_start = ranges.first().map_or(1, |r| r.start);
-    let multi = ranges.len() > 1;
-    let default_lines = default_limit(&env.cwd);
-    let windows: Vec<(usize, usize)> = if ranges.is_empty() {
+    let windows = if ranges.is_empty() {
         vec![(0, default_lines)]
     } else {
         ranges
@@ -435,12 +462,12 @@ fn format_read_output(
                 // Context expansion only feeds hashline anchors (TS
                 // `expandRangeWithContext`); raw/immutable reads show the
                 // exact requested window.
-                let lead = if hash_lines && !raw && r.start > 1 {
+                let lead = if hash_lines && r.start > 1 {
                     LEADING_CONTEXT.min(requested_start)
                 } else {
                     0
                 };
-                let trail = if hash_lines && !raw && r.end.is_some() {
+                let trail = if hash_lines && r.end.is_some() {
                     TRAILING_CONTEXT
                 } else {
                     0
@@ -448,11 +475,201 @@ fn format_read_output(
                 let limit = r.end.map_or(default_lines, |e| e - r.start + 1);
                 (
                     requested_start - lead,
-                    (limit + lead + trail).min(MAX_LINES),
+                    limit
+                        .saturating_add(lead)
+                        .saturating_add(trail)
+                        .min(MAX_LINES),
                 )
             })
             .collect()
     };
+    (sel, windows)
+}
+
+fn wanted_lines(windows: &[(usize, usize)]) -> BTreeSet<usize> {
+    windows
+        .iter()
+        .flat_map(|(start, count)| {
+            (0..*count).map(move |offset| start.saturating_add(offset).saturating_add(1))
+        })
+        .collect()
+}
+
+/// Visit normalized logical lines without retaining the complete file. Raw LF
+/// chunks are safe UTF-8 decoding boundaries because an LF byte cannot occur
+/// inside a multibyte codepoint.
+fn scan_file_lines(
+    reader: &mut impl BufRead,
+    error_path: &str,
+    file_len: u64,
+    mut hasher: Option<&mut Xxh32>,
+    mut visit: impl FnMut(usize, &str),
+) -> Result<usize> {
+    let mut total = 0usize;
+    let mut pending = String::new();
+    let mut pending_started = false;
+    let mut first_chunk = true;
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        let read = reader
+            .read_until(b'\n', &mut raw)
+            .with_context(|| format!("cannot read {error_path}"))?;
+        if read == 0 {
+            break;
+        }
+        if raw.contains(&0) {
+            bail!(
+                "Cannot read '{error_path}': binary file ({}).",
+                format_bytes(usize::try_from(file_len).unwrap_or(usize::MAX))
+            );
+        }
+        let text = String::from_utf8_lossy(&raw);
+        let without_bom = if first_chunk {
+            strip_bom(&text).1
+        } else {
+            &text
+        };
+        first_chunk = false;
+        let normalized = normalize_to_lf(without_bom);
+        let mut finish = |line: &str, terminated: bool, total: &mut usize| {
+            *total = total.saturating_add(1);
+            if let Some(hasher) = hasher.as_deref_mut() {
+                hasher.update(line.trim_end_matches([' ', '\t']).as_bytes());
+                if terminated {
+                    hasher.update(b"\n");
+                }
+            }
+            visit(*total, line);
+        };
+        for segment in normalized.split_inclusive('\n') {
+            let terminated = segment.ends_with('\n');
+            let content = segment.strip_suffix('\n').unwrap_or(segment);
+            if !content.is_empty() {
+                pending.push_str(content);
+                pending_started = true;
+            }
+            if terminated {
+                finish(&pending, true, &mut total);
+                pending.clear();
+                pending_started = false;
+            }
+        }
+    }
+    if pending_started {
+        total = total.saturating_add(1);
+        if let Some(hasher) = hasher {
+            hasher.update(pending.trim_end_matches([' ', '\t']).as_bytes());
+        }
+        visit(total, &pending);
+    }
+    Ok(total)
+}
+
+fn read_windowed_file(
+    env: &Env,
+    absolute: &Path,
+    sel: &Selector,
+    hashline: bool,
+    error_path: &str,
+    file_len: u64,
+) -> Result<WindowedFile> {
+    let file =
+        std::fs::File::open(absolute).with_context(|| format!("cannot read {error_path}"))?;
+    let mut reader = BufReader::new(file);
+    let hash_lines = hashline && !is_raw(sel);
+    let default_lines = default_limit(&env.cwd);
+    let planned = if matches!(sel, Selector::Tail { .. }) {
+        None
+    } else {
+        Some(selector_windows(sel, 0, default_lines, hash_lines).1)
+    };
+    let wanted = planned.as_deref().map(wanted_lines).unwrap_or_default();
+    let mut selected = BTreeMap::new();
+    let mut hasher = Xxh32::new(0);
+    let total = scan_file_lines(
+        &mut reader,
+        error_path,
+        file_len,
+        Some(&mut hasher),
+        |number, line| {
+            if wanted.contains(&number) {
+                selected.insert(number, line.to_string());
+            }
+        },
+    )?;
+    if matches!(sel, Selector::Tail { .. }) {
+        let (_, windows) = selector_windows(sel, total, default_lines, hash_lines);
+        let wanted = wanted_lines(&windows);
+        reader
+            .rewind()
+            .with_context(|| format!("cannot read {error_path}"))?;
+        scan_file_lines(&mut reader, error_path, file_len, None, |number, line| {
+            if wanted.contains(&number) {
+                selected.insert(number, line.to_string());
+            }
+        })?;
+    }
+    Ok(WindowedFile {
+        lines: selected,
+        total,
+        hash: format!("{:04X}", hasher.digest() & 0xffff),
+    })
+}
+
+/// Format already-in-memory text through the common read pipeline.
+fn format_read_output(
+    env: &Env,
+    normalized: &str,
+    sel: &Selector,
+    selector_base: &str,
+    display: &str,
+    hashline: bool,
+    store_key: Option<&Path>,
+) -> Result<AgentToolResult> {
+    format_read_source(
+        env,
+        &ReadSource::Full {
+            normalized,
+            lines: addressable_lines(normalized),
+        },
+        sel,
+        selector_base,
+        display,
+        hashline,
+        store_key,
+    )
+}
+
+/// Format selector windows, optional hashline anchors, and continuation hints.
+///
+/// # Errors
+/// Returns an error if a bounded source failed to retain a selected row.
+#[allow(clippy::too_many_lines)] // selector resolution + hashline snapshot recording; one flow, mirrors omp's formatReadOutput
+fn format_read_source(
+    env: &Env,
+    source: &ReadSource<'_>,
+    sel: &Selector,
+    selector_base: &str,
+    display: &str,
+    hashline: bool,
+    store_key: Option<&Path>,
+) -> Result<AgentToolResult> {
+    let total = source.total();
+    let raw = is_raw(sel);
+    let hash_lines = !raw && hashline;
+    let default_lines = default_limit(&env.cwd);
+    let (sel, windows) = selector_windows(sel, total, default_lines, hash_lines);
+    let ranges: Vec<LineRange> = match &sel {
+        Selector::Lines { ranges, .. } => ranges.clone(),
+        _ => Vec::new(),
+    };
+    let mut body = String::new();
+    let mut rows = 0usize;
+    let mut last_shown = 0usize; // 1-indexed last displayed line
+    let mut empty_window = false;
+    let first_start = ranges.first().map_or(1, |r| r.start);
+    let multi = ranges.len() > 1;
     let mut truncated_by_bytes = false;
     let max_bytes = if crate::methodology::raw_tool_output_requested() {
         usize::MAX
@@ -466,10 +683,13 @@ fn format_read_output(
             }
             break;
         }
-        let end = (start + count).min(total);
-        for (i, line) in lines.iter().enumerate().take(end).skip(*start) {
+        let end = start.saturating_add(*count).min(total);
+        for i in *start..end {
+            let line = source
+                .line(i + 1)
+                .context("selected line missing from bounded read")?;
             let shown = if raw {
-                (*line).to_string()
+                line.to_string()
             } else {
                 truncate_columns(line)
             };
@@ -512,16 +732,21 @@ fn format_read_output(
     if hash_lines && rows > 0 {
         if let Some(absolute) = store_key {
             let key = canonical_key(absolute);
-            let tag = env.store.record(&key, normalized, None);
-            let seen = seen_lines_from_body(&body);
-            env.store.record_seen_lines(&key, &tag, &seen);
+            let tag = match source {
+                ReadSource::Full { normalized, .. } => env.store.record(&key, normalized, None),
+                ReadSource::Windowed(source) => source.hash.clone(),
+            };
+            if matches!(source, ReadSource::Full { .. }) {
+                let seen = seen_lines_from_body(&body);
+                env.store.record_seen_lines(&key, &tag, &seen);
+            }
             let _ = writeln!(out, "[{display}#{tag}]");
         } else {
             let _ = writeln!(out, "[{display}]");
         }
     } else if raw && rows > 0 {
         // A raw read emits no header, but records the displayed range.
-        if let Some(absolute) = store_key {
+        if let (Some(absolute), ReadSource::Full { normalized, .. }) = (store_key, source) {
             let key = canonical_key(absolute);
             let first = windows.first().map_or(0, |w| w.0) + 1;
             let seen: Vec<u32> = (first..=last_shown)
@@ -628,30 +853,51 @@ fn read_internal_url(env: &Env, raw_path: &str) -> Result<Option<AgentToolResult
             match std::fs::metadata(&path) {
                 Ok(meta) if meta.is_dir() => read_directory(&path, &parsed).map(Some),
                 Ok(meta) if meta.is_file() => {
-                    let bytes = std::fs::read(&path)
-                        .with_context(|| format!("cannot read {}", path.display()))?;
-                    if bytes.contains(&0) {
-                        bail!(
-                            "Cannot read '{}': binary file ({}).",
-                            url.raw_href,
-                            format_bytes(bytes.len())
-                        );
-                    }
-                    let text = String::from_utf8_lossy(&bytes);
-                    let (_, without_bom) = strip_bom(&text);
-                    let normalized_text = normalize_to_lf(without_bom);
                     // Immutable resources never mint hashline anchors.
                     let hashline = env.hashline && !spec.immutable;
-                    format_read_output(
-                        env,
-                        &normalized_text,
-                        &parsed,
-                        &url.raw_href,
-                        &url.raw_href,
-                        hashline,
-                        Some(&path),
-                    )
-                    .map(Some)
+                    if meta.len() > MAX_SNAPSHOT_FILE_BYTES {
+                        let source = read_windowed_file(
+                            env,
+                            &path,
+                            &parsed,
+                            hashline,
+                            &url.raw_href,
+                            meta.len(),
+                        )?;
+                        format_read_source(
+                            env,
+                            &ReadSource::Windowed(source),
+                            &parsed,
+                            &url.raw_href,
+                            &url.raw_href,
+                            hashline,
+                            Some(&path),
+                        )
+                        .map(Some)
+                    } else {
+                        let bytes = std::fs::read(&path)
+                            .with_context(|| format!("cannot read {}", path.display()))?;
+                        if bytes.contains(&0) {
+                            bail!(
+                                "Cannot read '{}': binary file ({}).",
+                                url.raw_href,
+                                format_bytes(bytes.len())
+                            );
+                        }
+                        let text = String::from_utf8_lossy(&bytes);
+                        let (_, without_bom) = strip_bom(&text);
+                        let normalized_text = normalize_to_lf(without_bom);
+                        format_read_output(
+                            env,
+                            &normalized_text,
+                            &parsed,
+                            &url.raw_href,
+                            &url.raw_href,
+                            hashline,
+                            Some(&path),
+                        )
+                        .map(Some)
+                    }
                 }
                 // The located file vanished: the provider owns the canonical error.
                 _ => resolve_resource(env, reg, &bare, &ctx, &parsed),
@@ -1272,5 +1518,76 @@ mod tests {
         // Not a registered scheme: the existing path pipeline answers.
         let out = text_of(&read(&env, &serde_json::json!({"path": "f.txt"})).unwrap());
         assert!(out.contains("plain"));
+    }
+    #[test]
+    fn large_windowed_reads_match_in_memory_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = b"\xEF\xBB\xBFfirst \xD0\xBF\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82  \r\nsecond\rthird\n".to_vec();
+        while bytes.len() <= usize::try_from(MAX_SNAPSHOT_FILE_BYTES).unwrap() + 128 {
+            bytes.extend_from_slice(b"payload-\xD0\xB6\xD0\xB0\xD0\xB4\t \r\n");
+        }
+        bytes.extend_from_slice(b"last-\xFF-invalid \t\r\n");
+        std::fs::write(dir.path().join("large.txt"), &bytes).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let normalized = normalize_to_lf(strip_bom(&text).1);
+        let total = addressable_lines(&normalized).len();
+        let selectors = vec![
+            String::new(),
+            "1-2".to_string(),
+            "raw:1-2".to_string(),
+            "2-3,5-6".to_string(),
+            format!("{}-{}", total - 1, total),
+            format!("raw:{}-{}", total - 1, total),
+            "-3".to_string(),
+            "raw:-3".to_string(),
+            format!("-{}", MAX_LINES + 10),
+            format!("{}", total + 5),
+        ];
+        for selector in selectors {
+            let path = if selector.is_empty() {
+                "large.txt".to_string()
+            } else {
+                format!("large.txt:{selector}")
+            };
+            for hashline in [false, true] {
+                let e = Env::new(dir.path(), hashline);
+                let (_, sel) = split_path_and_sel(&path, dir.path()).unwrap();
+                let expected = text_of(
+                    &format_read_output(
+                        &e,
+                        &normalized,
+                        &sel,
+                        "large.txt",
+                        "large.txt",
+                        hashline,
+                        Some(&dir.path().join("large.txt")),
+                    )
+                    .unwrap(),
+                );
+                let actual = text_of(&read(&e, &serde_json::json!({"path": path})).unwrap());
+                assert_eq!(
+                    actual, expected,
+                    "selector={selector:?} hashline={hashline}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn large_binary_read_preserves_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = vec![b'x'; usize::try_from(MAX_SNAPSHOT_FILE_BYTES).unwrap() + 1];
+        bytes[123] = 0;
+        std::fs::write(dir.path().join("binary.dat"), &bytes).unwrap();
+        let error = read(&env(dir.path()), &serde_json::json!({"path": "binary.dat"}))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            format!(
+                "Cannot read 'binary.dat': binary file ({}).",
+                format_bytes(bytes.len())
+            )
+        );
     }
 }

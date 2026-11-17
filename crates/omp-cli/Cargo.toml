@@ -20,6 +20,7 @@ pa-types.workspace = true
 pa-ai.workspace = true
 pa-agent.workspace = true
 regex = "1"
+xxhash-rust = { version = "0.8", features = ["xxh32"] }
 ignore = "0.4"
 globset = "0.4"
 omp-providers = { path = "../omp-providers" }
