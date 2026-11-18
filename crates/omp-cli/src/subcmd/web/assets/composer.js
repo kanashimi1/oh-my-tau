@@ -113,7 +113,7 @@
      *  agent host and its path is added to the prompt. */
     addFile(file) {
       if (!file) return;
-      if (file.type.startsWith("image/") && file.type !== "image/svg+xml") return this.addImage(file);
+      if (!this.textOnly && file.type.startsWith("image/") && file.type !== "image/svg+xml") return this.addImage(file);
       const att = { name: file.name || "file", size: file.size };
       att.upload = fetch("/api/uploads?name=" + encodeURIComponent(att.name), { method: "POST", body: file })
         .then(async (r) => {
@@ -129,6 +129,9 @@
 
     // ── dictation ──────────────────────────────────────────────────────────
     async startDictation() {
+      // Model loading is the dominant cold-start cost; overlap it with recording.
+      const warmup = fetch("/api/transcribe/warmup", { method: "POST" });
+      warmup.catch(() => {}); // the actual transcription request reports any worker error
       if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
         return OMP.toast("Microphone recording is not available here", "error");
       }
@@ -212,6 +215,12 @@
       ta.setSelectionRange(caret, caret);
     }
 
+    setTextOnly(on) {
+      if (this.textOnly !== on) {
+        this.images = []; this.files = []; this.renderAttachments();
+      }
+      this.textOnly = on;
+    }
     setEnabled(on) {
       this.ta.disabled = !on;
       this.sendBtn.disabled = !on;
@@ -268,6 +277,7 @@
         .concat(this.history.slice(-200).reverse());
     }
     updateTc() {
+      if (this.textOnly) return;
       const v = this.ta.value;
       this.tc.tail = (!this.ac.open && !v.startsWith("/") && v.trim().length >= 2)
         ? OMP.textComplete.match(v, this.completionSources())
@@ -301,6 +311,7 @@
     /** External API (contract): attach an image from raw base64 data;
      *  `annotate` opens the pin editor on it right away. */
     addImageData({ data, mimeType, annotate, caption }) {
+      if (this.textOnly) return;
       if (!data) return;
       const att = { type: "image", data, mimeType: mimeType || "image/png" };
       if (caption) att.caption = caption; // what the image shows (preview pins), sent with the pin notes
@@ -339,6 +350,7 @@
     }
 
     async submit(mode) {
+      if (this.ta.disabled) return;
       if (this.files.some((f) => !f.path && !f.error)) {
         OMP.toast("Uploading attachments…", "info", 2000);
         await Promise.all(this.files.map((f) => f.upload));
@@ -352,7 +364,10 @@
       ].filter(Boolean).join("\n\n");
       const text = notes ? (raw.trim() ? `${raw}\n\n${notes}` : notes) : raw;
       const images = this.images.map(({ type, data, mimeType }) => ({ type, data, mimeType }));
-      if (this.onSubmit(text, images, mode) === false) return;
+      const submitted = this.onSubmit(text, images, mode);
+      if ((submitted instanceof Promise ? await submitted : submitted) === false) return;
+      // Do not clear a draft changed while an async transport was sending.
+      if (this.ta.value !== raw) return;
       if (raw.trim()) {
         this.history = this.history.filter((h) => h !== raw);
         this.history.push(raw);
@@ -420,6 +435,7 @@
 
     // ── slash autocomplete ──
     updateAc() {
+      if (this.textOnly) return;
       const v = this.ta.value;
       const m = v.match(/^\/([^\s]*)$/);
       if (!m || this.ta.selectionStart !== v.length) { this.closeAc(); return; }

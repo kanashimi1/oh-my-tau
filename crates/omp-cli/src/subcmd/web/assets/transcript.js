@@ -143,7 +143,9 @@
       this.done = false;
       this.last = null;
       this.open = !!this.start;
-      this.head = el("div.thinking-head", { onclick: () => this.toggle() });
+      this.icon = OMP.mascot.svg("think", { size: 18, title: "Thinking" });
+      this.labelNode = el("span.thinking-label");
+      this.head = el("div.thinking-head", { onclick: () => this.toggle() }, this.icon, this.labelNode);
       this.body = el("div.md");
       this.inner = el("div.thinking-inner", null, this.body);
       this.node = el("div.thinking", null, this.head, el("div.thinking-clip", null, this.inner));
@@ -171,7 +173,8 @@
       this.render();
     }
     render() {
-      this.head.textContent = this.label();
+      this.labelNode.textContent = this.label();
+      this.icon.hidden = this.done || this.redacted;
       this.node.classList.toggle("open", this.open);
       this.node.classList.toggle("redacted", this.redacted);
       this.node.classList.toggle("live", !this.done && !this.redacted);
@@ -473,15 +476,18 @@
       if (!src) return;
       this.loadingOlder = true;
       return Promise.resolve()
-        .then(src)
+        .then(() => this.olderSource === src ? src() : null)
         .then((older) => {
+          if (this.olderSource !== src) return;
           if (older && older.length) {
             this.loadingOlder = false; // prependOlder guards on the same flag
             this.prependOlder(older.length, older, true);
-          } else if (!older) this.olderSource = null; // history start reached
+          } else if (!older) { this.loadingOlder = false; this.olderSource = null; }
         })
-        .catch(() => { this.olderSource = null; })
-        .finally(() => { this.loadingOlder = false; });
+        .catch(() => {
+          if (this.olderSource === src) { this.loadingOlder = false; this.olderSource = null; }
+        })
+        .finally(() => { if (this.olderSource === src) this.loadingOlder = false; });
     }
 
     addSystem(text, cls = "") {
@@ -744,11 +750,11 @@
             : null;
           // Wall-clock time the answer was finished (local, HH:MM). History
           // replay uses the stamped completedAt; a live turn uses now.
- doneAt = new Date(msg.completedAt || (perf && perf.endedAt) || Date.now());
-           clockSpan = el("span.msg-clock", {
+          const doneAt = new Date(msg.completedAt || (perf && perf.endedAt) || Date.now());
+          const clockSpan = el("span.msg-clock", {
             text: doneAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
             title: `answered ${doneAt.toLocaleString()}` });
-           meta = el("div.meta", null,
+          const meta = el("div.meta", null,
             clockSpan,
             el("span", { text: modelName(msg.model), title: msg.model || "" }),
             totalSpan,

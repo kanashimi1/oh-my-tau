@@ -254,7 +254,7 @@
         icon(this.name),
         el("span.tool-sum", { text: sum, title: `${this.name} — ${sum}` }),
         el("span.tool-dur", { text: dur }),
-        el("span.status", { text: mark }),
+        el("span.status", { text: mark }, this.status === "running" ? OMP.mascot.svg("work", { size: 19, title: "Tool running" }) : null),
       );
       const file = ["write", "edit", "read"].includes(this.name) && this.status === "ok" && (this.args.path || this.args.file_path);
       this.renderInline(file);

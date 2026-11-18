@@ -15,9 +15,26 @@
     if (location.hash === target) route();
     else location.hash = target;
   }
+  function navigateHerdr(id) {
+    const target = "#/herdr/" + encodeURIComponent(id);
+    if (location.hash === target) route();
+    else location.hash = target;
+  }
+  let beforeMaps = "#/";
+  function toggleMaps() {
+    if (S().view === "maps") location.hash = beforeMaps;
+    else { beforeMaps = location.hash || "#/"; location.hash = "#maps"; }
+  }
   function route() {
     if (/^#maps(\/|$)/.test(location.hash)) { app.setView("maps"); return; }
     if (S().view === "maps") app.setView("chat");
+    const herdr = /^#\/herdr\/([^/]+)$/.exec(location.hash);
+    if (herdr) {
+      let pane;
+      try { pane = decodeURIComponent(herdr[1]); } catch { navigate(null); return; }
+      app.openHerdr(pane);
+      return;
+    }
     const m = location.hash.match(/^#\/a\/([\w-]+)/);
     const id = m ? m[1] : null;
     if (id === S().agentId && S().ws) return;
@@ -26,17 +43,25 @@
 
   // ── rendering ──────────────────────────────────────────────────────────────
   function renderHeader(s) {
-    const st = s.state || {};
     const info = s.agents.find((a) => a.id === s.agentId) || s.agentInfo || {};
-    const title = st.sessionName || info.sessionName || (s.agentId ? "New session" : "omt");
+    const peer = s.herdrPane && s.herdr?.agents.find((a) => a.paneId === s.herdrPane);
+    const herdrModel = s.herdrModel || peer?.model;
+    const st = s.herdrPane ? {
+      model: herdrModel ? { provider: "", id: herdrModel } : null,
+      thinkingLevel: s.herdrThinkingLevel,
+      ultra: s.herdrUltra,
+    } : s.state || {};
+    const title = s.herdrPane ? (peer?.title || peer?.address || s.herdrPane) :
+      st.sessionName || info.sessionName || (s.agentId ? "New session" : "omt");
     $("#session-title").textContent = title;
-    document.title = s.agentId ? `${title} — omt` : "omt";
-    $("#session-cwd").textContent = info.cwd ? shortPath(info.cwd) : "";
-    const fullModel = st.model ? `${st.model.provider}/${st.model.id}` : "model";
+    document.title = s.agentId || s.herdrPane ? `${title} — omt` : "omt";
+    $("#session-title").title = s.herdrPane ? "Herdr session" : "Rename session";
+    $("#session-cwd").textContent = s.herdrPane ? [peer?.workspace, peer?.cwd].filter(Boolean).join(" · ") : info.cwd ? shortPath(info.cwd) : "";
+    const fullModel = st.model ? [st.model.provider, st.model.id].filter(Boolean).join("/") : "model";
     const modelBtn = $("#composer-model");
     modelBtn.textContent = st.model ? st.model.id : "model";
     modelBtn.title = st.model ? `${fullModel} (/model)` : "Model (/model)";
-    modelBtn.disabled = !s.agentId;
+    modelBtn.disabled = !(s.agentId || s.herdrPane);
     const tBtn = $("#composer-thinking");
     const effort = st.ultra || st.thinkingLevel || "thinking";
     const previousEffort = tBtn.dataset.effort;
@@ -51,18 +76,23 @@
       void tBtn.offsetWidth;
       tBtn.classList.add("effort-changing");
     }
-    tBtn.disabled = !s.agentId;
-    tBtn.hidden = !!(st.model && !st.model.reasoning && !st.ultra);
+    tBtn.disabled = !(s.agentId || s.herdrPane);
+    tBtn.hidden = !s.herdrPane && !!(st.model && !st.model.reasoning && !st.ultra);
   }
 
   // Tau in the status bar: one persistent sprite, re-framed only when the
   // agent's state changes (re-inserting it would restart its animation).
   const liveHost = el("span.tau-live");
-  let runOut0 = null; // stats.tokens.output snapshot at run start
+  const runOut0 = new Map(); // per-agent stats.tokens.output snapshots at run start
   let live = null;
 
   function renderStatus(s) {
     const bar = $("#statusbar");
+    if (s.herdrPane) {
+      const t = s.herdrTokens;
+      bar.replaceChildren(el("span", {text: t?.reported ? `Токены ↑${OMP.fmtTokens(t.input + t.cacheRead + t.cacheWrite)} ↓${OMP.fmtTokens(t.output)}` : "Токены —", title: "Usage reported in the Herdr journal; updates when each model response is recorded"}));
+      return;
+    }
     if (!s.agentId) { bar.replaceChildren(); return; }
     if (!live) live = OMP.mascot.mount(liveHost, { size: 22 });
     const mood = OMP.mascot.stateOf(s);
@@ -70,12 +100,12 @@
     const parts = [];
     const st = s.state || {};
     const stats = s.stats || {};
-    if (s.streaming && runOut0 == null) runOut0 = stats.tokens?.output ?? 0;
-    if (!s.streaming && runOut0 != null) {
+    if (s.streaming && !runOut0.has(s.agentId)) runOut0.set(s.agentId, stats.tokens?.output ?? 0);
+    if (!s.streaming && runOut0.has(s.agentId)) {
       const durMs = s.runStart ? Date.now() - s.runStart : null;
-      const out = Math.max(0, (stats.tokens?.output || 0) - runOut0);
+      const out = Math.max(0, (stats.tokens?.output || 0) - runOut0.get(s.agentId));
       if (durMs > 0) OMP.perf.last = { ...(OMP.perf.last || {}), durMs, tps: out / (durMs / 1000), endedAt: Date.now() };
-      runOut0 = null;
+      runOut0.delete(s.agentId);
     }
     if (s.dead) parts.push(el("span.warn", { text: "stopped" }));
     else if (mood === "wave") parts.push(el("span.busy", { text: "waiting for you" }));
@@ -91,9 +121,16 @@
     }
     const t = stats.tokens;
     if (t && t.total) parts.push(el("span", { text: `↑${OMP.fmtTokens(t.input + (t.cacheRead || 0) + (t.cacheWrite || 0))} ↓${OMP.fmtTokens(t.output)}`, title: `input ${t.input} · output ${t.output} · cache read ${t.cacheRead} · cache write ${t.cacheWrite}` }));
+    const reply = s.liveReply;
+    if (s.streaming && reply && (reply.actual || reply.bytes)) {
+      const pendingBytes = Math.max(0, reply.bytes - (reply.actualBytes || 0));
+      const value = reply.actual + Math.ceil(pendingBytes / 4);
+      const estimated = pendingBytes > 0 || !reply.actual;
+      parts.push(el("span.busy", { text: `+${estimated ? "≈" : ""}${OMP.fmtTokens(value)} ток.`, title: estimated ? "Reported output tokens plus an estimate for newer streamed text; reconciled when the provider reports usage" : "Output tokens reported by the provider for this response" }));
+    }
     if (t && (t.cacheRead || t.cacheWrite)) parts.push(el("span", { text: "cache " + OMP.fmtTokens((t.cacheRead || 0) + (t.cacheWrite || 0)), title: "cache read " + (t.cacheRead || 0) + " · cache write " + (t.cacheWrite || 0) }));
     if (s.streaming && s.runStart) {
-      const out = Math.max(0, (t?.output || 0) - (runOut0 || 0));
+      const out = Math.max(0, (t?.output || 0) - (runOut0.get(s.agentId) || 0));
       const sec = (Date.now() - s.runStart) / 1000;
       if (sec >= 2 && out > 0) parts.push(el("span.busy", { text: (out / sec).toFixed(1) + " t/s", title: "output tokens per second (live)" }));
     }
@@ -141,10 +178,16 @@
     const archived = OMP.sidebar.readArchived();
     const q = $("#session-filter").value.trim().toLowerCase();
     const current = s.agents.find((a) => a.id === s.agentId);
-    const anyOpen = new Set(s.agents.map((a) => a.sessionFile).filter(Boolean));
-    // A dead agent gets no row by default, so its file must fall back to the
-    // stored list — otherwise a finished session vanishes with its agent.
-    const aliveOpen = new Set(s.agents.filter((a) => a.alive !== false).map((a) => a.sessionFile).filter(Boolean));
+    // The hub removes exited processes. Keep the selected one visible with
+    // its last known details until the user navigates away.
+    const agents = s.dead && s.agentId ? [
+      ...s.agents.filter((a) => a.id !== s.agentId),
+      { ...s.agentInfo, ...current, id: s.agentId, alive: false },
+    ] : s.agents;
+    const anyOpen = new Set(agents.map((a) => a.sessionFile).filter(Boolean));
+    // A stopped agent outside the current session falls back to its file,
+    // so finished sessions remain reachable without crowding the live list.
+    const visibleOpen = new Set(agents.filter((a) => a.alive !== false || a.id === s.agentId).map((a) => a.sessionFile).filter(Boolean));
     // Stored titles by file: resumed agents often have no sessionName, and
     // their cwd fallback (e.g. tmp from desktop spawns) makes fleet rows
     // read as identical duplicates. Prefer the stored session title.
@@ -152,14 +195,17 @@
 
     // Explorer buckets: the live fleet on top, then pinned, then the stored
     // history (date or project groups), then soft-hidden archived rows.
-    const liveRows = [], histRows = [], archivedRows = [];
+    const herdr = s.herdr?.agents || [];
+    const localPaths = new Set(agents.filter((a) => a.alive !== false).map((a) => a.sessionFile).filter(Boolean));
+    const herdrPaths = new Map(herdr.filter((a) => a.sessionFile).map((a) => [a.sessionFile, a]));
+    const roster = [], histRows = [], archivedRows = [];
 
-    // Running now: live agents (pulsing dot, needs-input/running chips).
-    // Dead agents fall back to their stored row unless a search names them.
-    for (const a of s.agents) {
+    // Connected agents live above the stored sessions, including idle ones.
+    // Keep a selected stopped agent here until the user leaves it.
+    for (const a of agents) {
       const key = "a:" + a.id;
       if (archived.has(key)) continue;
-      if (a.alive === false && !q) continue;
+      if (a.alive === false && a.id !== s.agentId && !q) continue;
       const title = a.sessionName || storedTitle.get(a.sessionFile) || basename(a.cwd);
       // Worktree agents run in a fresh git worktree; the slug after the
       // last `-wt-` names the `omt/<slug>` branch to merge back.
@@ -167,23 +213,33 @@
       const sub = wtSlug
         ? `${shortPath(a.worktree)} · merge: /wt merge ${wtSlug}${a.model ? " · " + a.model : ""}`
         : `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}`;
-      if (q && !`${title} ${sub} ${a.id}`.toLowerCase().includes(q)) continue;
+      const peer = herdrPaths.get(a.sessionFile);
+      if (q && !`${title} ${sub} ${a.id} ${peer?.address || ""}`.toLowerCase().includes(q)) continue;
       const row = {
         key, kind: "agent", id: a.id, path: a.sessionFile || null, cwd: a.cwd,
-        title, sub, ms: a.startedMs || Date.now(),
+        title, sub, workspace: basename(a.worktree || a.cwd) || "Workspace", model: a.model, ms: a.startedMs || 0,
         active: a.id === s.agentId, pinned: pinned.has(key),
-        dot: a.streaming || a.runningTools ? "busy" : "live", pulse: a.alive !== false,
-        status: a.needsInput ? "needs input" : a.runningTools ? "running" : a.streaming ? "working" : null,
-        waitingMs: !a.streaming && a.awaitingTasksSinceMs ? Date.now() - a.awaitingTasksSinceMs : null,
+        brand: OMP.sidebar.agentBrand(a.model), address: peer?.address, group: peer?.workspace,
+        status: OMP.sidebar.agentStatus(a), waitingSinceMs: a.awaitingTasksSinceMs,
       };
-      (a.alive !== false ? liveRows : histRows).push(row);
+      roster.push(row);
+    }
+
+    for (const peer of herdr) {
+      if (localPaths.has(peer.sessionFile)) continue;
+      const { address, cwd, model, paneId, workspace, title } = peer;
+      const sub = [workspace, paneId, model, cwd].filter(Boolean).join(" · ");
+      if (q && !`${address || ""} ${title} ${sub}`.toLowerCase().includes(q)) continue;
+      roster.push({ key: `herdr:${paneId}`, id: paneId, kind: "herdr", title: title || paneId, sub,
+        group: workspace, workspace, cwd, model, address, active: paneId === s.herdrPane, ms: peer.stateChangeSeq || 0,
+        brand: OMP.sidebar.agentBrand(model), status: OMP.sidebar.herdrStatus(peer.status) });
     }
 
     // Default view: all live agents + five recent stored sessions, with a
     // "show all" expander for the rest. Search deliberately scans the
     // complete stored history; pinned/current sessions stay reachable even
     // when they are older than the recent slice.
-    const openSet = q ? anyOpen : aliveOpen;
+    const openSet = q ? anyOpen : visibleOpen;
     const stored = s.sessions.filter((r) => !openSet.has(r.path))
       .sort((a, b) => (b.modifiedMs || 0) - (a.modifiedMs || 0));
     const showAll = !q && !!s.sessionsShowAll;
@@ -206,11 +262,12 @@
         key, kind: "session", id: null, path: r.path, cwd: r.cwd || s.project,
         title, sub, ms: r.modifiedMs || 0,
         active: current && current.sessionFile === r.path, pinned: pinned.has(key),
-        dot: null, status: r.store === "omp" ? "ts" : null,
+        status: r.store === "omp" ? "ts" : null,
       };
       (archived.has(key) ? archivedRows : histRows).push(row);
     }
-    for (const list of [liveRows, histRows, archivedRows]) list.sort((a, b) => b.ms - a.ms);
+    for (const list of [histRows, archivedRows]) list.sort((a, b) => b.ms - a.ms);
+    roster.sort((a, b) => OMP.sidebar.compareAgents(a, b, s.agentSort));
 
     // History grouping: per project when the explorer spans projects and the
     // user opted in, Kimi date buckets otherwise.
@@ -225,15 +282,33 @@
     const order = byProject ? [...groups.keys()] : OMP.sidebar.GROUP_ORDER.filter((g) => groups.has(g));
 
     const frag = [];
-    if (liveRows.length) {
-      frag.push(groupHead("Running now", liveRows.length));
-      frag.push(...liveRows.map((r) => rowNode(s, r)));
+    if (roster.length) {
+      const priority = s.agentSort === "priority";
+      frag.push(el("div.fleet-heading", null, el("span", { text: "Agents" }),
+        el("button.link-btn", {
+          type: "button", text: priority ? "Priority" : "Grouped", dataset: { fleetFocus: "sort" },
+          "aria-pressed": String(priority), "aria-label": "Sort agents by status priority",
+          title: priority ? "Group agents by workspace" : "Sort agents by status priority",
+          onclick: () => {
+            s.agentSort = priority ? "grouped" : "priority";
+            try { localStorage.setItem("omp-agent-sort", s.agentSort); } catch { /* storage unavailable */ }
+            renderSidebar(s);
+          },
+        })));
+      let group = null;
+      for (const row of roster) {
+        if (!priority && herdr.length && row.group !== group) {
+          group = row.group;
+          frag.push(el("div.fleet-space", { text: group || "Tau" }));
+        }
+        frag.push(agentRowNode(s, row));
+      }
     }
     if (pinnedRows.length) {
       frag.push(groupHead("Pinned", pinnedRows.length));
       frag.push(...pinnedRows.slice(0, 300).map((r) => rowNode(s, r)));
     }
-    let shown = liveRows.length + pinnedRows.length;
+    let shown = pinnedRows.length;
     for (const g of order) {
       const list = groups.get(g);
       if (!list || !list.length) continue;
@@ -270,7 +345,10 @@
     groupBtn.hidden = !multiCwd;
     groupBtn.textContent = byProject ? "by project" : "by date";
     groupBtn.title = byProject ? "Grouped by project — switch to date groups" : "Grouped by date — switch to project groups";
-    $("#session-list").replaceChildren(...frag);
+    const list = $("#session-list");
+    const focusKey = list.contains(document.activeElement) ? document.activeElement.dataset.fleetFocus : null;
+    list.replaceChildren(...frag);
+    if (focusKey) [...list.querySelectorAll("[data-fleet-focus]")].find((button) => button.dataset.fleetFocus === focusKey)?.focus({ preventScroll: true });
     if (OMP.agentPanel) { OMP.agentPanel.renderLeft($("#agent-dock")); OMP.agentPanel.renderRight($("#subagents-dock")); }
   }
 
@@ -282,34 +360,60 @@
   const groupHead = (label, count) => el("div.group-head", null,
     el("span", { text: label }), el("span.count", { text: String(count) }));
 
+  const statusLabels = { idle: "Idle", working: "Working", "needs-input": "Needs input", waiting: "Waiting", done: "Done", unknown: "Unknown", stopped: "Stopped" };
+  function agentRowNode(s, row) {
+    const brand = row.brand;
+    const label = row.status === "waiting" ? `Waiting · ${waitText(Date.now() - row.waitingSinceMs)}` : statusLabels[row.status];
+    const detail = row.title === row.workspace ? (row.model?.split("/").pop() || brand.label) : row.title;
+    const external = row.kind === "herdr";
+    const name = row.address || (external ? (s.herdr.namesAvailable ? "No Namedrop name" : "Namedrop unavailable") : row.workspace);
+    const open = el("button.fleet-open", {
+      type: "button", title: `${row.address ? row.address + "\n" : ""}${row.title}\n${row.sub}\n${label}`,
+      "aria-current": row.active ? "true" : null, dataset: { fleetFocus: `open:${row.key}` },
+      onclick: () => external ? navigateHerdr(row.id) : navigate(row.id),
+    }, el("span.sess-brand" + (row.status === "working" ? ".working" : ""), {
+      role: "img", "aria-label": brand.label, dataset: { brand: brand.key },
+      html: `<svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true">${brand.paths}</svg>`,
+    }), el("span.fleet-workspace" + (row.address ? ".fleet-address" : ""), { text: name }),
+    el("span.sess-status." + row.status + (row.status === "waiting" && Date.now() - row.waitingSinceMs > STUCK_MS ? ".stuck" : ""), { text: label }),
+    el("span.fleet-detail", { text: external ? `${row.workspace} · ${detail}` : detail }));
+    if (external) {
+      const copy = row.address ? el("button.row-action.fleet-menu", {
+        type: "button", title: "Copy Namedrop address", "aria-label": `Copy ${row.address}`, text: "⧉",
+        dataset: { fleetFocus: `copy:${row.key}` },
+        onclick: async () => {
+          const ok = await OMP.copyText(row.address);
+          OMP.toast(ok ? `Copied ${row.address}` : "Clipboard unavailable", ok ? "success" : "error");
+        },
+      }) : null;
+      return el("div.session-row.fleet-row" + (row.active ? ".active" : ""), { dataset: { herdrPane: row.id } }, open, copy);
+    }
+    const menu = el("button.row-action.fleet-menu", {
+      type: "button", dataset: { fleetFocus: `menu:${row.id}` }, title: "Agent actions", "aria-label": `Actions for ${row.title}`, text: "⋯",
+      onclick: (e) => rowMenu(e.currentTarget, s, row),
+    });
+    return el("div.session-row.fleet-row" + (row.active ? ".active" : ""), {
+      oncontextmenu: (e) => { e.preventDefault(); rowMenu(e.target, s, row); },
+    }, open, menu);
+  }
+
   const rowNode = (s, row) => {
-    const dot = row.dot ? el("span.sess-dot." + row.dot + (row.pulse ? ".pulse" : ""), { title: row.dot === "busy" ? "working" : "running" })
-      : el("span.sess-dot", { title: "stored" });
-    // Parked on background subagents: harmless for a few minutes, a likely
-    // stuck child after that (the session never settles on its own).
-    const waitChip = row.waitingMs != null && !row.status
-      ? el("span." + (row.waitingMs > STUCK_MS ? "needs-input.stuck" : "muted-run"), {
-          text: "subagent " + waitText(row.waitingMs),
-          title: "Waiting for its background subagents since " + new Date(Date.now() - row.waitingMs).toLocaleString() + ". Click to cancel them.",
-          onclick: (e) => { e.stopPropagation(); cancelSubagents(S(), row.id); },
-        })
-      : null;
-    const chip = row.status === "needs input"
-      ? el("span.needs-input", { text: row.status })
-      : row.status ? el("span.muted-run", { text: row.status }) : waitChip;
+    const icon = el("span.sess-dot", { "aria-hidden": "true" });
+    const details = el("div.sess-sub", { text: row.sub });
+    const chip = row.status ? el("span.muted-run", { text: row.status }) : null;
     const actions = el("span.sess-actions", null,
       el("button.row-action" + (row.pinned ? ".pinned" : ""), { title: row.pinned ? "Unpin" : "Pin", html: PIN_SVG, onclick: (e) => { e.stopPropagation(); togglePin(s, row); } }),
       el("button.row-action", { title: "New session from this one", html: FORK_SVG, onclick: (e) => { e.stopPropagation(); forkFrom(s, row); } }),
       el("button.row-action", { title: row.archived ? "Unarchive" : "Archive", html: ARCHIVE_SVG, onclick: (e) => { e.stopPropagation(); toggleArchive(s, row); } }),
       el("button.row-action", { title: "Open in new window", html: NEWWIN_SVG, onclick: (e) => { e.stopPropagation(); openInNewWindow(s, row); } }),
       el("button.row-action", { title: "More", text: "⋯", onclick: (e) => { e.stopPropagation(); rowMenu(e.currentTarget, s, row); } }));
-    const main = el("div.main", null, dot,
+    const main = el("div.main", null, icon,
       el("span.sess-title", { text: row.title }), chip, actions);
     return el("div.session-row" + (row.active ? ".active" : ""), {
       title: row.path || row.sub,
       onclick: () => { if (row.kind === "agent") navigate(row.id); else openSession(s, row); },
       oncontextmenu: (e) => { e.preventDefault(); rowMenu(e.target, s, row); },
-    }, main, el("div.sess-sub", { text: row.sub }));
+    }, main, details);
   };
 
   function togglePin(s, row) {
@@ -401,7 +505,7 @@
       { label: "Open in new window", run: () => openInNewWindow(s, row) },
       { label: "Open in terminal", run: () => openInTerminal(s, row) },
     ];
-    if (row.waitingMs != null) {
+    if (row.status === "waiting") {
       items.push("-", { label: "Cancel waiting subagents", run: () => cancelSubagents(S(), row.id) });
     }
     if (row.kind === "agent" && row.id === S().agentId) {
@@ -430,6 +534,17 @@
     }
     renderSidebar(s);
     renderHeader(s);
+  }
+
+  async function refreshHerdr(s) {
+    if (s.herdrLoading) return;
+    s.herdrLoading = true;
+    try {
+      s.herdr = await api("/api/herdr/agents");
+      renderSidebar(s);
+      if (s.herdrPane) { renderHeader(s); app.updateHerdrStatus(); }
+    } catch { /* Older or non-local hub; local sessions still work. */ }
+    finally { s.herdrLoading = false; }
   }
 
   async function loadSessions(s) {
@@ -534,6 +649,15 @@
 
   // ── pickers / actions ──────────────────────────────────────────────────────
   async function modelPicker(s) {
+    if (s.herdrPane) {
+      const peer = s.herdr?.agents.find((a) => a.paneId === s.herdrPane);
+      const current = s.herdrModel || peer?.model || "";
+      const value = await OMP.dialogs.promptText("Model (/model)", { value: current, placeholder: "provider/model" }).promise;
+      if (!value?.trim() || value.trim() === current) return;
+      const ok = await app.sendHerdr(`/model ${value.trim()}`, []);
+      if (ok) OMP.toast("Model command sent to Herdr", "success");
+      return;
+    }
     const picked = await OMP.models.browse(app, s.state && s.state.model);
     if (!picked) return;
     try {
@@ -555,22 +679,27 @@
 
   async function thinkingPicker(s) {
     let levels;
-    try { levels = (await app.rpc("get_available_thinking_levels")).levels || []; } catch (e) { return OMP.toast(e.message, "error"); }
-    const st = s.state || {};
+    if (s.herdrPane) levels = ["off", "low", "medium", "high", "xhigh", "max"];
+    else {
+      try { levels = (await app.rpc("get_available_thinking_levels")).levels || []; } catch (e) { return OMP.toast(e.message, "error"); }
+    }
+    const st = s.herdrPane ? { thinkingLevel: s.herdrThinkingLevel, ultra: s.herdrUltra } : s.state || {};
     const cur = st.ultra || st.thinkingLevel;
-    const values = [...levels, ...ULTRA_MODES.map(([n]) => n)];
+    const values = s.herdrPane ? [...levels] : [...levels, ...ULTRA_MODES.map(([n]) => n)];
     const items = [
       ...levels.map((l) => ({ label: l, tag: l === cur ? "current" : undefined })),
-      ...ULTRA_MODES.map(([n, d]) => ({ label: n, description: d, tag: n === cur ? "current" : "ultra", cls: "ultra-opt", mode: n })),
+      ...(s.herdrPane ? [] : ULTRA_MODES.map(([n, d]) => ({ label: n, description: d, tag: n === cur ? "current" : "ultra", cls: "ultra-opt", mode: n }))),
     ];
     if (st.ultra) { values.push("__ultra_off"); items.push({ label: "ultra off", description: "leave the ultra mode, keep the current effort" }); }
     const i = await OMP.dialogs.pick("Thinking level", items, { initial: Math.max(0, values.indexOf(cur)) }).promise;
     if (i == null) return;
     try {
-      if (values[i] === "__ultra_off") await app.rpc("prompt", { message: "/ultra off" });
+      if (s.herdrPane) {
+        if (!await app.sendHerdr(`/effort ${values[i]}`, [])) return;
+      } else if (values[i] === "__ultra_off") await app.rpc("prompt", { message: "/ultra off" });
       else await app.rpc("set_thinking_level", { level: values[i] });
     } catch (e) { return OMP.toast(e.message, "error"); }
-    app.S.state = await app.rpc("get_state").catch(() => app.S.state);
+    if (!s.herdrPane) app.S.state = await app.rpc("get_state").catch(() => app.S.state);
     renderHeader(s);
   }
 
@@ -677,8 +806,9 @@
     // Explorer prefs survive restarts: history grouping, archived group state.
     try { s.groupByProject = localStorage.getItem("omp-web-group-by") === "project"; } catch { /* storage unavailable */ }
     try { s.archivedOpen = localStorage.getItem("omp-archived-open") === "true"; } catch { /* storage unavailable */ }
+    try { s.agentSort = localStorage.getItem("omp-agent-sort") || "grouped"; } catch { /* storage unavailable */ }
     $("#appearance-btn").onclick = () => OMP.appearance.open();
-    $("#glyph-appearance-btn").onclick = () => OMP.appearance.open();
+    $("#glyph-appearance-btn").onclick = () => OMP.appearance.open("activity");
     const appEl = $("#app");
     const sidebarButton = $("#sidebar-toggle");
     const hideButton = $("#sidebar-hide");
@@ -719,11 +849,33 @@
       hideButton.onclick = () => setSidebarHidden(!appEl.classList.contains("no-sidebar"));
     }
     $("#new-session").onclick = () => newSession(s, s.project);
-    $("#maps-btn").onclick = () => { if (OMP.maps) OMP.maps.toggle(); };
+    $("#maps-btn").onclick = toggleMaps;
+    const role = $("#new-session-role"), roleOptions = $("#agent-dock");
+    function setRoleOptions(open) {
+      if (OMP.agentPanel) OMP.agentPanel.renderLeft(roleOptions);
+      roleOptions.hidden = !open;
+      role.setAttribute("aria-expanded", String(open));
+      if (open) $("#agent-role")?.focus(); else role.focus();
+    }
+    role.onclick = () => setRoleOptions(roleOptions.hidden);
+    roleOptions.onkeydown = (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); setRoleOptions(false); }
+    };
     $("#project-pick").onclick = (e) => projectMenu(e.currentTarget, s);
     // Debounced: the explorer holds the whole history, so re-rendering on
     // every keystroke would be wasteful.
-    $("#session-filter").oninput = OMP.sidebar.debounce(() => renderSidebar(s), 150);
+    const filter = $("#session-filter"), search = $("#session-search-btn");
+    function setSearch(open) {
+      filter.hidden = !open;
+      search.setAttribute("aria-expanded", String(open));
+      if (open) filter.focus();
+      else { filter.value = ""; renderSidebar(s); search.focus(); }
+    }
+    search.onclick = () => setSearch(filter.hidden);
+    filter.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setSearch(false); }
+    });
+    filter.oninput = OMP.sidebar.debounce(() => renderSidebar(s), 150);
     $("#group-toggle").onclick = () => {
       s.groupByProject = !s.groupByProject;
       try { localStorage.setItem("omp-web-group-by", s.groupByProject ? "project" : "date"); } catch { /* storage unavailable */ }
@@ -757,14 +909,15 @@
       else if (e.ctrlKey && !e.shiftKey && k === "n") { e.preventDefault(); newSession(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "r") { e.preventDefault(); resumePicker(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "a") { e.preventDefault(); OMP.appearance.open(); }
-      else if (e.key === "Escape" && OMP.maps && OMP.maps.isOpen()) { e.preventDefault(); if (!OMP.maps.closeDetail()) OMP.maps.close(); }
+      else if (e.key === "Escape" && OMP.maps && OMP.maps.isOpen()) { e.preventDefault(); if (!OMP.maps.closeDetail()) toggleMaps(); }
       else if (e.key === "Escape" && (s.streaming || s.bashRunning) && document.activeElement !== $("#composer")) { e.preventDefault(); app.abort(); }
     });
     setInterval(() => { if (s.streaming) renderStatus(s); }, 1000);
-    setInterval(() => refreshAgents(s), 5000);
+    setInterval(() => { refreshAgents(s); refreshHerdr(s); }, 5000);
     window.addEventListener("hashchange", route);
     try { s.info = await api("/api/info"); } catch (e) { OMP.toast("Server unreachable: " + e.message, "error"); }
     if (!s.project) s.project = s.info.defaultCwd;
+    refreshHerdr(s);
     await refreshAgents(s);
     loadSessions(s);
     const m = location.hash.match(/^#\/a\/([\w-]+)/);

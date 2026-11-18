@@ -19,6 +19,10 @@
     agents: [],
     sessions: [],
     agentId: null,
+    herdrPane: null,
+    herdrModel: null,
+    herdrThinkingLevel: null,
+    herdrUltra: null,
     ws: null,
     seq: 0,
     pending: new Map(),
@@ -67,9 +71,10 @@
     const maps = S.view === "maps";
     $("#maps-view").hidden = !maps;
     $("#transcript-wrap").hidden = maps;
-    $("#composer-wrap").hidden = maps;
     document.body.classList.toggle("maps-active", maps);
+    $("#maps-btn").setAttribute("aria-pressed", String(maps));
     if (OMP.maps) { if (maps) OMP.maps.show(S); else OMP.maps.hide(); }
+    renderHerdrView();
   }
 
   // Ask the agent for its protocol capabilities; older detached agents reject
@@ -117,13 +122,18 @@
     } while (cursor);
     return messages;
   }
-  function connect(agentId) {
-    if (S.ws) { S.ws.onclose = null; S.ws.close(); }
+  function connect(agentId, herdrPane = null) {
+    clearTimeout(S.herdrPoll);
+    if (S.herdrPane !== herdrPane) composer.setText("");
+    const prev = S.ws;
+    S.ws = null;
+    if (prev) { prev.onclose = null; prev.close(); }
     for (const p of S.pending.values()) p.reject(new Error("disconnected"));
     S.pending.clear();
     OMP.dialogs.clear();
     transcript.reset();
-    Object.assign(S, { agentId, agentInfo: null, state: null, stats: null, streaming: false, dead: null, toolsRunning: 0, errorUntil: 0, queue: { steering: [], followUp: [] } });
+    $("#transcript").removeAttribute("aria-busy");
+    Object.assign(S, { agentId, herdrPane, caps: null, bashRunning: 0, agentInfo: null, state: null, stats: null, streaming: false, dead: null, toolsRunning: 0, errorUntil: 0, queue: { steering: [], followUp: [] } });
     S.status.clear();
     S.widgets.clear();
     renderWidgets();
@@ -131,15 +141,26 @@
     composer.setStreaming(false);
     // A real target disables the composer until its socket opens; the
     // no-agent home screen keeps it live for the agent-less commands.
-    if (agentId) composer.setEnabled(false);
-    $("#empty-state").hidden = !!agentId;
+    composer.setEnabled(!agentId);
+    composer.setTextOnly(!!herdrPane);
+    $("#attach-btn").hidden = false;
+    $("#composer").placeholder = herdrPane ? "Message this Herdr agent…" : "Ask anything… (/ commands · ! shell · Enter send · Shift+Enter newline)";
+    Object.assign(S, { herdrActivity: false, herdrSending: null, herdrOmitted: false, herdrTokens: null, herdrModel: null, herdrThinkingLevel: null, herdrUltra: null, liveReply: null });
+    $("#herdr-output").textContent = "";
+    $("#empty-state").hidden = !!(agentId || herdrPane);
+    $("#menu-btn").hidden = !!herdrPane;
+    $("#preview-btn").hidden = !!herdrPane;
+    renderHerdrView();
+    if (herdrPane) updateHerdrStatus();
+    if (OMP.agentPanel && herdrPane) OMP.agentPanel.ingestMessages([]);
     renderSidebar();
     updateHome();
-    if (!agentId) { renderHeader(); renderStatus(); composer.setEnabled(true); return; }
+    if (!agentId) { renderHeader(); renderStatus(); return; }
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${agentId}`);
     S.ws = ws;
-    ws.onopen = () => onOpen();
+    ws.onopen = () => { if (S.ws === ws) onOpen(ws); };
     ws.onmessage = (e) => {
+      if (S.ws !== ws) return;
       S.lastFrameAt = Date.now();
       let frame;
       try { frame = JSON.parse(e.data); } catch { return; }
@@ -165,7 +186,141 @@
     };
   }
 
-  async function onOpen() {
+  function renderHerdrView() {
+    const maps = S.view === "maps", active = !!S.herdrPane, activity = active && S.herdrActivity;
+    $("#composer-wrap").hidden = maps;
+    $("#transcript-wrap").hidden = maps || activity;
+    $("#herdr-banner").hidden = maps || !active;
+    $("#herdr-activity").hidden = maps || !activity;
+    const btn = $("#herdr-activity-btn");
+    btn.textContent = activity ? "Session history" : "Live activity";
+    btn.setAttribute("aria-pressed", String(!!activity));
+  }
+
+  function updateHerdrStatus() {
+    if (!S.herdrPane) return;
+    const peer = S.herdr?.agents.find((a) => a.paneId === S.herdrPane);
+    const state = peer?.status === "blocked" ? "Needs input in Herdr" :
+      peer?.status === "working" ? "Working" : peer?.status === "done" ? "Done" : peer?.status || "Connecting";
+    $("#herdr-state").textContent = `Herdr · ${state}${S.herdrOmitted ? " · Some large messages omitted" : ""}`;
+    renderHeader();
+    renderStatus();
+  }
+
+  async function sendHerdr(text, images) {
+    if (images.length) { OMP.toast("Herdr messages support text only", "warn"); return false; }
+    if (!text.trim() || S.herdrSending) return false;
+    const pane = S.herdrPane, ticket = {};
+    S.herdrSending = ticket;
+    try {
+      await api("/api/herdr/prompt?pane=" + encodeURIComponent(pane), {method: "POST", body: {message: text}});
+      if (S.herdrPane !== pane || S.herdrSending !== ticket) return false;
+      OMP.toast("Sent to Herdr", "success");
+      return true;
+    } catch (e) {
+      if (S.herdrSending === ticket) OMP.toast(e.message, "error", 6500);
+      return false;
+    } finally { if (S.herdrSending === ticket) S.herdrSending = null; }
+  }
+
+  $("#herdr-activity-btn").onclick = () => {
+    if (!S.herdrPane) return;
+    S.herdrActivity = !S.herdrActivity;
+    renderHerdrView();
+    if (S.herdrActivity) S.refreshHerdrLive?.();
+  };
+
+  async function openHerdr(pane) {
+    if (S.herdrPane === pane) return;
+    connect(null, pane);
+    const load = {};
+    S.herdrLoad = load;
+    const current = () => S.herdrPane === pane && S.herdrLoad === load;
+    const url = "/api/herdr/session?pane=" + encodeURIComponent(pane);
+    let before = null, lastOffset = null, havePage = false, busy = false;
+    async function refreshLive() {
+      if (!current() || busy) return;
+      busy = true;
+      clearTimeout(S.herdrPoll);
+      try {
+        if (S.view !== "chat" || document.hidden) return;
+        if (S.herdrActivity) {
+          try {
+            const {text} = await api("/api/herdr/activity?pane=" + encodeURIComponent(pane));
+            if (!current() || !S.herdrActivity) return;
+            const box = $("#herdr-activity"), out = $("#herdr-output");
+            if (out.textContent !== text) {
+              const stick = box.scrollHeight - box.clientHeight - box.scrollTop < 44;
+              out.textContent = text;
+              if (stick) box.scrollTop = box.scrollHeight;
+            }
+          } catch (e) { if (current() && S.herdrActivity) $("#herdr-output").textContent = e.message; }
+        }
+        const page = await api(url);
+        if (!current()) return;
+        if (!havePage) {
+          transcript.loadMessages(page.messages);
+          before = page.before;
+          havePage = true;
+        } else for (let i = 0; i < page.offsets.length; ++i) {
+          if (lastOffset == null || page.offsets[i] > lastOffset) transcript.renderMessage(page.messages[i]);
+        }
+        lastOffset = page.offsets.at(-1) ?? lastOffset;
+        S.herdrOmitted ||= page.omitted;
+        S.herdrTokens = page.tokens;
+        S.herdrModel = page.model || S.herdrModel;
+        S.herdrThinkingLevel = page.thinkingLevel || S.herdrThinkingLevel;
+        S.herdrUltra = page.ultra || null;
+        updateHerdrStatus();
+      } catch { /* A journal can appear after the first prompt; keep the composer usable. */ }
+      finally {
+        busy = false;
+        if (current()) S.herdrPoll = setTimeout(refreshLive, S.herdrActivity ? 1500 : 2500);
+      }
+    }
+    S.refreshHerdrLive = refreshLive;
+    async function readPage(older = false) {
+      for (;;) {
+        const page = await api(url + (older ? "&before=" + encodeURIComponent(before) : ""));
+        if (!current()) return null;
+        before = page.before;
+        const messages = page.messages || [];
+        S.herdrOmitted ||= page.omitted;
+        if (!older) {
+          havePage = true;
+          lastOffset = page.offsets.at(-1) ?? lastOffset;
+          S.herdrTokens = page.tokens;
+          S.herdrModel = page.model || S.herdrModel;
+          S.herdrThinkingLevel = page.thinkingLevel || S.herdrThinkingLevel;
+          S.herdrUltra = page.ultra || null;
+        }
+        updateHerdrStatus();
+        if (messages.length || before == null) return messages;
+        older = true;
+      }
+    }
+    $("#transcript").setAttribute("aria-busy", "true");
+    try {
+      const messages = await readPage();
+      if (!current()) return;
+      transcript.loadMessages(messages);
+      if (!messages.length) transcript.addSystem("No messages in this Herdr session yet.");
+      transcript.setOlderSource(async () => {
+        if (before == null || !current()) return null;
+        try { const page = await readPage(true); return page?.length ? page : null; }
+        catch (e) { if (current()) transcript.addSystem("Could not load older messages: " + e.message, "warn"); return null; }
+      });
+    } catch (e) {
+      if (current()) transcript.addSystem(e.message, "warn");
+    } finally {
+      if (current()) {
+        $("#transcript").removeAttribute("aria-busy");
+        S.herdrPoll = setTimeout(refreshLive, 1600);
+      }
+    }
+  }
+
+  async function onOpen(ws) {
     composer.setEnabled(true);
     send({ type: "set_ask_dialog", enabled: true });
     try {
@@ -174,6 +329,7 @@
         rpc("get_state"),
         rpc("get_available_commands"),
       ]);
+      if (S.ws !== ws) return;
       S.caps = caps;
       S.state = state;
       const streaming = !!state.isStreaming;
@@ -191,6 +347,7 @@
         cachedBackward = backward;
       } else {
         const loaded = await OMP.loadSessionHistory(rpc, caps);
+        if (S.ws !== ws) return;
         messages = loaded.messages;
         backward = loaded.backward;
         fetchOlder = loaded.fetchOlder;
@@ -211,20 +368,24 @@
         let refreshed = null;
         transcript.setOlderSource(async () => {
           try {
+            if (S.ws !== ws) return null;
             let older;
             if (cachedBackward) {
               // A cached window has no reusable RPC closure. Refresh the latest
               // cursor only on demand, skip pages already in the cache, then
               // return the first genuinely older page (never duplicate it).
               if (!refreshed) refreshed = await OMP.loadSessionHistory(rpc, caps);
+              if (S.ws !== ws) return null;
               let skipped = refreshed.messages.length;
               do {
                 older = refreshed.fetchOlder ? await refreshed.fetchOlder() : null;
+                if (S.ws !== ws) return null;
                 if (older) skipped += older.length;
               } while (older && skipped <= initialCachedCount);
             } else {
               older = fetchOlder ? await fetchOlder() : null;
             }
+            if (S.ws !== ws) return null;
             if (older && older.length) {
               loadedPrefix = older.concat(loadedPrefix); // full prefix only
               if (OMP.agentPanel) OMP.agentPanel.ingestMessages(loadedPrefix);
@@ -232,7 +393,7 @@
             }
             return older;
           } catch (e) {
-            transcript.addSystem("Failed to load older messages: " + e.message, "warn");
+            if (S.ws === ws) transcript.addSystem("Failed to load older messages: " + e.message, "warn");
             return null;
           }
         });
@@ -243,7 +404,7 @@
       renderHeader();
       refreshStats();
     } catch (e) {
-      transcript.addSystem("Failed to load session: " + e.message, "error");
+      if (S.ws === ws) transcript.addSystem("Failed to load session: " + e.message, "error");
     }
   }
 
@@ -255,7 +416,8 @@
     updateHome();
   }
   async function refreshStats() {
-    try { S.stats = await rpc("get_session_stats"); } catch { /* older agent */ }
+    const ws = S.ws;
+    try { const stats = await rpc("get_session_stats"); if (S.ws === ws) S.stats = stats; } catch { /* older agent */ }
     renderStatus();
   }
 
@@ -304,9 +466,10 @@
         OMP.copyText(f.text || "").then((ok) => OMP.toast(ok ? "Copied to clipboard" : "Clipboard unavailable", ok ? "success" : "error"));
         return;
       case "available_commands_update": return setCommands(f.commands);
-      case "agent_start": sessionCache.markAllDirty(); setStreaming(true); return;
+      case "agent_start": sessionCache.markAllDirty(); setStreaming(true); refreshAgents(); return;
       case "agent_end": setStreaming(false); refreshStats(); refreshAgents(); loadSessions(); updateHome(); return;
-      case "session_settled": case "agent_settled": setStreaming(false); return;
+      case "session_settled": setStreaming(false); refreshAgents(); return;
+      case "agent_settled": setStreaming(false); return;
       case "turn_end": refreshStats(); refreshState(); return;
       case "queue_update":
         S.queue = { steering: f.steering || [], followUp: f.followUp || [] };
@@ -333,7 +496,23 @@
         S.toolsRunning = Math.max(0, (S.toolsRunning || 0) + (f.type === "tool_execution_start" ? 1 : -1));
         renderStatus();
         return transcript.onEvent(f);
+      case "message_update": {
+        const d = f.assistantMessageEvent;
+        if (!S.liveReply || S.liveReply.id !== f.messageId) S.liveReply = {id: f.messageId, bytes: 0, actual: 0, actualBytes: 0};
+        if (/^(text|thinking|toolcall)_delta$/.test(d?.type)) S.liveReply.bytes += (d.delta || "").length;
+        const actual = f.liveUsage?.output ?? f.message?.usage?.output;
+        if (Number.isFinite(actual) && actual > 0) {
+          S.liveReply.actual = actual;
+          S.liveReply.actualBytes = S.liveReply.bytes;
+        }
+        OMP.repaintUsage();
+        return transcript.onEvent(f);
+      }
       case "message_start": case "message_end":
+        if (f.type === "message_end" && f.message?.role === "assistant") {
+          S.liveReply = null;
+          refreshStats();
+        }
         sessionCache.markAllDirty();
         return transcript.onEvent(f);
       case "auto_compaction_end":
@@ -394,8 +573,17 @@
   }
 
   function showDead(f) {
+    const info = S.agents.find((a) => a.id === S.agentId);
+    const state = S.state || {};
+    S.agentInfo = {
+      ...S.agentInfo, ...info,
+      sessionFile: state.sessionFile || info?.sessionFile || S.agentInfo?.sessionFile,
+      sessionName: state.sessionName || info?.sessionName || S.agentInfo?.sessionName,
+      model: state.model?.id ? `${state.model.provider}/${state.model.id}` : info?.model || S.agentInfo?.model,
+    };
     S.dead = f || {};
     setStreaming(false);
+    renderSidebar();
     composer.setEnabled(false);
     const tail = f && f.stderr && f.stderr.length ? "\n\n" + f.stderr.slice(-12).join("\n") : "";
     const box = transcript.addSystem(`Agent stopped${f && f.code != null ? ` (exit ${f.code})` : ""}.${tail}`, "error");
@@ -421,6 +609,7 @@
   }
 
   function submit(text, images, mode) {
+    if (S.herdrPane) return sendHerdr(text, images);
     const trimmed = text.trim();
     if (!S.agentId || S.dead) {
       if (trimmed.startsWith("/") && !images.length) {
@@ -506,6 +695,7 @@
   // Shell rendering and actions live in shell.js (loaded first).
   function renderHeader() { OMP.shellImpl.renderHeader(S); }
   function renderStatus() { OMP.shellImpl.renderStatus(S); }
+  OMP.repaintUsage = OMP.rafThrottle(renderStatus);
   function renderSidebar() { OMP.shellImpl.renderSidebar(S); }
   function renderQueue() { OMP.shellImpl.renderQueue(S); }
   function renderWidgets() { OMP.shellImpl.renderWidgets(S); }
@@ -513,7 +703,7 @@
   // messages, then dock it at the bottom (see #app.home rules in composer.css).
   function updateHome() {
     const transcriptEl = $("#transcript");
-    const hasAny = !!S.agentId && ((transcriptEl && transcriptEl.childElementCount > 0) || (S.state && (S.state.userMessages || 0) > 0));
+    const hasAny = !!S.herdrPane || (!!S.agentId && ((transcriptEl && transcriptEl.childElementCount > 0) || (S.state && (S.state.userMessages || 0) > 0)));
     $("#app").classList.toggle("home", !hasAny);
   }
   function refreshAgents() { return OMP.shellImpl.refreshAgents(S); }
@@ -527,22 +717,22 @@
   function thinkingPicker() { return OMP.shellImpl.thinkingPicker(S); }
   function exportHtml() { return OMP.shellImpl.exportHtml(S); }
 
-  OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand, getMessages, getCapabilities, sessionCache, setView };
+  OMP.app = { S, rpc, send, sendHerdr, connect, openHerdr, updateHerdrStatus, abort, transcript, composer, currentCwd, setCommands, localCommand, getMessages, getCapabilities, sessionCache, setView };
   if (OMP.agentPanel && typeof OMP.agentPanel.init === "function") OMP.agentPanel.init(OMP.app);
   OMP.shellImpl.init(OMP.app);
   // Pane boot: "/?agent=<id>&pane=1" is how the tmux-style pane manager
   // (OMP.panes) embeds sessions — auto-attach to that agent and hide the
   // chrome the pane host already provides.
   {
-     q = new URLSearchParams(location.search);
-     wantAgent = q.get("agent");
+    const q = new URLSearchParams(location.search);
+    const wantAgent = q.get("agent");
     if (q.get("pane") === "1") document.body.classList.add("pane-embed");
     if (wantAgent) {
       S.agentId = wantAgent;
-       attach = () => (S.agents.some((a) => a.id === wantAgent) ? (connect(wantAgent), true) : false);
+      const attach = () => (S.agents.some((a) => a.id === wantAgent) ? (connect(wantAgent), true) : false);
       if (!attach()) {
-         t0 = Date.now();
-         iv = setInterval(() => { if (attach() || Date.now() - t0 > 30000) clearInterval(iv); }, 1000);
+        const t0 = Date.now();
+        const iv = setInterval(() => { if (attach() || Date.now() - t0 > 30000) clearInterval(iv); }, 1000);
       }
     }
   }
@@ -552,7 +742,7 @@
   // Home screen: the composer is live before any agent connects and offers
   // the agent-less commands in autocomplete - the "/" hint shown there must
   // not be a dead promise (terminal parity).
-  composer.setEnabled(true);
+  if (!S.herdrPane && !S.agentId) composer.setEnabled(true);
   setCommands([]);
   updateHome(); // no agent yet: start on the centered home composer
   // Dock/undock whenever the transcript gains or loses content (history replay,

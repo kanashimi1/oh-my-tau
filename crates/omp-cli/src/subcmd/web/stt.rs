@@ -6,6 +6,7 @@
 //! after `OMT_STT_IDLE` seconds idle; the next request respawns it. Requests
 //! are serialized (one model, one GPU). `OMT_STT_PYTHON` (default `python3`)
 //! and `OMT_STT_MODEL` (default `large-v3-turbo`) pick the runtime.
+//! `OMT_STT_BEAM_SIZE` defaults to greedy decoding (`1`) for low latency.
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -84,6 +85,49 @@ async fn ask(worker: &mut Worker, req: &Value) -> Result<Value> {
     bail!("speech worker exited (see ~/.omp-rs/stt/worker.log)")
 }
 
+async fn request_worker(req: &Value) -> Result<Value> {
+    let mut slot = WORKER.lock().await;
+    let mut result = Err(anyhow!("speech worker unavailable"));
+    // One retry: the worker may have exited on its idle timer since the last request.
+    for _ in 0..2 {
+        let alive = match slot.as_mut() {
+            Some(w) => w.child.try_wait().ok().flatten().is_none(),
+            None => false,
+        };
+        if !alive {
+            *slot = Some(match spawn() {
+                Ok(w) => w,
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            });
+        }
+        let Some(worker) = slot.as_mut() else { break };
+        match ask(worker, req).await {
+            Ok(v) => {
+                result = Ok(v);
+                break;
+            }
+            Err(e) => {
+                *slot = None;
+                result = Err(e);
+            }
+        }
+    }
+    result
+}
+
+/// Load the model while the microphone is recording, hiding cold-start latency.
+pub async fn warmup() -> Result<Value> {
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let v = request_worker(&json!({"id": n, "warmup": true})).await?;
+    if let Some(e) = v["error"].as_str() {
+        bail!("speech-to-text warmup: {e}");
+    }
+    Ok(json!({"ready": true}))
+}
+
 /// Transcribe one recording. `ext` names the container (`webm`, `ogg`,
 /// `wav`, …); `language` is an ISO code hint (`None` = auto-detect).
 ///
@@ -105,37 +149,7 @@ pub async fn transcribe(audio: &[u8], ext: &str, language: Option<&str>) -> Resu
     ));
     std::fs::write(&path, audio).context("save recording")?;
     let req = json!({"id": n, "path": path.display().to_string(), "language": language});
-    let mut slot = WORKER.lock().await;
-    let mut result = Err(anyhow!("speech worker unavailable"));
-    // One retry: the worker may have exited on its idle timer since the
-    // last request.
-    for _ in 0..2 {
-        let alive = match slot.as_mut() {
-            Some(w) => w.child.try_wait().ok().flatten().is_none(),
-            None => false,
-        };
-        if !alive {
-            *slot = Some(match spawn() {
-                Ok(w) => w,
-                Err(e) => {
-                    result = Err(e);
-                    break;
-                }
-            });
-        }
-        let Some(worker) = slot.as_mut() else { break };
-        match ask(worker, &req).await {
-            Ok(v) => {
-                result = Ok(v);
-                break;
-            }
-            Err(e) => {
-                *slot = None;
-                result = Err(e);
-            }
-        }
-    }
-    drop(slot);
+    let result = request_worker(&req).await;
     let _ = std::fs::remove_file(&path);
     let v = result?;
     if let Some(e) = v["error"].as_str() {

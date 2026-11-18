@@ -33,6 +33,7 @@ mod assets;
 mod changes;
 mod desktop;
 pub(crate) mod detach;
+mod herdr;
 mod preview;
 mod search;
 mod sessions;
@@ -126,6 +127,7 @@ struct Hub {
     /// Last "show this agent" request (`POST /api/agents/<id>/focus`, from
     /// `omt` `/desktop`): `{id, ms}`; open pages navigate to newer ones.
     focus: Mutex<Option<Value>>,
+    herdr: Option<herdr::Roster>,
 }
 
 impl Hub {
@@ -229,6 +231,7 @@ async fn serve(opts: Options) -> Result<i32> {
         port,
         agents: Mutex::new(HashMap::new()),
         focus: Mutex::new(None),
+        herdr: addr.ip().is_loopback().then(herdr::Roster::default),
     });
     let adopted = adopt_detached(&hub).await;
     let shown_host = if addr.ip().is_unspecified() {
@@ -399,7 +402,7 @@ fn maps_json() -> Response<Body> {
             return error(
                 StatusCode::NOT_FOUND,
                 "maps.json not found — запусти hypertrail/compose_maps.py",
-            )
+            );
         }
     };
     match serde_json::from_slice::<Value>(&raw) {
@@ -507,6 +510,99 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
             let focus = lock(&hub.focus).clone();
             json_response(StatusCode::OK, &json!({"agents": list, "focus": focus}))
         }
+        (&Method::GET, "/api/herdr/agents") => {
+            let snapshot = match &hub.herdr {
+                Some(roster) => roster.snapshot().await,
+                None => herdr::Snapshot::default(),
+            };
+            json_response(StatusCode::OK, &json!(snapshot))
+        }
+        (&Method::POST, "/api/herdr/prompt") => {
+            let (Some(roster), Some(pane)) = (&hub.herdr, query_param(&req, "pane")) else {
+                return error(StatusCode::NOT_FOUND, "No Herdr agent");
+            };
+            let local_host = header("host").is_some_and(|host| {
+                matches!(
+                    host.rsplit_once(':').map_or(host, |(h, _)| h),
+                    "127.0.0.1" | "localhost" | "[::1]"
+                )
+            });
+            if !local_host || header("content-type") != Some("application/json") {
+                return error(
+                    StatusCode::FORBIDDEN,
+                    "Herdr prompts require local JSON requests",
+                );
+            }
+            let body = match read_json(req).await {
+                Ok(body) => body,
+                Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid prompt JSON"),
+            };
+            let Some(text) = body.get("message").and_then(Value::as_str).filter(|text| {
+                !text.trim().is_empty()
+                    && text.len() <= 32 * 1024
+                    && !text
+                        .chars()
+                        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+            }) else {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "Expected a text message of at most 32 KiB",
+                );
+            };
+            match roster.prompt(&pane, text).await {
+                Ok(()) => json_response(StatusCode::OK, &json!({"submitted": true})),
+                Err(herdr::LiveError::Unavailable) => {
+                    error(StatusCode::NOT_FOUND, "Herdr agent is unavailable")
+                }
+                Err(herdr::LiveError::Rejected) => error(
+                    StatusCode::CONFLICT,
+                    "Agent is not ready for a prompt. If it needs input, respond in Herdr.",
+                ),
+                Err(herdr::LiveError::Unknown) => error(
+                    StatusCode::BAD_GATEWAY,
+                    "Herdr did not confirm delivery. Check the session before sending again.",
+                ),
+            }
+        }
+        (&Method::GET, "/api/herdr/activity") => {
+            let (Some(roster), Some(pane)) = (&hub.herdr, query_param(&req, "pane")) else {
+                return error(StatusCode::NOT_FOUND, "No Herdr agent");
+            };
+            match roster.activity(&pane).await {
+                Ok(text) => json_response(StatusCode::OK, &json!({"text": text})),
+                Err(_) => error(
+                    StatusCode::NOT_FOUND,
+                    "Herdr terminal activity is unavailable",
+                ),
+            }
+        }
+        (&Method::GET, "/api/herdr/session") => {
+            let (Some(roster), Some(pane)) = (&hub.herdr, query_param(&req, "pane")) else {
+                return error(StatusCode::NOT_FOUND, "No Herdr session");
+            };
+            let before = match query_param(&req, "before")
+                .map(|s| s.parse::<u64>())
+                .transpose()
+            {
+                Ok(value) => value,
+                Err(_) => return error(StatusCode::BAD_REQUEST, "Invalid history cursor"),
+            };
+            match roster.history(&pane, before).await {
+                Ok(page) => json_response(StatusCode::OK, &json!(page)),
+                Err(herdr::HistoryError::Unavailable) => error(
+                    StatusCode::NOT_FOUND,
+                    "No session journal is available for this pane. Open the agent in Herdr.",
+                ),
+                Err(herdr::HistoryError::TooLarge) => error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "This session journal is too large to preview in Tau.",
+                ),
+                Err(herdr::HistoryError::Invalid) => error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Could not read the Herdr session journal. Try refreshing.",
+                ),
+            }
+        }
         (&Method::GET, "/api/search") => search::api(req).await,
         (_, p) if p.starts_with("/api/changes") => changes::api(req).await,
         (_, p) if p.starts_with("/api/terminal/") => terminal::api(req).await,
@@ -528,6 +624,10 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
             }
         }
         (&Method::GET, "/api/export") => export(query_param(&req, "session")),
+        (&Method::POST, "/api/transcribe/warmup") => match stt::warmup().await {
+            Ok(v) => json_response(StatusCode::OK, &v),
+            Err(e) => error(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
+        },
         (&Method::POST, "/api/transcribe") => transcribe(req).await,
         (_, "/api/preview/info" | "/api/preview/office" | "/api/open") => preview_api(req).await,
         (&Method::POST, "/api/uploads") => upload_file(req).await,
@@ -607,7 +707,7 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
                 return error(
                     StatusCode::BAD_REQUEST,
                     &format!("invalid approvalMode {m:?}: expected always-ask, write or yolo"),
-                )
+                );
             }
         },
         None => None,
@@ -618,7 +718,10 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
         model: text("model"),
         approval_mode,
         role: text("role"),
-        worktree: body.get("worktree").and_then(Value::as_bool).unwrap_or(false),
+        worktree: body
+            .get("worktree")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     };
     match hub.spawn(spec).await {
         Ok(agent) => json_response(StatusCode::OK, &agent.info_json()),
@@ -827,12 +930,18 @@ async fn bridge(agent: Arc<Agent>, ws: WebSocketStream<TokioIo<hyper::upgrade::U
     let (mut sink, mut stream) = ws.split();
     let hello = json!({"type": "web_attached", "agent": agent.info_json()});
     if sink.send(Message::text(hello.to_string())).await.is_err() {
-        eprintln!("omt web: ws close agent={} reason=hello send failed", agent.id);
+        eprintln!(
+            "omt web: ws close agent={} reason=hello send failed",
+            agent.id
+        );
         return;
     }
     for frame in agent.replay_frames() {
         if sink.send(Message::text(frame.to_string())).await.is_err() {
-            eprintln!("omt web: ws close agent={} reason=replay send failed", agent.id);
+            eprintln!(
+                "omt web: ws close agent={} reason=replay send failed",
+                agent.id
+            );
             return;
         }
     }
@@ -843,7 +952,8 @@ async fn bridge(agent: Arc<Agent>, ws: WebSocketStream<TokioIo<hyper::upgrade::U
             ))
             .await;
     }
-    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + WS_PING_EVERY, WS_PING_EVERY);
+    let mut ping =
+        tokio::time::interval_at(tokio::time::Instant::now() + WS_PING_EVERY, WS_PING_EVERY);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let reason: String = loop {
         tokio::select! {

@@ -28,9 +28,16 @@
     <div class="side-head">
       <div class="brand"><span class="tau-brand" data-tau="idle" data-size="30"></span><span class="wordmark">OMT</span></div>
       <button class="icon-btn" id="sidebar-hide" title="Hide sidebar (Ctrl+B)" aria-label="Hide sidebar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="m15 9-3 3 3 3"/></svg></button>
-      <button class="icon-btn" id="appearance-btn" title="Themes &amp; wallpapers (Ctrl+Shift+A)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1.5"/><circle cx="17.5" cy="10.5" r="1.5"/><circle cx="8.5" cy="7.5" r="1.5"/><circle cx="6.5" cy="12.5" r="1.5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.75 1.5-1.67 0-.44-.17-.84-.44-1.13-.29-.29-.44-.68-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.96 6.01 17.46 2 12 2z"/></svg></button>
     </div>
-    <button class="primary wide compact" id="new-session">+ New session</button>
+    <div class="side-actions" role="group" aria-label="Session and sidebar actions">
+      <button type="button" class="icon-btn" id="maps-btn" title="Карты кода" aria-label="Карты кода" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15"/></svg></button>
+      <button type="button" class="icon-btn" id="appearance-btn" title="Настройки (Ctrl+Shift+A)" aria-label="Настройки"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3h4l.7 2.5 2 .9 2.4-1 2 3.4-1.8 1.8v2.4l1.8 1.8-2 3.4-2.4-1-2 .9L14 21h-4l-.7-2.5-2-.9-2.4 1-2-3.4 1.8-1.8V11L3 9.2l2-3.4 2.4 1 2-.9z"/><circle cx="12" cy="12" r="3"/></svg></button>
+      <button type="button" class="icon-btn" id="session-search-btn" title="Поиск агентов и сессий" aria-label="Поиск агентов и сессий" aria-controls="session-filter" aria-expanded="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg></button>
+      <button type="button" class="icon-btn" id="new-session" title="New session" aria-label="New session"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      <button type="button" class="icon-btn" id="new-session-role" title="Role for new sessions" aria-label="Role for new sessions" aria-expanded="false" aria-controls="agent-dock"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3"/><path d="M5 20v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2z"/></svg></button>
+    </div>
+      <input id="session-filter" class="filter" type="search" aria-label="Поиск агентов и сессий" placeholder="Поиск…" autocomplete="off" hidden>
+    <div id="agent-dock" class="agent-dock" hidden></div>
     <div class="side-section grow">
       <div class="side-title">
         <span>Sessions</span>
@@ -40,14 +47,8 @@
         </span>
       </div>
       <div id="project-path" class="muted small ellipsis"></div>
-      <input id="session-filter" class="filter" placeholder="Search all sessions…" title="Search the live fleet and every project's stored history (title and preview)" autocomplete="off">
       <div id="session-list" class="list scroll"></div>
     </div>
-    <div class="side-section">
-      <div class="side-title">Карты</div>
-      <button class="side-link" id="maps-btn" title="Карты кода">Карты</button>
-    </div>
-    <div id="agent-dock" class="agent-dock" aria-label="Session activity"></div>
   </aside>
   <main id="main">
     <header id="topbar">
@@ -57,11 +58,16 @@
         <div id="session-cwd" class="muted small ellipsis"></div>
       </div>
       <div class="top-actions">
-        <button class="icon-btn" id="glyph-appearance-btn" title="Activity glyph (brain) — themes &amp; glyph picker"><span aria-hidden="true" style="width:18px;height:15px;background:currentColor;-webkit-mask:var(--brain-glyph) center / contain no-repeat;mask:var(--brain-glyph) center / contain no-repeat"></span></button>
+        <button class="icon-btn" id="glyph-appearance-btn" title="Activity glyph" aria-label="Activity glyph"><span class="activity-pulse" aria-hidden="true"></span></button>
         <button class="icon-btn" id="preview-btn" title="Preview files of this session (Ctrl+Shift+P)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/></svg></button>
         <button class="icon-btn" id="menu-btn" title="Session actions">⋯</button>
       </div>
     </header>
+    <div id="herdr-banner" class="herdr-banner" hidden>
+      <span id="herdr-state" role="status"></span>
+      <button id="herdr-activity-btn" type="button" class="link-btn" aria-pressed="false" aria-controls="herdr-activity">Live activity</button>
+    </div>
+    <section id="herdr-activity" class="herdr-activity scroll" aria-label="Live agent activity" hidden><pre id="herdr-output"></pre></section>
     <section id="transcript-wrap">
       <div id="transcript"></div>
       <div id="empty-state" class="empty-state">

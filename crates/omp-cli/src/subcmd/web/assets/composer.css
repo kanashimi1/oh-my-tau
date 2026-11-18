@@ -98,7 +98,7 @@
 #statusbar .tau-live { display: inline-flex; align-items: center; flex: none; }
 #statusbar .tau-mark, #statusbar .tau-aura { fill: #fff; }
 #statusbar .tau-body > path:last-child { stroke: #fff; }
-#statusbar .tau-live svg { width: 18px; height: 18px; }
+#statusbar .tau-live svg { width: 21px; height: 21px; }
 @media (prefers-reduced-motion: reduce) {
   .effort-chip.effort-changing .effort-segment { animation: none; }
   .effort-segment { transition: none; }

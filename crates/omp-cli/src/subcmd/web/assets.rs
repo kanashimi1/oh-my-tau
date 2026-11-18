@@ -224,35 +224,18 @@ const FILES: &[(&str, &str, &str)] = &[
         "image/svg+xml",
         include_str!("assets/favicon.svg"),
     ),
+];
+
+const PHOTOS: &[(&str, &str, &[u8])] = &[
     (
-        "/wallpapers/midnight.svg",
-        "image/svg+xml",
-        include_str!("assets/wallpapers/midnight.svg"),
+        "/wallpapers/saturn.webp",
+        "image/webp",
+        include_bytes!("assets/wallpapers/saturn.webp"),
     ),
     (
-        "/wallpapers/anime-sakura.svg",
-        "image/svg+xml",
-        include_str!("assets/wallpapers/anime-sakura.svg"),
-    ),
-    (
-        "/wallpapers/anime-city.svg",
-        "image/svg+xml",
-        include_str!("assets/wallpapers/anime-city.svg"),
-    ),
-    (
-        "/wallpapers/anime-sky.svg",
-        "image/svg+xml",
-        include_str!("assets/wallpapers/anime-sky.svg"),
-    ),
-    (
-        "/wallpapers/vaporwave-sunset.svg",
-        "image/svg+xml",
-        include_str!("assets/wallpapers/vaporwave-sunset.svg"),
-    ),
-    (
-        "/wallpapers/vaporwave-grid.svg",
-        "image/svg+xml",
-        include_str!("assets/wallpapers/vaporwave-grid.svg"),
+        "/wallpapers/clementine.webp",
+        "image/webp",
+        include_bytes!("assets/wallpapers/clementine.webp"),
     ),
 ];
 
@@ -265,12 +248,15 @@ pub fn get(path: &str) -> Option<(&'static str, Bytes)> {
     let (rel, mime, body) = FILES
         .iter()
         .find(|(p, _, _)| *p == path)
-        .copied()
+        .map(|(path, mime, body)| (*path, *mime, body.as_bytes()))
+        .or_else(|| PHOTOS.iter().find(|(p, _, _)| *p == path).copied())
         .or_else(|| {
             let shell =
                 !(path.starts_with("/assets/") || path.starts_with("/api/") || path.contains('.'));
             if shell {
-                FILES.first().copied()
+                FILES
+                    .first()
+                    .map(|(path, mime, body)| (*path, *mime, body.as_bytes()))
             } else {
                 None
             }
@@ -287,5 +273,5 @@ pub fn get(path: &str) -> Option<(&'static str, Bytes)> {
             return Some((mime, Bytes::from(bytes)));
         }
     }
-    Some((mime, Bytes::from_static(body.as_bytes())))
+    Some((mime, Bytes::from_static(body)))
 }
