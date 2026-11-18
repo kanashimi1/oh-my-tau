@@ -145,7 +145,7 @@
       this.open = !!this.start;
       this.icon = OMP.mascot.svg("think", { size: 18, title: "Thinking" });
       this.labelNode = el("span.thinking-label");
-      this.head = el("div.thinking-head", { onclick: () => this.toggle() }, this.icon, this.labelNode);
+      this.head = el("button.thinking-head", { type: "button", onclick: () => this.toggle() }, this.icon, this.labelNode);
       this.body = el("div.md");
       this.inner = el("div.thinking-inner", null, this.body);
       this.node = el("div.thinking", null, this.head, el("div.thinking-clip", null, this.inner));
@@ -175,6 +175,9 @@
     render() {
       this.labelNode.textContent = this.label();
       this.icon.hidden = this.done || this.redacted;
+      this.head.disabled = this.redacted;
+      this.head.setAttribute("aria-expanded", String(this.open));
+      this.inner.inert = !this.open;
       this.node.classList.toggle("open", this.open);
       this.node.classList.toggle("redacted", this.redacted);
       this.node.classList.toggle("live", !this.done && !this.redacted);

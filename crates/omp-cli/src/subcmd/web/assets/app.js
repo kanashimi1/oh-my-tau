@@ -67,10 +67,13 @@
   OMP.rpc = rpc;
 
   function setView(view) {
-    S.view = view === "maps" ? "maps" : "chat";
+    S.view = view;
     const maps = S.view === "maps";
     $("#maps-view").hidden = !maps;
-    $("#transcript-wrap").hidden = maps;
+    const fleet = S.view === "fleet";
+    $("#fleet-view").hidden = !fleet;
+    $("#fleet-btn").setAttribute("aria-pressed", String(fleet));
+    $("#main").classList.toggle("fleet-active", fleet);
     document.body.classList.toggle("maps-active", maps);
     $("#maps-btn").setAttribute("aria-pressed", String(maps));
     if (OMP.maps) { if (maps) OMP.maps.show(S); else OMP.maps.hide(); }
@@ -187,11 +190,11 @@
   }
 
   function renderHerdrView() {
-    const maps = S.view === "maps", active = !!S.herdrPane, activity = active && S.herdrActivity;
-    $("#composer-wrap").hidden = maps;
-    $("#transcript-wrap").hidden = maps || activity;
-    $("#herdr-banner").hidden = maps || !active;
-    $("#herdr-activity").hidden = maps || !activity;
+    const away = S.view !== "chat", active = !!S.herdrPane, activity = active && S.herdrActivity;
+    $("#composer-wrap").hidden = away;
+    $("#transcript-wrap").hidden = away || activity;
+    $("#herdr-banner").hidden = away || !active;
+    $("#herdr-activity").hidden = away || !activity;
     const btn = $("#herdr-activity-btn");
     btn.textContent = activity ? "Session history" : "Live activity";
     btn.setAttribute("aria-pressed", String(!!activity));

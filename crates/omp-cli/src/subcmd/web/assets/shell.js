@@ -20,14 +20,23 @@
     if (location.hash === target) route();
     else location.hash = target;
   }
-  let beforeMaps = "#/";
-  function toggleMaps() {
-    if (S().view === "maps") location.hash = beforeMaps;
-    else { beforeMaps = location.hash || "#/"; location.hash = "#maps"; }
+  let lastChat = "#/";
+  function toggleScreen(screen) {
+    location.hash = S().view === screen ? lastChat : `#${screen}`;
   }
+  const toggleMaps = () => toggleScreen("maps");
+  const toggleFleet = () => toggleScreen("fleet");
   function route() {
+    closeComposerPicker?.();
     if (/^#maps(\/|$)/.test(location.hash)) { app.setView("maps"); return; }
-    if (S().view === "maps") app.setView("chat");
+    if (location.hash === "#fleet") {
+      const entering = S().view !== "fleet";
+      app.setView("fleet"); renderSidebar(S());
+      if (entering) $("#fleet-title").focus();
+      return;
+    }
+    lastChat = location.hash || "#/";
+    if (S().view !== "chat") app.setView("chat");
     const herdr = /^#\/herdr\/([^/]+)$/.exec(location.hash);
     if (herdr) {
       let pane;
@@ -57,27 +66,11 @@
     document.title = s.agentId || s.herdrPane ? `${title} — omt` : "omt";
     $("#session-title").title = s.herdrPane ? "Herdr session" : "Rename session";
     $("#session-cwd").textContent = s.herdrPane ? [peer?.workspace, peer?.cwd].filter(Boolean).join(" · ") : info.cwd ? shortPath(info.cwd) : "";
-    const fullModel = st.model ? [st.model.provider, st.model.id].filter(Boolean).join("/") : "model";
     const modelBtn = $("#composer-model");
-    modelBtn.textContent = st.model ? st.model.id : "model";
-    modelBtn.title = st.model ? `${fullModel} (/model)` : "Model (/model)";
+    modelBtn.querySelector(".model-label").textContent = modelName(st.model?.id) || "Model";
+    const effort = st.ultra || st.thinkingLevel;
+    modelBtn.title = st.model ? `${[st.model.provider, st.model.id].filter(Boolean).join("/")}${effort ? ` · ${effort}` : ""} — Model and effort` : "Model and effort";
     modelBtn.disabled = !(s.agentId || s.herdrPane);
-    const tBtn = $("#composer-thinking");
-    const effort = st.ultra || st.thinkingLevel || "thinking";
-    const previousEffort = tBtn.dataset.effort;
-    const rank = st.ultra || /^(high|xhigh|max)$/i.test(effort) ? 3 : /^(medium|mid|auto)$/i.test(effort) ? 2 : /^(off|none)$/i.test(effort) ? 0 : 1;
-    tBtn.querySelector(".effort-label").textContent = effort;
-    tBtn.querySelectorAll(".effort-segment").forEach((segment, i) => segment.classList.toggle("active", i < rank));
-    tBtn.dataset.effort = effort;
-    tBtn.dataset.level = String(rank);
-    tBtn.classList.toggle("ultra", !!st.ultra);
-    if (previousEffort && previousEffort !== effort) {
-      tBtn.classList.remove("effort-changing");
-      void tBtn.offsetWidth;
-      tBtn.classList.add("effort-changing");
-    }
-    tBtn.disabled = !(s.agentId || s.herdrPane);
-    tBtn.hidden = !s.herdrPane && !!(st.model && !st.model.reasoning && !st.ultra);
   }
 
   // Tau in the status bar: one persistent sprite, re-framed only when the
@@ -85,6 +78,7 @@
   const liveHost = el("span.tau-live");
   const runOut0 = new Map(); // per-agent stats.tokens.output snapshots at run start
   let live = null;
+  const usageDetails = el("details.usage-details", null, el("summary", {text:"Usage"}), el("div.usage-metrics"));
 
   function renderStatus(s) {
     const bar = $("#statusbar");
@@ -111,6 +105,7 @@
     else if (mood === "wave") parts.push(el("span.busy", { text: "waiting for you" }));
     else if (s.streaming) parts.push(el("span.busy", { text: `${mood === "work" ? "working" : "thinking"} ${OMP.fmtDuration(Date.now() - s.runStart)}` }));
     else parts.push(el("span", { text: "ready" }));
+    const core = parts.length;
     const cu = stats.contextUsage;
     if (cu && cu.contextWindow) {
       const pct = Math.min(100, cu.percent != null ? cu.percent : (100 * cu.tokens) / cu.contextWindow);
@@ -121,6 +116,7 @@
     }
     const t = stats.tokens;
     if (t && t.total) parts.push(el("span", { text: `↑${OMP.fmtTokens(t.input + (t.cacheRead || 0) + (t.cacheWrite || 0))} ↓${OMP.fmtTokens(t.output)}`, title: `input ${t.input} · output ${t.output} · cache read ${t.cacheRead} · cache write ${t.cacheWrite}` }));
+    const metrics = parts.splice(core);
     const reply = s.liveReply;
     if (s.streaming && reply && (reply.actual || reply.bytes)) {
       const pendingBytes = Math.max(0, reply.bytes - (reply.actualBytes || 0));
@@ -128,7 +124,7 @@
       const estimated = pendingBytes > 0 || !reply.actual;
       parts.push(el("span.busy", { text: `+${estimated ? "≈" : ""}${OMP.fmtTokens(value)} ток.`, title: estimated ? "Reported output tokens plus an estimate for newer streamed text; reconciled when the provider reports usage" : "Output tokens reported by the provider for this response" }));
     }
-    if (t && (t.cacheRead || t.cacheWrite)) parts.push(el("span", { text: "cache " + OMP.fmtTokens((t.cacheRead || 0) + (t.cacheWrite || 0)), title: "cache read " + (t.cacheRead || 0) + " · cache write " + (t.cacheWrite || 0) }));
+    if (t && (t.cacheRead || t.cacheWrite)) metrics.push(el("span", { text: "cache " + OMP.fmtTokens((t.cacheRead || 0) + (t.cacheWrite || 0)), title: "cache read " + (t.cacheRead || 0) + " · cache write " + (t.cacheWrite || 0) }));
     if (s.streaming && s.runStart) {
       const out = Math.max(0, (t?.output || 0) - (runOut0.get(s.agentId) || 0));
       const sec = (Date.now() - s.runStart) / 1000;
@@ -142,14 +138,17 @@
       if (L.endedAt) segs.push(new Date(L.endedAt).toTimeString().slice(0, 5));
       if (segs.length) parts.push(el("span", { text: segs.join(" · "), title: "last response: duration · speed · finished at" }));
     }
-    if (stats.cost) parts.push(el("span", { text: OMP.fmtCost(stats.cost) }));
+    if (stats.cost) metrics.push(el("span", { text: OMP.fmtCost(stats.cost) }));
     const q = (st.queuedMessageCount || 0);
     if (q) parts.push(el("span.warn", { text: `${q} queued` }));
     for (const [k, v] of s.status) parts.push(el("span", { text: v, title: k }));
     if (st.sessionId) parts.push(el("span.faint", { text: st.sessionId.slice(0, 8), title: st.sessionFile || st.sessionId }));
-    while (bar.lastChild && bar.lastChild !== liveHost) bar.lastChild.remove();
-    if (bar.firstChild !== liveHost) bar.prepend(liveHost);
-    bar.append(...parts.flatMap((p, i) => (i ? [el("span.sep", { text: "│" }), p] : [p])));
+    usageDetails.hidden = !metrics.length;
+    usageDetails.lastElementChild.replaceChildren(...metrics);
+    const strip = el("span.status-strip", null, ...parts);
+    const previous = bar.querySelector(".status-strip");
+    if (previous) previous.replaceWith(strip);
+    else bar.replaceChildren(liveHost, strip, usageDetails);
   }
 
   function renderQueue(s) {
@@ -198,7 +197,7 @@
     const herdr = s.herdr?.agents || [];
     const localPaths = new Set(agents.filter((a) => a.alive !== false).map((a) => a.sessionFile).filter(Boolean));
     const herdrPaths = new Map(herdr.filter((a) => a.sessionFile).map((a) => [a.sessionFile, a]));
-    const roster = [], histRows = [], archivedRows = [];
+    const allAgents = [], histRows = [], archivedRows = [];
 
     // Connected agents live above the stored sessions, including idle ones.
     // Keep a selected stopped agent here until the user leaves it.
@@ -214,7 +213,6 @@
         ? `${shortPath(a.worktree)} · merge: /wt merge ${wtSlug}${a.model ? " · " + a.model : ""}`
         : `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}`;
       const peer = herdrPaths.get(a.sessionFile);
-      if (q && !`${title} ${sub} ${a.id} ${peer?.address || ""}`.toLowerCase().includes(q)) continue;
       const row = {
         key, kind: "agent", id: a.id, path: a.sessionFile || null, cwd: a.cwd,
         title, sub, workspace: basename(a.worktree || a.cwd) || "Workspace", model: a.model, ms: a.startedMs || 0,
@@ -222,15 +220,14 @@
         brand: OMP.sidebar.agentBrand(a.model), address: peer?.address, group: peer?.workspace,
         status: OMP.sidebar.agentStatus(a), waitingSinceMs: a.awaitingTasksSinceMs,
       };
-      roster.push(row);
+      allAgents.push(row);
     }
 
     for (const peer of herdr) {
       if (localPaths.has(peer.sessionFile)) continue;
       const { address, cwd, model, paneId, workspace, title } = peer;
       const sub = [workspace, paneId, model, cwd].filter(Boolean).join(" · ");
-      if (q && !`${address || ""} ${title} ${sub}`.toLowerCase().includes(q)) continue;
-      roster.push({ key: `herdr:${paneId}`, id: paneId, kind: "herdr", title: title || paneId, sub,
+      allAgents.push({ key: `herdr:${paneId}`, id: paneId, kind: "herdr", title: title || paneId, sub,
         group: workspace, workspace, cwd, model, address, active: paneId === s.herdrPane, ms: peer.stateChangeSeq || 0,
         brand: OMP.sidebar.agentBrand(model), status: OMP.sidebar.herdrStatus(peer.status) });
     }
@@ -267,7 +264,9 @@
       (archived.has(key) ? archivedRows : histRows).push(row);
     }
     for (const list of [histRows, archivedRows]) list.sort((a, b) => b.ms - a.ms);
-    roster.sort((a, b) => OMP.sidebar.compareAgents(a, b, s.agentSort));
+    allAgents.sort((a, b) => OMP.sidebar.compareAgents(a, b, "priority"));
+    const roster = q ? allAgents.filter((row) => `${row.address || ""} ${row.address ? "@" + row.address.replace(/^@/, "") : ""} ${row.title} ${row.sub} ${row.id}`.toLowerCase().includes(q)) : allAgents;
+    if (s.view === "fleet") renderFleet(s, allAgents);
 
     // History grouping: per project when the explorer spans projects and the
     // user opted in, Kimi date buckets otherwise.
@@ -283,25 +282,20 @@
 
     const frag = [];
     if (roster.length) {
-      const priority = s.agentSort === "priority";
-      frag.push(el("div.fleet-heading", null, el("span", { text: "Agents" }),
-        el("button.link-btn", {
-          type: "button", text: priority ? "Priority" : "Grouped", dataset: { fleetFocus: "sort" },
-          "aria-pressed": String(priority), "aria-label": "Sort agents by status priority",
-          title: priority ? "Group agents by workspace" : "Sort agents by status priority",
-          onclick: () => {
-            s.agentSort = priority ? "grouped" : "priority";
-            try { localStorage.setItem("omp-agent-sort", s.agentSort); } catch { /* storage unavailable */ }
-            renderSidebar(s);
-          },
-        })));
-      let group = null;
-      for (const row of roster) {
-        if (!priority && herdr.length && row.group !== group) {
-          group = row.group;
-          frag.push(el("div.fleet-space", { text: group || "Tau" }));
-        }
-        frag.push(agentRowNode(s, row));
+      const filter = s.fleetFilter || "all";
+      frag.push(el("div.fleet-heading", {text: "Agents"}),
+        el("div.fleet-filters", {role:"group", "aria-label":"Filter agents by state"},
+          ...[["all", "All"], ...fleetStates].map(([key, label]) => el("button.fleet-filter", {
+            type:"button", text:label, "aria-pressed":String(filter === key), dataset:{fleetFocus:`filter:${key}`},
+            onclick: () => { s.fleetFilter = key; renderSidebar(s); },
+          }))));
+      for (const [key, label] of fleetStates) {
+        const rows = roster.filter((row) => fleetState(row.status) === key);
+        if (!rows.length || (filter !== "all" && filter !== key)) continue;
+        frag.push(groupHead(label, rows.length), ...rows.map((row) => agentRowNode(s, row)));
+      }
+      if (filter !== "all" && !roster.some((row) => fleetState(row.status) === filter)) {
+        frag.push(el("p.sess-empty.muted.small", {text:"No agents in this state"}));
       }
     }
     if (pinnedRows.length) {
@@ -360,23 +354,46 @@
   const groupHead = (label, count) => el("div.group-head", null,
     el("span", { text: label }), el("span.count", { text: String(count) }));
 
+  const fleetStates = [["needs-input", "Needs input"], ["working", "Working"], ["idle", "Idle / Done"]];
+  const fleetState = (state) => state === "needs-input" || state === "working" ? state : "idle";
   const statusLabels = { idle: "Idle", working: "Working", "needs-input": "Needs input", waiting: "Waiting", done: "Done", unknown: "Unknown", stopped: "Stopped" };
+  function renderFleet(s, rows) {
+    const lists = [
+      ["needs-input", "Needs input"], ["working", "Working"], ["done", "Recently done"],
+    ].map(([state, title]) => ({state, title, entries: rows.filter((row) => row.status === state)}));
+    const root = $("#fleet-snapshot");
+    const signature = JSON.stringify(lists.map(({entries}) => entries));
+    if (root.dataset.signature === signature) return;
+    root.dataset.signature = signature;
+    const focused = root.contains(document.activeElement) && document.activeElement.dataset.fleetTarget;
+    root.replaceChildren(el("div.fleet-totals", null, ...lists.map(({state, title, entries}) =>
+      el("div.fleet-total", {dataset:{state}}, el("strong", {text:entries.length}), el("span", {text:title})))),
+      ...lists.map(({state, title, entries}) => el("section.fleet-section", null, el("h2", {text:title}),
+        ...(entries.length ? (state === "done" ? entries.slice(0, 8) : entries).map((row) => {
+          const name = agentName(row);
+          return el("button.fleet-entry", {type:"button", dataset:{fleetTarget:row.key}, title:row.sub,
+            onclick: () => row.kind === "herdr" ? navigateHerdr(row.id) : navigate(row.id)},
+            el("span.fleet-entry-name", {text:name}), el("span.fleet-entry-task", {text:row.title}),
+            el("span.fleet-entry-context", {text:row.workspace || "—"}), el("span.fleet-arrow", {text:"→", "aria-hidden":"true"}));
+        }) : [el("p.fleet-zero", {text: state === "done" ? "No recent completions" : "No agents in this state"})]))));
+    if (focused) [...root.querySelectorAll("[data-fleet-target]")].find((node) => node.dataset.fleetTarget === focused)?.focus({preventScroll:true});
+  }
+
+  const agentName = (row) => row.address ? `@${row.address.replace(/^@/, "")}` : "Unnamed agent";
   function agentRowNode(s, row) {
     const brand = row.brand;
     const label = row.status === "waiting" ? `Waiting · ${waitText(Date.now() - row.waitingSinceMs)}` : statusLabels[row.status];
-    const detail = row.title === row.workspace ? (row.model?.split("/").pop() || brand.label) : row.title;
     const external = row.kind === "herdr";
-    const name = row.address || (external ? (s.herdr.namesAvailable ? "No Namedrop name" : "Namedrop unavailable") : row.workspace);
+    const name = agentName(row);
     const open = el("button.fleet-open", {
       type: "button", title: `${row.address ? row.address + "\n" : ""}${row.title}\n${row.sub}\n${label}`,
-      "aria-current": row.active ? "true" : null, dataset: { fleetFocus: `open:${row.key}` },
+      "aria-current": row.active ? "true" : null, "aria-label": `${name}, ${label}`, dataset: { fleetFocus: `open:${row.key}` },
       onclick: () => external ? navigateHerdr(row.id) : navigate(row.id),
     }, el("span.sess-brand" + (row.status === "working" ? ".working" : ""), {
       role: "img", "aria-label": brand.label, dataset: { brand: brand.key },
       html: `<svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true">${brand.paths}</svg>`,
-    }), el("span.fleet-workspace" + (row.address ? ".fleet-address" : ""), { text: name }),
-    el("span.sess-status." + row.status + (row.status === "waiting" && Date.now() - row.waitingSinceMs > STUCK_MS ? ".stuck" : ""), { text: label }),
-    el("span.fleet-detail", { text: external ? `${row.workspace} · ${detail}` : detail }));
+    }), el("span.fleet-name", { text: name }),
+    el("span.sess-status." + row.status + (row.status === "waiting" && Date.now() - row.waitingSinceMs > STUCK_MS ? ".stuck" : ""), { "aria-hidden": "true" }));
     if (external) {
       const copy = row.address ? el("button.row-action.fleet-menu", {
         type: "button", title: "Copy Namedrop address", "aria-label": `Copy ${row.address}`, text: "⧉",
@@ -648,27 +665,6 @@
   }
 
   // ── pickers / actions ──────────────────────────────────────────────────────
-  async function modelPicker(s) {
-    if (s.herdrPane) {
-      const peer = s.herdr?.agents.find((a) => a.paneId === s.herdrPane);
-      const current = s.herdrModel || peer?.model || "";
-      const value = await OMP.dialogs.promptText("Model (/model)", { value: current, placeholder: "provider/model" }).promise;
-      if (!value?.trim() || value.trim() === current) return;
-      const ok = await app.sendHerdr(`/model ${value.trim()}`, []);
-      if (ok) OMP.toast("Model command sent to Herdr", "success");
-      return;
-    }
-    const picked = await OMP.models.browse(app, s.state && s.state.model);
-    if (!picked) return;
-    try {
-      await app.rpc("set_model", { provider: picked.provider, modelId: picked.id });
-      OMP.toast(`Model: ${picked.provider}/${picked.id}`, "success");
-    } catch (e) { OMP.toast(e.message, "error"); }
-    app.S.state = await app.rpc("get_state").catch(() => app.S.state);
-    renderHeader(s);
-    refreshAgents(s);
-  }
-
   // omp-rs effort levels past `max`: workflow by default and its RLM/CLM hybrids.
   const ULTRA_MODES = [
     ["ultracode", "max thinking + workflow (eval workpool) on every substantial task"],
@@ -677,31 +673,126 @@
     ["hypercode", "ultracode + RLM + CLM — everything at once"],
   ];
 
-  async function thinkingPicker(s) {
-    let levels;
-    if (s.herdrPane) levels = ["off", "low", "medium", "high", "xhigh", "max"];
-    else {
-      try { levels = (await app.rpc("get_available_thinking_levels")).levels || []; } catch (e) { return OMP.toast(e.message, "error"); }
+  const modelName = (id) => String(id || "").split("/").pop();
+  const HERDR_LEVELS = ["off", "low", "medium", "high", "xhigh", "max"];
+  let closeComposerPicker;
+
+  function modelPicker(s, focus = "model") {
+    const anchor = $("#composer-model");
+    if (anchor.disabled) return;
+    if (closeComposerPicker) { closeComposerPicker(true); return; }
+    const pane = s.herdrPane, agent = s.agentId;
+    const sameSession = () => s.herdrPane === pane && s.agentId === agent;
+    const peer = pane && s.herdr?.agents.find((a) => a.paneId === pane);
+    const current = pane ? s.herdrModel || peer?.model || "" : s.state?.model;
+    const effort = (pane ? s.herdrUltra || s.herdrThinkingLevel : s.state?.ultra || s.state?.thinkingLevel) || "";
+    const search = el("input", {type: pane ? "text" : "search", placeholder: pane ? "Enter model ID" : "Filter models…", "aria-label": pane ? "Model ID" : "Filter models"});
+    const result = el("div.picker-models"), levels = el("div.picker-levels", {role: "group", "aria-label": "Effort levels"});
+    const feedback = el("p.picker-feedback", {role: "status"});
+    const panel = el("div.composer-picker", {id: "composer-picker", role: "dialog", "aria-label": "Model and effort"},
+      el("div.picker-heading", {text: "Model"}), search, result,
+      el("div.picker-effort", null, el("div.picker-heading", {text: "Effort"}), levels), feedback);
+    let busy = false;
+    function position() {
+      const r = anchor.getBoundingClientRect();
+      panel.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - panel.offsetWidth - 8))}px`;
+      panel.style.bottom = `${window.innerHeight - r.top + 8}px`;
     }
-    const st = s.herdrPane ? { thinkingLevel: s.herdrThinkingLevel, ultra: s.herdrUltra } : s.state || {};
-    const cur = st.ultra || st.thinkingLevel;
-    const values = s.herdrPane ? [...levels] : [...levels, ...ULTRA_MODES.map(([n]) => n)];
-    const items = [
-      ...levels.map((l) => ({ label: l, tag: l === cur ? "current" : undefined })),
-      ...(s.herdrPane ? [] : ULTRA_MODES.map(([n, d]) => ({ label: n, description: d, tag: n === cur ? "current" : "ultra", cls: "ultra-opt", mode: n }))),
-    ];
-    if (st.ultra) { values.push("__ultra_off"); items.push({ label: "ultra off", description: "leave the ultra mode, keep the current effort" }); }
-    const i = await OMP.dialogs.pick("Thinking level", items, { initial: Math.max(0, values.indexOf(cur)) }).promise;
-    if (i == null) return;
-    try {
-      if (s.herdrPane) {
-        if (!await app.sendHerdr(`/effort ${values[i]}`, [])) return;
-      } else if (values[i] === "__ultra_off") await app.rpc("prompt", { message: "/ultra off" });
-      else await app.rpc("set_thinking_level", { level: values[i] });
-    } catch (e) { return OMP.toast(e.message, "error"); }
-    if (!s.herdrPane) app.S.state = await app.rpc("get_state").catch(() => app.S.state);
-    renderHeader(s);
+    function close(restore = false) {
+      panel.remove(); closeComposerPicker = null;
+      anchor.setAttribute("aria-expanded", "false");
+      document.removeEventListener("pointerdown", outside, true);
+      window.removeEventListener("resize", position);
+      if (restore && !anchor.disabled) anchor.focus();
+    }
+    function outside(e) { if (!panel.contains(e.target) && !anchor.contains(e.target)) close(); }
+    function row(label, checked, action, description = "") {
+      return el("button.picker-option", {type:"button", title: description || label, onclick: action, "aria-pressed": String(checked)},
+        el("span", {text: label}), checked ? el("span.picker-check", {text:"✓", "aria-hidden":"true"}) : null);
+    }
+    async function apply(action) {
+      if (busy || !panel.isConnected) return;
+      if (!sameSession()) { close(); return; }
+      busy = true; panel.inert = true;
+      try {
+        if (await action() === false) return;
+        if (!pane && sameSession()) {
+          const next = await app.rpc("get_state").catch(() => null);
+          if (next && sameSession()) s.state = next;
+          if (sameSession()) { renderHeader(s); refreshAgents(s); }
+        }
+        if (panel.isConnected) close(true);
+      } catch (e) { feedback.textContent = e.message; }
+      finally { busy = false; panel.inert = false; }
+    }
+    const effortTarget = () => levels.querySelector('[aria-pressed="true"]') || levels.querySelector("button");
+    const chooseEffort = (value) => apply(() => pane ? app.sendHerdr(`/effort ${value}`, []) : value === "__ultra_off"
+      ? app.rpc("prompt", {message:"/ultra off"}) : app.rpc("set_thinking_level", {level:value}));
+    const drawLevels = (values) => {
+      levels.replaceChildren(...values.map(([name, detail]) => row(name === "__ultra_off" ? "ultra off" : name, name === effort,
+        () => chooseEffort(name), detail)));
+      if (!values.length) levels.append(el("p.picker-feedback", {text:"No effort levels for this model"}));
+    };
+    if (pane) {
+      search.placeholder = modelName(current) || "Enter model ID";
+      const set = () => {
+        const value = search.value.trim();
+        if (!value || /\s/.test(value)) { feedback.textContent = "Enter a single model ID"; return; }
+        apply(() => app.sendHerdr(`/model ${value}`, []));
+      };
+      const choices = [...new Set([current, ...(s.herdr?.agents || []).map((a) => a.model)].filter((id) => id?.includes("/")))];
+      const render = () => {
+        const query = search.value.trim().toLowerCase();
+        result.replaceChildren(...choices.filter((id) => id.toLowerCase().includes(query)).map((id) =>
+          row(modelName(id), id === current, () => id === current ? close(true) : apply(() => app.sendHerdr(`/model ${id}`, [])), id)),
+          row("Use model ID", false, set));
+      };
+      search.oninput = render; render();
+      search.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); set(); } });
+      drawLevels(HERDR_LEVELS.map((name) => [name]));
+    } else {
+      result.textContent = "Loading models…";
+      (async () => {
+        try {
+          const {models = []} = await app.rpc("get_available_models");
+          if (!panel.isConnected || !sameSession()) return;
+          const ordered = [...models].sort((a,b) => Number(b.id === current?.id && b.provider === current?.provider) - Number(a.id === current?.id && a.provider === current?.provider));
+          const render = () => {
+            const q = search.value.trim().toLowerCase();
+            const matches = ordered.filter((m) => `${m.id} ${m.name || ""} ${m.provider}`.toLowerCase().includes(q));
+            result.replaceChildren(...matches.slice(0,80).map((m) => row(modelName(m.id), m.id === current?.id && m.provider === current?.provider,
+              () => apply(() => app.rpc("set_model", {provider:m.provider, modelId:m.id})), `${m.provider}/${m.id}`)));
+            if (!matches.length) result.textContent = "No matching models";
+          };
+          search.oninput = render; render();
+        } catch { result.textContent = "Could not load models"; }
+      })();
+      (async () => {
+        try {
+          const available = (await app.rpc("get_available_thinking_levels")).levels || [];
+          if (!panel.isConnected || !sameSession()) return;
+          const values = [...available.map((name) => [name]), ...ULTRA_MODES.filter(([name]) => !available.includes(name))];
+          if (s.state?.ultra) values.push(["__ultra_off", "Leave ultra mode"]);
+          drawLevels(values);
+          if (focus === "effort" && document.activeElement === search) effortTarget()?.focus();
+        } catch { levels.textContent = "Could not load effort levels"; }
+      })();
+    }
+    closeComposerPicker = close;
+    panel.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); }
+    });
+    panel.addEventListener("focusout", (e) => {
+      if (e.relatedTarget && !busy && !panel.contains(e.relatedTarget) && e.relatedTarget !== anchor) close();
+    });
+    document.body.append(panel); position();
+    anchor.setAttribute("aria-expanded", "true");
+    window.addEventListener("resize", position);
+    document.addEventListener("pointerdown", outside, true);
+    (focus === "effort" && effortTarget() || search).focus();
   }
+
+  const thinkingPicker = (s) => modelPicker(s, "effort");
 
   function exportHtml(s) {
     const file = s.state && s.state.sessionFile;
@@ -746,7 +837,7 @@
       ["Shift+Enter", "new line"], ["Esc", "interrupt the running turn"], ["↑ / ↓", "prompt history"],
       ["/", "slash commands (Tab completes)"], ["!cmd", "run a shell command (!!cmd: keep it out of the context)"],
       ["Ctrl+B", "hide or show the sidebar"],
-      ["Ctrl+Shift+M / Ctrl+Shift+T", "model picker / thinking level"],
+      ["Ctrl+Shift+M / Ctrl+Shift+T", "model and effort picker"],
       ["paste / drop", "attach images"],
     ];
     OMP.dialogs.modal({
@@ -806,7 +897,6 @@
     // Explorer prefs survive restarts: history grouping, archived group state.
     try { s.groupByProject = localStorage.getItem("omp-web-group-by") === "project"; } catch { /* storage unavailable */ }
     try { s.archivedOpen = localStorage.getItem("omp-archived-open") === "true"; } catch { /* storage unavailable */ }
-    try { s.agentSort = localStorage.getItem("omp-agent-sort") || "grouped"; } catch { /* storage unavailable */ }
     $("#appearance-btn").onclick = () => OMP.appearance.open();
     $("#glyph-appearance-btn").onclick = () => OMP.appearance.open("activity");
     const appEl = $("#app");
@@ -850,6 +940,8 @@
     }
     $("#new-session").onclick = () => newSession(s, s.project);
     $("#maps-btn").onclick = toggleMaps;
+    $("#fleet-btn").onclick = toggleFleet;
+    $("#fleet-back").onclick = toggleFleet;
     const role = $("#new-session-role"), roleOptions = $("#agent-dock");
     function setRoleOptions(open) {
       if (OMP.agentPanel) OMP.agentPanel.renderLeft(roleOptions);
@@ -884,7 +976,6 @@
     // The stored list is a snapshot: re-scan when the user goes looking.
     window.addEventListener("focus", () => { loadSessions(s); refreshAgents(s); });
     $("#composer-model").onclick = () => modelPicker(s);
-    $("#composer-thinking").onclick = () => thinkingPicker(s);
     $("#menu-btn").onclick = (e) => sessionMenu(e.currentTarget, s);
     $("#session-title").onclick = () => rename(s);
     const wrap = $("#transcript-wrap");
@@ -903,12 +994,13 @@
         if (window.innerWidth <= 760) appEl.classList.toggle("show-sidebar");
         else setSidebarHidden(!appEl.classList.contains("no-sidebar"));
       }
-      else if (e.ctrlKey && e.shiftKey && k === "m") { e.preventDefault(); if (s.agentId) modelPicker(s); }
-      else if (e.ctrlKey && e.shiftKey && k === "t") { e.preventDefault(); if (s.agentId) thinkingPicker(s); }
+      else if (e.ctrlKey && e.shiftKey && k === "m") { e.preventDefault(); if (s.agentId || s.herdrPane) modelPicker(s); }
+      else if (e.ctrlKey && e.shiftKey && k === "t") { e.preventDefault(); if (s.agentId || s.herdrPane) thinkingPicker(s); }
       else if (e.ctrlKey && e.shiftKey && k === "n") { e.preventDefault(); newSession(s, app.currentCwd()); }
       else if (e.ctrlKey && !e.shiftKey && k === "n") { e.preventDefault(); newSession(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "r") { e.preventDefault(); resumePicker(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "a") { e.preventDefault(); OMP.appearance.open(); }
+      else if (e.key === "Escape" && S().view === "fleet") { e.preventDefault(); toggleFleet(); $("#fleet-btn").focus(); }
       else if (e.key === "Escape" && OMP.maps && OMP.maps.isOpen()) { e.preventDefault(); if (!OMP.maps.closeDetail()) toggleMaps(); }
       else if (e.key === "Escape" && (s.streaming || s.bashRunning) && document.activeElement !== $("#composer")) { e.preventDefault(); app.abort(); }
     });

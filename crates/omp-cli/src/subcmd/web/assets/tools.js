@@ -201,8 +201,9 @@
       this.inline = el("div.tool-inline-preview-slot", { hidden: true });
       this.inlineKey = "";
       this.body = el("div.tool-body", { hidden: true });
+      this.outcome = el("span.tool-outcome", { hidden: true });
       this.tail = el("pre.tool-tail", { hidden: true });
-      this.node.append(this.head, this.inline, this.tail, this.body);
+      this.node.append(this.head, this.outcome, this.inline, this.tail, this.body);
       this.renderHead();
     }
     setArgs(args) {
@@ -233,8 +234,7 @@
       this.endedAt = this.endedAt || Date.now();
       this.tail.hidden = true;
       this.renderHead();
-      if (isError && !this.open) this.toggle(true);
-      else if (this.open) this.renderBody();
+      if (this.open) this.renderBody();
     }
     toggle(force) {
       this.open = force ?? !this.open;
@@ -243,7 +243,9 @@
       this.renderHead();
     }
     renderHead() {
-      const mark = { pending: "○", running: "", ok: "✓", error: "✗" }[this.status];
+      const mark = { pending: "Queued", running: "", ok: "Result", error: "Result · Failed" }[this.status];
+      this.outcome.hidden = !this.isError;
+      this.outcome.textContent = this.isError ? textOf(this.result).split("\n").find((line) => line.trim())?.slice(0, 180) || "Tool returned an error" : "";
       this.node.className = "tool " + this.status;
       const wall = this.result && this.result.details && this.result.details.wallTimeMs;
       const span = this.startedAt && this.endedAt ? this.endedAt - this.startedAt : 0;
@@ -251,7 +253,7 @@
       const dur = typeof wall === "number" ? OMP.fmtDuration(wall) : span >= 5 ? OMP.fmtDuration(span) : "";
       const sum = summary(this.name, this.args);
       this.head.replaceChildren(
-        icon(this.name),
+        el("button.tool-toggle", {type:"button", "aria-expanded": String(this.open), "aria-label": `Toggle ${this.name} details`}, icon(this.name)),
         el("span.tool-sum", { text: sum, title: `${this.name} — ${sum}` }),
         el("span.tool-dur", { text: dur }),
         el("span.status", { text: mark }, this.status === "running" ? OMP.mascot.svg("work", { size: 19, title: "Tool running" }) : null),

@@ -30,6 +30,7 @@
       <button class="icon-btn" id="sidebar-hide" title="Hide sidebar (Ctrl+B)" aria-label="Hide sidebar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="m15 9-3 3 3 3"/></svg></button>
     </div>
     <div class="side-actions" role="group" aria-label="Session and sidebar actions">
+      <button type="button" class="icon-btn" id="fleet-btn" title="Fleet Overview" aria-label="Fleet Overview" aria-pressed="false"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 8h2m3 0h5M7 12h2m3 0h5M7 16h2m3 0h5"/></svg></button>
       <button type="button" class="icon-btn" id="maps-btn" title="Карты кода" aria-label="Карты кода" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15"/></svg></button>
       <button type="button" class="icon-btn" id="appearance-btn" title="Настройки (Ctrl+Shift+A)" aria-label="Настройки"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3h4l.7 2.5 2 .9 2.4-1 2 3.4-1.8 1.8v2.4l1.8 1.8-2 3.4-2.4-1-2 .9L14 21h-4l-.7-2.5-2-.9-2.4 1-2-3.4 1.8-1.8V11L3 9.2l2-3.4 2.4 1 2-.9z"/><circle cx="12" cy="12" r="3"/></svg></button>
       <button type="button" class="icon-btn" id="session-search-btn" title="Поиск агентов и сессий" aria-label="Поиск агентов и сессий" aria-controls="session-filter" aria-expanded="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.2"/><path d="m15.2 15.2 4.3 4.3"/></svg></button>
@@ -79,6 +80,12 @@
       </div>
       <button id="jump-bottom" class="jump" hidden>↓</button>
     </section>
+    <section id="fleet-view" hidden aria-labelledby="fleet-title">
+      <div class="fleet-page">
+        <header class="fleet-page-header"><h1 id="fleet-title" tabindex="-1">Fleet Overview</h1><button id="fleet-back" type="button" class="link-btn">Back to chat</button></header>
+        <div id="fleet-snapshot"></div>
+      </div>
+    </section>
     <section id="maps-view" class="maps" hidden aria-label="Карты кода">
       <div class="maps-toolbar">
         <div class="maps-mode" role="tablist">
@@ -111,7 +118,6 @@
     <div id="queue-band" class="queue-band" hidden></div>
     <footer id="composer-wrap">
       <div id="autocomplete" class="autocomplete" hidden></div>
-      <div id="attachments" class="attachments"></div>
       <div id="home-head">
         <div class="logo big"><span class="tau-hero" data-tau="idle" data-size="88"></span></div>
         <h1 class="wordmark big">OMT</h1>
@@ -119,11 +125,11 @@
       </div>
       <div class="composer">
         <div class="composer-card">
+          <div id="attachments" class="attachments"></div>
           <div class="ta-wrap"><div id="composer-hl" class="ta-hl" aria-hidden="true"></div><textarea id="composer" rows="1" placeholder="Ask anything…  (/ commands · ! shell · Enter send · Shift+Enter newline)" disabled></textarea></div>
           <div class="composer-bar">
             <button id="attach-btn" class="icon-btn attach-btn" title="Attach files (images go to the model, other files are saved for the agent to read)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button><button id="mic-btn" class="icon-btn attach-btn mic-btn" title="Dictate (click to start, click again to insert the text · Esc cancels)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="18" x2="12" y2="22"/></svg><span class="mic-time" hidden></span></button>
-            <button class="chip chip-inline" id="composer-model" title="Model (/model)" disabled>model</button>
-            <button class="chip chip-inline effort-chip" id="composer-thinking" title="Thinking level (/effort)" disabled><svg class="effort-icon" viewBox="0 0 20 20" aria-hidden="true"><path class="effort-segment" data-segment="0" d="M11.8 1.6 8.7 6.7h4.1l1-5.1z"/><path class="effort-segment" data-segment="1" d="M7.9 8.1 4.5 12.2h4.9l3.3-4.1z"/><path class="effort-segment" data-segment="2" d="M8.8 13.6 7.7 18.5l5.1-6.5H9.6z"/></svg><span class="effort-label">thinking</span></button>
+            <button type="button" class="chip chip-inline" id="composer-model" title="Model and effort" aria-haspopup="dialog" aria-controls="composer-picker" aria-expanded="false" disabled><span class="model-label">Model</span><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
             <button id="send-btn" class="send-btn" disabled title="Send (Enter)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg></button>
             <button id="stop-btn" class="danger send-btn" hidden title="Interrupt (Esc)"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
           </div>
