@@ -23,12 +23,14 @@
 //! gets one `"kind":"select"` line per sampled query next to the per-call lines.
 //!
 //! Budgets (env, read per call): `OMP_RLM_MAX_DEPTH` (default 2),
-//! `OMP_RLM_MAX_CALLS` (default 64), `OMP_RLM_MAX_TOKENS` (default 2 000 000,
+//! `OMP_RLM_MAX_CALLS` (default 64; Hypercode 32), `OMP_RLM_MAX_TOKENS` (default 2 000 000; Hypercode 500 000,
 //! input + output summed over all sub-calls). `/rlm` resets the ledger.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 use std::time::Instant;
 
@@ -41,6 +43,34 @@ use super::eval_bridge::OpCtx;
 
 /// Default model for sub-calls: the session's smol role.
 pub const DEFAULT_MODEL: &str = "smol";
+
+static HYPERCODE: AtomicBool = AtomicBool::new(false);
+static CHECKPOINT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Hypercode-only bounded RLM defaults and a restart-surviving memo. Explicit
+/// `OMP_RLM_*` limits and explicit non-smol query models keep their behavior.
+pub fn set_hypercode(active: bool, cwd: &Path) {
+    HYPERCODE.store(active, Ordering::Relaxed);
+    let path = if !active
+        || std::env::var("OMP_RLM_CHECKPOINT")
+            .ok()
+            .is_some_and(|v| matches!(v.as_str(), "0" | "off"))
+    {
+        None
+    } else if let Some(path) = std::env::var_os("OMP_RLM_CHECKPOINT") {
+        Some(PathBuf::from(path))
+    } else {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        cwd.hash(&mut hasher);
+        Some(std::env::temp_dir().join(format!("omp-rlm-{:016x}.jsonl", hasher.finish())))
+    };
+    *CHECKPOINT.lock() = path;
+}
+
+#[must_use]
+pub fn hypercode() -> bool {
+    HYPERCODE.load(Ordering::Relaxed)
+}
 
 /// Hard limits for one RLM session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +110,11 @@ impl Limits {
                 .and_then(|v| v.trim().parse().ok())
                 .unwrap_or(default)
         };
-        let d = Self::default();
+        let mut d = Self::default();
+        if hypercode() {
+            d.max_calls = 32;
+            d.max_tokens = 500_000;
+        }
         let o = *OVERRIDE.lock();
         Self {
             max_depth: o[0].unwrap_or_else(|| get("OMP_RLM_MAX_DEPTH", d.max_depth)),
@@ -168,6 +202,8 @@ struct Ledger {
     expansions: u64,
     escalations: u64,
     selection_log: Vec<Value>,
+    /// Path already imported into `memo`; avoids re-reading the checkpoint per call.
+    checkpoint_loaded: Option<PathBuf>,
 }
 
 /// An RLM session: ledger + memo behind one lock.
@@ -203,16 +239,74 @@ fn render_prompt(prompt: &str, context: &str) -> String {
     }
 }
 
+fn load_checkpoint(ledger: &mut Ledger) {
+    let path = CHECKPOINT.lock().clone();
+    if ledger.checkpoint_loaded == path {
+        return;
+    }
+    ledger.checkpoint_loaded = path.clone();
+    let Some(path) = path else { return };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(key) = value
+            .get("key")
+            .and_then(Value::as_str)
+            .and_then(|v| u128::from_str_radix(v, 16).ok())
+        else {
+            continue;
+        };
+        let Some(answer) = value.get("answer").and_then(Value::as_str) else {
+            continue;
+        };
+        ledger.memo.insert(key, answer.to_owned());
+    }
+}
+
+fn append_checkpoint(key: u128, answer: &str) {
+    let Some(path) = CHECKPOINT.lock().clone() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let line = json!({"key": format!("{key:032x}"), "answer": answer}).to_string() + "\n";
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let result = options
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
+    if let Err(error) = result {
+        tracing::warn!(path = %path.display(), %error, "RLM checkpoint append failed");
+    }
+}
+
 impl Session {
     /// Forget memo, counters and log (a fresh `/rlm` run); the stored
     /// `context` is kept for the caller to replace.
     pub fn reset(&self) {
         let mut ledger = self.ledger.lock();
         let context = ledger.context.take();
+        let checkpoint = CHECKPOINT.lock().clone();
         *ledger = Ledger {
             context,
+            checkpoint_loaded: checkpoint.clone(),
             ..Ledger::default()
         };
+        drop(ledger);
+        if let Some(path) = checkpoint {
+            if let Err(error) = std::fs::remove_file(&path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(path = %path.display(), %error, "RLM checkpoint reset failed");
+                }
+            }
+        }
     }
 
     pub fn set_context(&self, context: Option<String>) {
@@ -586,6 +680,7 @@ impl Session {
         let started = Instant::now();
         {
             let mut ledger = self.ledger.lock();
+            load_checkpoint(&mut ledger);
             if let Some(text) = ledger.memo.get(&key).cloned() {
                 ledger.memo_hits += 1;
                 let record = CallRecord {
@@ -642,6 +737,7 @@ impl Session {
         ledger.input_tokens += input;
         ledger.output_tokens += output;
         ledger.memo.insert(key, text.clone());
+        append_checkpoint(key, &text);
         let record = CallRecord {
             n: ledger.log.len() as u64 + 1,
             model: model.to_string(),
@@ -1286,6 +1382,34 @@ mod tests {
         let mut other_model = q("what?", Some("ctx"));
         other_model["model"] = json!("slow");
         assert!(session.query(&mock, lim, &other_model, &sig).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn checkpoint_replays_memo_in_a_fresh_session_without_provider_call() {
+        let _guard = TEST_GUARD.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memo.jsonl");
+        *CHECKPOINT.lock() = Some(path.clone());
+        let mock = Mock::new(40, 10);
+        let sig = AbortSignal::never();
+        let lim = limits(2, 1, 1_000_000);
+        let first = Session::default()
+            .query(&mock, lim, &q("what?", Some("ctx")), &sig)
+            .await
+            .unwrap();
+        assert_eq!(first["cached"], json!(false));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("answer"));
+        let restarted = Session::default();
+        let second = restarted
+            .query(&mock, lim, &q("what?", Some("ctx")), &sig)
+            .await
+            .unwrap();
+        assert_eq!(second["cached"], json!(true));
+        assert_eq!(second["text"], first["text"]);
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        restarted.reset();
+        assert!(!path.exists(), "/rlm reset clears persistent memo");
+        *CHECKPOINT.lock() = None;
     }
 
     #[tokio::test]

@@ -826,7 +826,12 @@ pub(crate) async fn query_once(
     system: Option<&str>,
     cell_signal: &AbortSignal,
 ) -> Result<(String, pa_types::ai::Usage, Model), String> {
-    let candidates = resolve_query_candidates(model).await?;
+    let mut candidates = resolve_query_candidates(model).await?;
+    if model == super::rlm::DEFAULT_MODEL && super::rlm::hypercode() {
+        for candidate in &mut candidates {
+            candidate.thinking = Some(pa_types::ai::ModelThinkingLevel::Minimal);
+        }
+    }
     let _permit = REQUEST_SLOTS
         .acquire()
         .await

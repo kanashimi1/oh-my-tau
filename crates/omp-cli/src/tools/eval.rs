@@ -55,6 +55,10 @@ const MAX_TIMEOUT_SECS: f64 = 3600.0;
 /// Static model-facing description: the persistence/await/rollback contract
 /// and the prelude signatures inline; namespace details stay behind
 /// `xd://eval/*` docs (read on first use).
+pub(crate) fn set_hypercode(active: bool) {
+    eval_observation::set_hypercode(active);
+}
+
 pub const DESCRIPTION: &str = r"One cell per call; top-level state persists across calls and compaction; subagents get separate kernels.
 Python (IPython): top-level `await` works, `asyncio.run` fails. JS (Bun): top-level `await`/`return` work.
 On error, names (re)bound by the failed cell roll back (side effects and in-place mutations stay): re-run the whole fixed cell.

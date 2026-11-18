@@ -20,6 +20,8 @@ const JEVIFY: &str = include_str!("../prompts/notices/jevify-notice.md");
 const ULTRACODE: &str = include_str!("../prompts/notices/ultracode-notice.md");
 const ULTRADEEP_ADDENDUM: &str = include_str!("../prompts/notices/ultradeep-addendum.md");
 const ULTRALONG_ADDENDUM: &str = include_str!("../prompts/notices/ultralong-addendum.md");
+const HYPERCODE_RLM_ADDENDUM: &str = include_str!("../prompts/notices/hypercode-rlm-addendum.md");
+const HYPERCODE_CLM_ADDENDUM: &str = include_str!("../prompts/notices/hypercode-clm-addendum.md");
 const INTERJECTION: &str = include_str!("../prompts/notices/interjection-notice.md");
 
 /// Session facts a notice renders against (TS `MagicKeywordContext`).
@@ -104,10 +106,20 @@ pub fn ultracode_notice(
     let addendum_data = json!({ "mode": name });
     let mut addenda = Vec::new();
     if mode.is_some_and(Ultra::rlm) {
-        addenda.push(crate::sysprompt::render(ULTRADEEP_ADDENDUM, &addendum_data));
+        let text = if mode == Some(Ultra::Hyper) {
+            HYPERCODE_RLM_ADDENDUM
+        } else {
+            ULTRADEEP_ADDENDUM
+        };
+        addenda.push(crate::sysprompt::render(text, &addendum_data));
     }
     if mode.is_some_and(Ultra::clm) {
-        addenda.push(crate::sysprompt::render(ULTRALONG_ADDENDUM, &addendum_data));
+        let text = if mode == Some(Ultra::Hyper) {
+            HYPERCODE_CLM_ADDENDUM
+        } else {
+            ULTRALONG_ADDENDUM
+        };
+        addenda.push(crate::sysprompt::render(text, &addendum_data));
     }
     let mut data = ctx.data();
     data["keyword"] = json!(mode.is_none());
@@ -327,7 +339,15 @@ mod tests {
                 "{msg}"
             );
             assert!(text(&m[0]).contains("**hypercode**"));
+            assert!(text(&m[0]).contains("lazy managed context"));
         }
+        // The pre-existing modes keep their original prompt bytes; only Hypercode opts in.
+        let long = build("plain", &s, &c, Some(Ultra::Long), 7);
+        assert!(text(&long[0]).contains("runs a managed context: working memory"));
+        assert!(!text(&long[0]).contains("lazy managed context"));
+        let deep = build("plain", &s, &c, Some(Ultra::Deep), 7);
+        assert!(text(&deep[0]).contains("Inputs over ~100k chars"));
+        assert!(!text(&deep[0]).contains("Hypercode RLM defaults"));
         let AgentMessage::Custom(cm) = &k[0] else {
             panic!("custom")
         };

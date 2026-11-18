@@ -318,15 +318,33 @@ impl Runtime {
     /// when the ultra mode's CLM leg changes. A session started with
     /// `clm`/`clm-host` keeps its strategy: ultra never touches it.
     pub(super) async fn sync_clm(&self, prev: Option<Ultra>, next: Option<Ultra>) {
+        let hyper = next == Some(Ultra::Hyper);
+        crate::tools::rlm::set_hypercode(hyper, &self.cwd);
+        crate::tools::eval::set_hypercode(hyper);
         let (had, want) = (prev.is_some_and(Ultra::clm), next.is_some_and(Ultra::clm));
-        if had == want || crate::context::active() != crate::context::Kind::Append {
+        let current_hyper =
+            crate::context::live().is_some_and(|s| s.kind == crate::context::Kind::Hypercode);
+        if (had == want && (!want || current_hyper == hyper))
+            || crate::context::active() != crate::context::Kind::Append
+        {
             return;
         }
+        let kind = if hyper {
+            crate::context::Kind::Hypercode
+        } else {
+            crate::context::Kind::ClmHost
+        };
         let mut tools = self.agent.tools().await;
         tools.retain(|t| t.name() != crate::context::TOOL_NAME);
         if want {
             let settings = omp_settings::Settings::load(&self.cwd);
-            let shared = crate::context::ultra_shared(&settings);
+            let kind = if hyper {
+                crate::context::Kind::Hypercode
+            } else {
+                crate::context::Kind::ClmHost
+            };
+            let window = self.live_model().map_or(128_000, |m| m.context_window);
+            let shared = crate::context::ultra_shared(&settings, kind, window);
             let tool = crate::context::tool(shared.clone());
             tools.extend(match crate::approval::Gate::get() {
                 Some(gate) => gate.wrap_tools(vec![tool]),
@@ -339,7 +357,8 @@ impl Runtime {
         self.agent.set_tools(tools).await;
         let message = if want {
             format!(
-                "Context strategy changed to clm-host ({}); the prompt cache resets once.",
+                "Context strategy changed to {} ({}); the prompt cache resets once.",
+                kind.as_str(),
                 next.map_or("ultra", Ultra::name)
             )
         } else {
@@ -891,9 +910,14 @@ mod ultra_tests {
             .unwrap()
             .contains("prompt cache"));
 
-        // Long -> Hyper keeps CLM: no second switch.
+        // Long -> Hyper keeps one tool but swaps the controller to lazy Hypercode.
         h.rt.set_ultra(Some(Ultra::Hyper)).await;
-        assert!(of_type(&drain(&mut h.rx), "notice").is_empty());
+        assert_eq!(
+            crate::context::live().unwrap().kind,
+            crate::context::Kind::Hypercode
+        );
+        assert!(crate::tools::rlm::hypercode());
+        assert_eq!(of_type(&drain(&mut h.rx), "notice").len(), 1);
         assert_eq!(
             names(&h.rt)
                 .await
@@ -910,6 +934,7 @@ mod ultra_tests {
             .iter()
             .any(|n| n == crate::context::TOOL_NAME));
         assert!(crate::context::live().is_none());
+        assert!(!crate::tools::rlm::hypercode());
         assert!(crate::context::skip_extensions().is_empty());
         assert_eq!(of_type(&drain(&mut h.rx), "notice").len(), 1);
         assert_eq!(names(&h.rt).await, ["task", "eval"]);

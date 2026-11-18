@@ -15,7 +15,7 @@ pub(super) struct CompletionCandidate {
     service_tier: Option<pa_types::ai::ServiceTier>,
     headers: Option<Vec<(String, String)>>,
     /// Effective reasoning from the resolved selector, if any.
-    thinking: Option<pa_types::ai::ModelThinkingLevel>,
+    pub(super) thinking: Option<pa_types::ai::ModelThinkingLevel>,
 }
 
 fn candidate_from_resolved(resolved: ResolvedModel) -> CompletionCandidate {

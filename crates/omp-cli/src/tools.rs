@@ -12,7 +12,7 @@ pub mod bash;
 pub mod checkpoint;
 mod edit;
 mod edit_diagnostics;
-mod eval;
+pub(crate) mod eval;
 pub(crate) mod eval_agents;
 pub(crate) mod eval_bridge;
 pub(crate) mod eval_journal;

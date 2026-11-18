@@ -27,7 +27,22 @@ use std::fmt::Write as _;
 
 /// `1` enables semantic packs and dedup; `dedup` enables dedup alone.
 const GATE_ENV: &str = "OMP_EVAL_OBSERVATION_PACK";
+static HYPERCODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+pub(crate) fn set_hypercode(active: bool) {
+    HYPERCODE.store(active, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn hypercode_dedup_from(env_is_set: bool, active: bool) -> bool {
+    !env_is_set && active
+}
+
+fn hypercode_dedup() -> bool {
+    hypercode_dedup_from(
+        std::env::var_os(GATE_ENV).is_some(),
+        HYPERCODE.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
 /// RAM budget of the retained head/tail window (preview material only).
 const WINDOW_BYTES: usize = 4 * 1024;
 /// Feed chunk size; `feed_bytes` accepts arbitrary chunk sizes.
@@ -73,12 +88,12 @@ pub(crate) fn pack_requested() -> bool {
     if let Some(v) = *PACK_OVERRIDE.lock() {
         return v;
     }
-    gate_from(std::env::var(GATE_ENV).ok().as_deref())
+    gate_from(std::env::var(GATE_ENV).ok().as_deref()) || hypercode_dedup()
 }
 
 #[must_use]
 pub(crate) fn dedup_only_requested() -> bool {
-    dedup_only_from(std::env::var(GATE_ENV).ok().as_deref())
+    dedup_only_from(std::env::var(GATE_ENV).ok().as_deref()) || hypercode_dedup()
 }
 
 /// Identity of one non-error cell output: full SHA-256 hex + byte size.
@@ -698,6 +713,13 @@ mod tests {
         assert!(!dedup_only_from(Some("1")));
         assert!(!dedup_only_from(None));
     }
+    #[test]
+    fn hypercode_gate_is_dedup_only_and_explicit_env_wins() {
+        assert!(hypercode_dedup_from(false, true));
+        assert!(!hypercode_dedup_from(true, true));
+        assert!(!hypercode_dedup_from(false, false));
+    }
+
     #[test]
     fn dedup_only_never_semantically_packs_first_output() {
         let text = "{\"a\": 1}\n";

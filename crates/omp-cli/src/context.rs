@@ -89,7 +89,11 @@ pub fn skip_extensions() -> Vec<String> {
 /// `context.policy.*` thresholds (or their defaults), whatever policy kind the
 /// settings name.
 #[must_use]
-pub fn ultra_shared(settings: &omp_settings::Settings) -> Arc<Shared> {
+pub fn ultra_shared(
+    settings: &omp_settings::Settings,
+    kind: Kind,
+    context_window: u64,
+) -> Arc<Shared> {
     let env = |k: &str| {
         if k == "OMP_CONTEXT_POLICY" {
             Some("rule".to_owned())
@@ -100,7 +104,43 @@ pub fn ultra_shared(settings: &omp_settings::Settings) -> Arc<Shared> {
     let policy = crate::context_policy::Policy::resolve(settings, &env)
         .ok()
         .flatten();
-    Shared::with_policy(Kind::ClmHost, Limits::from_settings(settings), policy)
+    if kind == Kind::Hypercode {
+        let mut policy = policy;
+        if let Some(p) = policy.as_mut() {
+            let configured = |env: &str, setting: &str| {
+                std::env::var_os(env).is_some() || settings.get_number(setting).is_some()
+            };
+            if !configured(
+                "OMP_CONTEXT_POLICY_RULE_HIGH",
+                "context.policy.ruleOffloadHigh",
+            ) {
+                p.rule_offload_high =
+                    usize::try_from(context_window.saturating_mul(70) / 100).unwrap_or(usize::MAX);
+            }
+            if !configured(
+                "OMP_CONTEXT_POLICY_RULE_TOKENS",
+                "context.policy.ruleTokens",
+            ) {
+                // At high pressure, consolidate small-block histories for which no single
+                // offloadable block exists. Below it, Hypercode stays byte-for-byte append.
+                p.rule_tokens = p.rule_offload_high;
+            }
+            if !configured("OMP_CONTEXT_POLICY_RULE_EVERY", "context.policy.ruleEvery") {
+                p.rule_every = 0;
+            }
+            if !configured(
+                "OMP_CONTEXT_POLICY_RULE_LOW",
+                "context.policy.ruleOffloadLow",
+            ) {
+                p.rule_offload_low = p.rule_offload_high / 2;
+            }
+            if !configured("OMP_CONTEXT_POLICY_RECALL", "context.policy.recallChars") {
+                p.recall_chars = p.rule_offload_low.saturating_mul(4);
+            }
+        }
+        return Shared::with_policy(kind, Limits::from_settings(settings), policy);
+    }
+    Shared::with_policy(kind, Limits::from_settings(settings), policy)
 }
 
 /// Session-file entry recording a non-default strategy (`None` for `append`, so default
@@ -118,6 +158,8 @@ pub enum Kind {
     Append,
     Clm,
     ClmHost,
+    /// Lazy CLM + RLM with stable and volatile slot partitions.
+    Hypercode,
 }
 
 impl Kind {
@@ -128,8 +170,9 @@ impl Kind {
             "append" => Ok(Self::Append),
             "clm" => Ok(Self::Clm),
             "clm-host" => Ok(Self::ClmHost),
+            "hypercode" => Ok(Self::Hypercode),
             other => Err(format!(
-                "unknown context strategy {other:?} (expected append, clm or clm-host)"
+                "unknown context strategy {other:?} (expected append, clm, clm-host or hypercode)"
             )),
         }
     }
@@ -140,6 +183,7 @@ impl Kind {
             Self::Append => "append",
             Self::Clm => "clm",
             Self::ClmHost => "clm-host",
+            Self::Hypercode => "hypercode",
         }
     }
 
@@ -246,6 +290,39 @@ impl SlotTable {
         out.push_str("</context-slots>");
         out
     }
+
+    /// Hypercode: stable slots stay in the early prefix; scratch is rendered
+    /// immediately before the newest user turn, leaving older raw history intact.
+    fn render_partition(&self, volatile: bool, host_evicted: &[String]) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::from(SLOTS_MARKER);
+        out.push_str(if volatile {
+            "\nVolatile working memory. Updating this block does not rewrite stable slots or raw history.\n"
+        } else {
+            "\nStable working memory. Change these slots only during context maintenance.\n"
+        });
+        for (name, text) in &self.slots {
+            if is_volatile_slot(name) == volatile {
+                writeln!(out, "<slot id=\"{name}\">\n{text}\n</slot>")
+                    .expect("writing to a String is infallible");
+            }
+        }
+        if !volatile && !host_evicted.is_empty() {
+            writeln!(
+                out,
+                "(host evicted over-budget slots: {})",
+                host_evicted.join(", ")
+            )
+            .expect("writing to a String is infallible");
+        }
+        out.push_str("</context-slots>");
+        out
+    }
+}
+
+#[must_use]
+fn is_volatile_slot(name: &str) -> bool {
+    name == "scratch" || name.starts_with("scratch_")
 }
 
 fn valid_slot_name(n: &str) -> bool {
@@ -422,8 +499,18 @@ pub fn plan(messages: &[AgentMessage], kind: Kind, lim: &Limits) -> Plan {
                 continue;
             }
             let Ok(ops) = parse_ops(args) else { continue };
+            let stable_edit = ops.iter().any(|op| {
+                let slot = match op {
+                    Op::Replace { slot, .. } | Op::Append { slot, .. } | Op::Evict { slot } => slot,
+                };
+                !is_volatile_slot(slot)
+            });
             if apply_ops(&mut p.table, &ops, lim).is_ok() && i < last_user {
-                p.tail_start = Some(i);
+                if kind != Kind::Hypercode || stable_edit {
+                    p.tail_start = Some(i);
+                }
+                p.shown = p.table.clone();
+                p.host_evicted.clone_from(&evicted_all);
             }
         }
         if kind == Kind::ClmHost && i < last_user && !p.table.slots.is_empty() {
@@ -439,7 +526,7 @@ pub fn plan(messages: &[AgentMessage], kind: Kind, lim: &Limits) -> Plan {
                 ask_pending = true;
             }
         }
-        if p.tail_start.is_some() && i < last_user {
+        if kind != Kind::Hypercode && p.tail_start.is_some() && i < last_user {
             p.shown = p.table.clone();
             p.host_evicted.clone_from(&evicted_all);
         }
@@ -475,13 +562,30 @@ pub fn build_wire(
         return (messages, Plan::default());
     }
     let p = plan(&messages, kind, lim);
-    let Some(tail) = p.tail_start else {
+    if p.tail_start.is_none() && (kind != Kind::Hypercode || p.shown.slots.is_empty()) {
         return (messages, p);
-    };
-    let mut out = Vec::with_capacity(messages.len() - tail + p.pinned_end + 2);
+    }
+    let tail = p.tail_start.unwrap_or(p.pinned_end);
+    let last_user = messages
+        .iter()
+        .rposition(|m| matches!(m, AgentMessage::Standard(Message::User(_))))
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(messages.len() - tail + p.pinned_end + 3);
     out.extend(messages[..p.pinned_end].iter().cloned());
-    out.push(user_msg(p.shown.render(&p.host_evicted)));
-    out.extend(messages[tail..].iter().cloned());
+    out.push(user_msg(if kind == Kind::Hypercode {
+        p.shown.render_partition(false, &p.host_evicted)
+    } else {
+        p.shown.render(&p.host_evicted)
+    }));
+    for (i, message) in messages.iter().enumerate().skip(tail) {
+        if kind == Kind::Hypercode
+            && i == last_user
+            && p.shown.slots.iter().any(|(name, _)| is_volatile_slot(name))
+        {
+            out.push(user_msg(p.shown.render_partition(true, &[])));
+        }
+        out.push(message.clone());
+    }
     if let Some(n) = &p.notice {
         out.push(user_msg(n.clone()));
     }
@@ -592,13 +696,25 @@ impl Shared {
                 append_user_text(m, &text);
             }
         }
+        // Host offload is complete in this pass: no extra model turn or ephemeral notice.
+        // Only consolidation asks the model for a stable-slot edit.
         let edit = action == crate::context_policy::Action::ClmEdit;
+        let maintenance = edit;
         let done = edited_this_turn(&messages);
         let (mut out, p) = build_wire(messages, self.kind, &self.limits);
         *self.seen.lock() = p.table;
-        self.allowed.store(edit, Ordering::Relaxed);
-        if edit && !done {
-            out.push(user_msg(crate::context_policy::MAINT_NOTICE.to_owned()));
+        self.allowed.store(maintenance, Ordering::Relaxed);
+        if maintenance && !done {
+            out.push(user_msg(if self.kind == Kind::Hypercode {
+                concat!(
+                    "CONTEXT MAINTENANCE: pressure threshold reached; offload is batched high→low. ",
+                    "Use ONE `context_edit` for durable stable slots and transient `scratch`; keep exact ids, paths, ",
+                    "decisions, failures and open actions, not a raw-history transcript."
+                )
+                .to_owned()
+            } else {
+                crate::context_policy::MAINT_NOTICE.to_owned()
+            }));
         }
         out
     }
@@ -1092,9 +1208,14 @@ pub fn tool(shared: Arc<Shared>) -> Arc<dyn AgentTool> {
              `append` adds text to a slot (creating it if new; name [A-Za-z0-9_-], <=32 chars; \
              max {} slots, {} chars each), `replace` overwrites an existing slot, `evict` \
              deletes one. An invalid op rejects the whole call with an error and changes \
-             nothing. Edits take effect on your next turn.{}",
+             nothing. Edits take effect on your next turn.{}{}",
             lim.max_slots,
             lim.max_slot_chars,
+            if shared.kind == Kind::Hypercode {
+                " In Hypercode, stable slots change only at pressure; use `scratch` for volatile state without rewriting older raw history."
+            } else {
+                ""
+            },
             if shared.policy.is_some() {
                 " Call it ONLY when the current request ends with a `CONTEXT MAINTENANCE` notice; \
                  otherwise do not call it (the host rejects it and the call is wasted)."
@@ -1148,14 +1269,31 @@ impl AgentTool for ContextEditTool {
         _on_update: AgentToolUpdateCallback,
     ) -> BoxFut<'static, Result<AgentToolResult>> {
         Box::pin(async move {
-            if !self.shared.allowed.load(Ordering::Relaxed) {
+            let parsed = parse_ops(&params);
+            let volatile_only = self.shared.kind == Kind::Hypercode
+                && parsed.as_ref().is_ok_and(|ops| {
+                    ops.iter().all(|op| {
+                        let slot = match op {
+                            Op::Replace { slot, .. }
+                            | Op::Append { slot, .. }
+                            | Op::Evict { slot } => slot,
+                        };
+                        is_volatile_slot(slot)
+                    })
+                });
+            if !volatile_only && !self.shared.allowed.load(Ordering::Relaxed) {
                 return Ok(AgentToolResult::error(
-                    "context_edit rejected, nothing changed: no context maintenance is due this turn \
-                     (context policy); continue the task.",
+                    if self.shared.kind == Kind::Hypercode {
+                        "context_edit rejected, nothing changed: no context maintenance is due this turn \
+                     (context policy); only Hypercode `scratch` may change now; continue the task."
+                    } else {
+                        "context_edit rejected, nothing changed: no context maintenance is due this turn \
+                     (context policy); continue the task."
+                    },
                 ));
             }
             let mut table = self.shared.seen.lock().clone();
-            let verdict = parse_ops(&params).and_then(|ops| {
+            let verdict = parsed.and_then(|ops| {
                 apply_ops(&mut table, &ops, &self.shared.limits).map(|()| ops.len())
             });
             Ok(match verdict {
@@ -1354,6 +1492,129 @@ mod tests {
     }
 
     #[test]
+    fn hypercode_lazy_policy_allows_scratch_but_not_stable_edits() {
+        let pol = sched(&[0]);
+        let sh = Shared::with_policy(Kind::Hypercode, lim(), Some(pol));
+        let h = vec![user("task"), assistant_text("raw work"), user("next")];
+        assert_eq!(wire_json(&sh.wire(h.clone())), wire_json(&h));
+        let t = tool(sh);
+        let cb: AgentToolUpdateCallback = Arc::new(|_| {});
+        let sig = AbortSignal::default();
+        let scratch = t.clone().execute(
+            "s".into(),
+            json!({"ops":[{"op":"append","slot":"scratch_build","text":"PASS 12"}]}),
+            sig.clone(),
+            cb.clone(),
+        );
+        assert_ne!(
+            futures::executor::block_on(scratch).unwrap().is_error,
+            Some(true)
+        );
+        let stable = t.execute(
+            "a".into(),
+            json!({"ops":[{"op":"append","slot":"facts","text":"A=1"}]}),
+            sig,
+            cb,
+        );
+        let stable = futures::executor::block_on(stable).unwrap();
+        assert_eq!(stable.is_error, Some(true));
+        assert!(result_text(&stable.content).contains("no context maintenance is due"));
+    }
+
+    #[test]
+    fn hypercode_scratch_preserves_raw_messages_and_stable_slot_bytes() {
+        let l = lim();
+        let mut h = vec![
+            user("task"),
+            assistant_text("old raw work"),
+            assistant_edit(
+                "stable",
+                &json!([{"op":"append","slot":"facts","text":"A=1"}]),
+            ),
+            result("stable", false),
+            assistant_text("done"),
+            user("next"),
+        ];
+        let (before, p) = build_wire(h.clone(), Kind::Hypercode, &l);
+        assert_eq!(p.tail_start, Some(2));
+        assert!(!wire_json(&before).contains("old raw work"));
+        h.push(assistant_edit(
+            "volatile",
+            &json!([{"op":"replace","slot":"scratch_build","text":"PASS 12"}]),
+        ));
+        h.push(result("volatile", false));
+        h.push(assistant_text("tested"));
+        h.push(user("continue"));
+        let (after, _) = build_wire(h.clone(), Kind::Hypercode, &l);
+        assert_eq!(
+            wire_json(std::slice::from_ref(&before[1])),
+            wire_json(std::slice::from_ref(&after[1])),
+            "stable slot bytes unchanged"
+        );
+        let rendered = wire_json(&after);
+        assert!(rendered.contains("PASS 12") && rendered.contains("old raw work") == false);
+        for message in &h[2..] {
+            assert!(
+                after.iter().any(|m| wire_json(std::slice::from_ref(m))
+                    == wire_json(std::slice::from_ref(message))),
+                "raw suffix message missing after scratch insertion"
+            );
+        }
+    }
+
+    #[test]
+    fn hypercode_scratch_only_edit_never_compacts_raw_history() {
+        let h = vec![
+            user("task"),
+            assistant_text("keep this raw"),
+            assistant_edit(
+                "scratch",
+                &json!([{"op":"append","slot":"scratch","text":"temporary"}]),
+            ),
+            result("scratch", false),
+            assistant_text("done"),
+            user("next"),
+        ];
+        let (out, p) = build_wire(h.clone(), Kind::Hypercode, &lim());
+        assert_eq!(p.tail_start, None);
+        for message in &h {
+            assert!(out
+                .iter()
+                .any(|m| wire_json(std::slice::from_ref(m))
+                    == wire_json(std::slice::from_ref(message))));
+        }
+        assert!(wire_json(&out).contains("keep this raw"));
+    }
+
+    #[test]
+    fn hypercode_pressure_falls_back_to_batch_consolidation_for_small_blocks() {
+        let policy = || {
+            let mut pol = crate::context_policy::Policy::new(crate::context_policy::Kind::Rule);
+            pol.rule_offload_high = 8;
+            pol.rule_offload_low = 4;
+            pol.rule_tokens = 8;
+            pol.rule_every = 0;
+            pol
+        };
+        let sh = Shared::with_policy(Kind::Hypercode, lim(), Some(policy()));
+        let small = vec![user("tiny"), assistant_text("ok"), user("next")];
+        assert_eq!(wire_json(&sh.wire(small.clone())), wire_json(&small));
+        // A fresh episode: policy decisions are intentionally memoized by user-turn index.
+        let sh = Shared::with_policy(Kind::Hypercode, lim(), Some(policy()));
+        let mut measured = assistant_text("many small messages");
+        let AgentMessage::Standard(Message::Assistant(a)) = &mut measured else {
+            unreachable!()
+        };
+        a.usage.output = 50;
+        let large = vec![user("start"), measured, user("next")];
+        let wire = wire_json(&sh.wire(large));
+        assert!(
+            wire.contains("CONTEXT MAINTENANCE") && wire.contains("Use ONE"),
+            "{wire}"
+        );
+    }
+
+    #[test]
     fn invalid_ops_rejected_atomically() {
         let l = lim();
         let mut t = SlotTable::default();
@@ -1487,7 +1748,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.is_error, Some(true));
-        assert!(result_text(&r.content).contains("no context maintenance is due"));
+        assert_eq!(
+            result_text(&r.content),
+            "context_edit rejected, nothing changed: no context maintenance is due this turn (context policy); continue the task."
+        );
+        assert!(!t.description().contains("In Hypercode"));
         // turn 1 = edit: one trailing notice, edits accepted
         let h1 = vec![user("task"), assistant_text("a"), user("step 1")];
         let w1 = sh.wire(h1.clone());
@@ -1594,7 +1859,7 @@ mod tests {
         pol.rule_tokens = 0;
         pol.rule_offload_high = 20_000;
         pol.rule_offload_low = 28_000;
-        let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
+        let sh = Shared::with_policy(Kind::Hypercode, lim(), Some(pol));
         let usage = |i: u64| {
             let v = json!({"role":"assistant","content":[{"type":"text","text":"r"}],"api":"x","provider":"x",
                 "model":"x","usage":{"input":i,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
@@ -1637,7 +1902,7 @@ mod tests {
         pol.rule_offload_high = 20_000;
         pol.rule_offload_low = 27_600;
         pol.recall_chars = 20_000;
-        let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
+        let sh = Shared::with_policy(Kind::Hypercode, lim(), Some(pol));
         let usage = |i: u64| {
             let v = json!({"role":"assistant","content":[{"type":"text","text":"r"}],"api":"x","provider":"x",
                 "model":"x","usage":{"input":i,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
@@ -1692,6 +1957,62 @@ mod tests {
             j2.starts_with(&j[..j.len() - 1]),
             "earlier wire is a prefix: cache-safe"
         );
+    }
+
+    #[test]
+    fn hypercode_defaults_do_not_override_explicit_settings() {
+        let _env_lock = OFFLOAD_ENV_LOCK.lock();
+        let keys = [
+            "OMP_CONTEXT_POLICY_RULE_HIGH",
+            "OMP_CONTEXT_POLICY_RULE_LOW",
+            "OMP_CONTEXT_POLICY_RULE_TOKENS",
+            "OMP_CONTEXT_POLICY_RULE_EVERY",
+            "OMP_CONTEXT_POLICY_RECALL",
+        ];
+        let saved = keys.map(|k| (k, std::env::var_os(k)));
+        for (key, _) in &saved {
+            std::env::remove_var(key);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yml");
+        std::fs::write(&config, "context:\n  policy:\n    ruleOffloadHigh: 12000\n    ruleOffloadLow: 5000\n    ruleTokens: 23000\n    ruleEvery: 7\n    recallChars: 9000\n").unwrap();
+        let settings = omp_settings::Settings::load_from(Some(&config), dir.path());
+        let custom = ultra_shared(&settings, Kind::Hypercode, 100_000);
+        let p = custom.policy.as_ref().unwrap();
+        assert_eq!(
+            (
+                p.rule_offload_high,
+                p.rule_offload_low,
+                p.rule_tokens,
+                p.rule_every,
+                p.recall_chars
+            ),
+            (12_000, 5_000, 23_000, 7, 9_000)
+        );
+        let empty = tempfile::tempdir().unwrap();
+        let defaults = ultra_shared(
+            &omp_settings::Settings::load_from(None, empty.path()),
+            Kind::Hypercode,
+            100_000,
+        );
+        let p = defaults.policy.as_ref().unwrap();
+        assert_eq!(
+            (
+                p.rule_offload_high,
+                p.rule_offload_low,
+                p.rule_tokens,
+                p.rule_every,
+                p.recall_chars
+            ),
+            (70_000, 35_000, 70_000, 0, 140_000)
+        );
+        for (key, value) in saved {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
     }
 
     #[test]
