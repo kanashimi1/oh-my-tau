@@ -141,12 +141,29 @@
 .side-title-btns { display: flex; align-items: center; gap: 10px; }
 
 @media (prefers-reduced-motion: no-preference) {
-  #session-list .sess-brand.working svg { animation: sess-brand-breathe 2s ease-in-out infinite; }
+  #session-list .sess-brand.working { position: relative; }
+  #session-list .sess-brand.working svg {
+    animation: sess-brand-breathe 1.15s ease-in-out infinite;
+    transform-origin: 50% 50%;
+    filter: drop-shadow(0 0 3px currentColor);
+  }
+  #session-list .sess-brand.working::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border: 1.5px solid transparent;
+    border-top-color: currentColor;
+    border-right-color: currentColor;
+    border-radius: 50%;
+    pointer-events: none;
+    animation: sess-brand-orbit 1.15s linear infinite;
+  }
 }
 @keyframes sess-brand-breathe {
-  0%, 100% { transform: scale(.88); opacity: .68; }
-  50% { transform: scale(1.08); opacity: 1; }
+  0%, 100% { transform: scale(.92) rotate(-12deg); opacity: .72; }
+  50% { transform: scale(1.16) rotate(12deg); opacity: 1; }
 }
+@keyframes sess-brand-orbit { to { transform: rotate(360deg); } }
 
 /* The archived group head is a button styled like a group head; buttons need
    their UA font/color reset spelled out (see .link-btn in app.css). */
