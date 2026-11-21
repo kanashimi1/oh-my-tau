@@ -126,9 +126,6 @@ impl Roster {
         let mut used = HashSet::new();
         let mut cache = self.models.lock().await;
         for row in &mut snapshot.agents {
-            if !matches!(row.model.as_str(), "" | "omp" | "omt") {
-                continue;
-            }
             let Some(declared) = row.session_file.as_deref().map(PathBuf::from) else {
                 continue;
             };
@@ -136,13 +133,23 @@ impl Roster {
             // not exist yet: omt is actually reading the --resume source.
             // Use it only when exactly one resumed process owns this cwd.
             let path = if declared.is_file() {
-                declared
+                declared.clone()
             } else {
                 resume_sources
                     .get(Path::new(&row.cwd))
-                    .cloned()
-                    .unwrap_or(declared)
+                    .and_then(|candidates| select_resume_source(candidates, &row.title))
+                    .map(|source| source.path.clone())
+                    .unwrap_or_else(|| declared.clone())
             };
+            if path != declared {
+                // History and the selected panel must follow the journal that
+                // the resumed process actually opened, not a placeholder that
+                // may never be created.
+                row.session_file = Some(path.to_string_lossy().into_owned());
+            }
+            if !matches!(row.model.as_str(), "" | "omp" | "omt") {
+                continue;
+            }
             used.insert(path.clone());
             let Ok(meta) = tokio::fs::metadata(&path).await else {
                 continue;
@@ -221,7 +228,7 @@ struct JournalTokens {
 }
 
 fn read_history(path: &Path, before: Option<u64>) -> Result<HistoryPage, HistoryError> {
-    const MAX_JOURNAL: u64 = 128 * 1024 * 1024;
+    const MAX_JOURNAL: u64 = 256 * 1024 * 1024;
     const PAGE_BYTES: u64 = 4 * 1024 * 1024;
     const PAGE_MESSAGES: usize = 96;
     if !path.is_absolute() || !path.extension().is_some_and(|ext| ext == "jsonl") {
@@ -532,9 +539,51 @@ async fn collect() -> Snapshot {
     merge(panes, spaces, names)
 }
 
+#[derive(Clone)]
+struct ResumeSource {
+    path: PathBuf,
+    title: Option<String>,
+}
+
+fn select_resume_source<'a>(
+    candidates: &'a [ResumeSource],
+    title: &str,
+) -> Option<&'a ResumeSource> {
+    if candidates.len() == 1 {
+        return candidates.first();
+    }
+    let mut matching: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| candidate.title.as_deref() == Some(title))
+        .collect();
+    (matching.len() == 1).then(|| matching.remove(0))
+}
+
 #[cfg(target_os = "linux")]
-fn resumed_session_sources() -> HashMap<PathBuf, PathBuf> {
-    let mut candidates: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
+fn journal_title(path: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).ok()?;
+    let mut head = Vec::new();
+    file.take(64 * 1024).read_to_end(&mut head).ok()?;
+    String::from_utf8_lossy(&head).lines().find_map(|line| {
+        let value: Value = serde_json::from_str(line).ok()?;
+        matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("title" | "title_change")
+        )
+        .then(|| {
+            value
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .flatten()
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn resumed_session_sources() -> HashMap<PathBuf, Vec<ResumeSource>> {
+    let mut candidates: HashMap<PathBuf, HashMap<PathBuf, Option<String>>> = HashMap::new();
     for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         if !entry
             .file_name()
@@ -564,19 +613,26 @@ fn resumed_session_sources() -> HashMap<PathBuf, PathBuf> {
         };
         let resume = PathBuf::from(String::from_utf8_lossy(resume).into_owned());
         if resume.is_absolute() && resume.extension().is_some_and(|ext| ext == "jsonl") {
-            candidates.entry(cwd).or_default().insert(resume);
+            let title = journal_title(&resume);
+            candidates.entry(cwd).or_default().insert(resume, title);
         }
     }
     candidates
         .into_iter()
-        .filter_map(|(cwd, paths)| {
-            (paths.len() == 1).then(|| (cwd, paths.into_iter().next().expect("length checked")))
+        .map(|(cwd, paths)| {
+            (
+                cwd,
+                paths
+                    .into_iter()
+                    .map(|(path, title)| ResumeSource { path, title })
+                    .collect(),
+            )
         })
         .collect()
 }
 
 #[cfg(not(target_os = "linux"))]
-fn resumed_session_sources() -> HashMap<PathBuf, PathBuf> {
+fn resumed_session_sources() -> HashMap<PathBuf, Vec<ResumeSource>> {
     HashMap::new()
 }
 
@@ -675,6 +731,25 @@ mod tests {
         );
         assert!(older.before.is_none());
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn disambiguates_resume_journals_by_the_pane_title() {
+        let candidates = vec![
+            ResumeSource {
+                path: PathBuf::from("/a.jsonl"),
+                title: Some("first".into()),
+            },
+            ResumeSource {
+                path: PathBuf::from("/b.jsonl"),
+                title: Some("second".into()),
+            },
+        ];
+        assert!(select_resume_source(&candidates, "missing").is_none());
+        assert_eq!(
+            select_resume_source(&candidates, "second").map(|s| s.path.as_path()),
+            Some(Path::new("/b.jsonl"))
+        );
     }
 
     #[tokio::test]
