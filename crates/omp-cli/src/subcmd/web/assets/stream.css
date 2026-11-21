@@ -107,7 +107,7 @@ body[data-glyph="minimal"] .tool-group .group-head::before {
 /* collapse glyph comes from .thinking-head::before above */
 .tool-group.expanded .group-head::before { transform: rotate(90deg); }
 .tool-group .group-head .group-count { color: var(--fg-muted); font-weight: 600; }
-.tool-group.collapsed .tool-steps .tool:not(.error):not(.running) { display: none; }
+.tool-group.collapsed .tool-steps .tool:not(.error):not(.running):not([data-result-flash]) { display: none; }
 .tool-group.collapsed .tool-steps .tool { border-bottom: none; }
 
 /* family icon */
@@ -119,15 +119,6 @@ body[data-glyph="minimal"] .tool-group .group-head::before {
 .tool.running .status { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; color: var(--accent); }
 .tool.running .status::before { display: none; }
 .tool.running .status .activity-tool { width: 20px; height: 20px; }
-
-/* ---------- Message-level elapsed timer ---------- */
-.msg-timer {
-  font: 11px var(--mono);
-  color: var(--fg-faint);
-  align-self: flex-start;
-  margin-top: 2px;
-}
-.msg-timer.live { color: var(--fg-muted); }
 
 /* ---------- Open action ---------- */
 .open-btn {
@@ -178,3 +169,32 @@ body[data-glyph="minimal"] .tool-group .group-head::before {
 #transcript .tool.ok .status { color: var(--fg-muted); }
 .tool-outcome:not([hidden]) { display: block; padding: 0 8px 4px 23px; color: var(--err); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 #transcript .tool-group .group-head { margin-left: 12px; border: 0; background: none; }
+
+/* Motion communicates the current stage; settled history stays still. */
+.thinking-wave { display: none; }
+.thinking.live .thinking-wave { display: inline-flex; gap: 3px; align-items: center; color: var(--accent); }
+.thinking-wave i { width: 3px; height: 9px; border-radius: 2px; background: currentColor; animation: tau-wave 1.25s ease-in-out infinite; }
+.thinking-wave i:nth-child(2) { animation-delay: .15s; }
+.thinking-wave i:nth-child(3) { animation-delay: .3s; }
+@keyframes tau-wave { 0%, 65%, 100% { transform: scaleY(.42); opacity: .55; } 32% { transform: scaleY(1); opacity: 1; } }
+#transcript .thinking.live .thinking-head::after,
+#transcript .tool.running .tool-head::before { border-color: var(--accent); background: var(--accent); }
+.tool-motion { display: none; }
+.tool.running .tool-motion { display: block; position: relative; overflow: hidden; height: 2px; margin: 0 6px 3px 0; background: var(--accent-muted); }
+.tool.running .tool-motion::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 24%; border-radius: 2px; background: var(--accent); animation: tau-tool-sweep 1.65s ease-in-out infinite; }
+@keyframes tau-tool-sweep { from { transform: translateX(-100%); } to { transform: translateX(420%); } }
+@media (prefers-reduced-motion: reduce) {
+  .thinking-wave i, .tool.running .tool-motion::after { animation: none; }
+}
+
+/* A live receipt: highlight the card itself, even inside folded tool groups. */
+.tool[data-result-flash="ok"] { --receipt-color: var(--ok); }
+.tool[data-result-flash="error"] { --receipt-color: var(--err); }
+.tool[data-result-flash] > .tool-head { animation: tau-tool-receipt .9s ease-out both; }
+@keyframes tau-tool-receipt {
+  0%, 18% { box-shadow: inset 3px 0 var(--receipt-color); background-color: color-mix(in srgb, var(--receipt-color) 18%, transparent); }
+  100% { box-shadow: inset 3px 0 transparent; background-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool[data-result-flash] > .tool-head { animation: none; box-shadow: inset 3px 0 var(--receipt-color); }
+}

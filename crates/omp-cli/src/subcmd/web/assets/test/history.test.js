@@ -14,6 +14,10 @@ function el(spec, props, ...children) {
     tag: parts[0], class: parts.slice(1), props: props || {},
     children: [], _text: "",
     append(...ns) { for (const n of ns.flat(Infinity)) if (n) node.children.push(n); },
+    prepend(...ns) { node.children.unshift(...ns.flat(Infinity).filter(Boolean)); },
+    setAttribute(k,v) { node.props[k]=v; },
+    addEventListener() {},
+    removeChild(n) { const i=node.children.indexOf(n); if(i>=0) node.children.splice(i,1); return n; },
     replaceChildren(...ns) { node.children = ns.filter(Boolean); },
     insertBefore(n, ref) {
       const i = ref ? node.children.indexOf(ref) : node.children.length;
@@ -21,9 +25,15 @@ function el(spec, props, ...children) {
       node.children.splice(i < 0 ? node.children.length : i, 0, ...flat);
     },
     get firstChild() { return node.children[0] || null; },
+    get lastChild() { return node.children[node.children.length - 1] || null; },
+    get childNodes() { return node.children; },
     get childElementCount() { return node.children.length; },
     textContent: "",
-    classList: { toggle() {}, add() {}, remove() {} },
+    classList: {
+      toggle(name, force) { const i=node.class.indexOf(name), on=force === undefined ? i<0 : !!force; if(on && i<0) node.class.push(name); if(!on && i>=0) node.class.splice(i,1); },
+      add(name) { if(!node.class.includes(name)) node.class.push(name); },
+      remove(name) { const i=node.class.indexOf(name); if(i>=0) node.class.splice(i,1); },
+    },
     isConnected: false,
     hidden: false,
   };
@@ -51,6 +61,7 @@ const OMP = global.OMP = {
 };
 window.OMP = OMP;
 require("../transcript.js");
+require("../tools.js");
 
 const user = (i) => ({ role: "user", content: `m${i}` });
 const textOf = (root) => {
@@ -355,6 +366,73 @@ const textOf = (root) => {
   assert.strictEqual(r.hasOlder, false); // single page already covers history
   assert.strictEqual(await r.fetchOlder(), null);
   console.log("ok backward paging works while streaming");
+})();
+
+// Wire deltas are all applied, but the complete message JSON is parsed only
+// when a consumer asks for the latest staged state (the UI does so per frame).
+(function () {
+  const decoder = new OMP.RpcDeltaDecoder();
+  const message = { role: "assistant", content: [{ type: "text", text: "" }] };
+  let previous = JSON.stringify(message), parses = 0;
+  const nativeParse = JSON.parse;
+  JSON.parse = (...args) => { parses++; return nativeParse(...args); };
+  try {
+    decoder.seed(message);
+    for (let i = 0; i < 120; ++i) {
+      message.content[0].text += " x" + i;
+      const next = JSON.stringify(message);
+      let p = 0; while (previous[p] === next[p]) p++;
+      let q = 0; while (q < previous.length - p && previous[previous.length - 1 - q] === next[next.length - 1 - q]) q++;
+      const staged = decoder.queue({ type: "message_update", messageId: "m", messageDelta: { n: previous.length, p, q, s: next.slice(p, next.length - q) } });
+      assert.strictEqual(staged.deferred, true);
+      previous = next;
+      if (i % 30 === 29) assert.strictEqual(decoder.take().message.content[0].text, message.content[0].text);
+    }
+    assert.strictEqual(parses, 4);
+    assert.strictEqual(decoder.take(), null); // clean staged state does not reparse
+    const full = decoder.queue({ type: "message_update", messageId: "m", message });
+    assert.strictEqual(full.message, message);
+    assert.strictEqual(decoder.queue({ type: "message_update", messageDelta: { n: 1, p: 99, q: 0, s: "bad" } }), null);
+  } finally { JSON.parse = nativeParse; }
+  console.log("ok RPC delta batching parses once per consumer frame");
+})();
+
+// Long histories keep a bounded DOM and can restore the newer edge on return.
+(function () {
+  const root = el("div"), scroller = el("div");
+  scroller.scrollHeight = 1000; scroller.scrollTop = 0; scroller.clientHeight = 300;
+  const t = new OMP.Transcript(root, scroller);
+  const messages = Array.from({ length: 700 }, (_, i) => user(i));
+  t.loadLatest(messages);
+  let guard = 20;
+  while (t.pendingOlder.length && guard--) t.prependOlder(128);
+  assert.strictEqual(root.childElementCount, 256);
+  assert.strictEqual(t.pendingNewer.length, 444);
+  guard = 20;
+  while (t.pendingNewer.length && guard--) t.appendNewer(128);
+  assert.strictEqual(root.childElementCount, 256);
+  assert.ok(textOf(root).includes("m699"));
+  console.log("ok transcript bounds DOM and restores newer history");
+})();
+
+(function () {
+  const label = OMP.toolSummary("eval", { language: "py", code: "from pathlib import Path\nimport subprocess, shutil\n\n# Inspect current session\nprint('ok')" });
+  assert.strictEqual(label, "py Inspect current session");
+  assert.strictEqual(OMP.toolSummary("eval", { language: "js", title: "Measure stream", code: "import x from 'x'" }), "js Measure stream");
+  console.log("ok tool summaries skip import prologues and prefer action titles");
+})();
+
+(function () {
+  const root = el("div"), scroller = el("div");
+  scroller.scrollHeight = 1000; scroller.scrollTop = 0; scroller.clientHeight = 300;
+  const t = new OMP.Transcript(root, scroller);
+  const content = Array.from({ length: 4 }, (_, i) => ({ type: "toolCall", id: "c" + i, name: "eval", arguments: { language: "py", title: "step " + i, code: "print(" + i + ")" } }));
+  t.renderMessage({ role: "assistant", content }, "tools");
+  const group = root.children[0].children[0];
+  assert.ok(group.class.includes("collapsed"));
+  const header = textOf(group).join(" ");
+  assert.ok(header.includes("4 python calls"), header);
+  console.log("ok consecutive eval calls collapse into a compact family group");
 })();
 
 console.log("history.test.js: all checks passed");

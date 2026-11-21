@@ -2,6 +2,8 @@
 // The conversation view: renders stored messages and live rpc events.
 (function (OMP) {
   const { el } = OMP;
+  const MAX_RENDERED_MESSAGES = 384;
+  const MIN_RENDERED_MESSAGES = 256;
 
   // Display name of a model: strip any "provider/" prefix ("kimi-code/k3.1-pro"
   // -> "k3.1-pro"); the full id stays available via the element title.
@@ -36,24 +38,28 @@
 
   class RpcDeltaDecoder {
     constructor() { this.reset(); }
-    reset() { this.messageJson = null; }
-    expand(frame) {
-      if (["message_start", "message_end", "agent_start", "agent_end"].includes(frame.type)) this.reset();
-      if (frame.type !== "message_update") return frame;
-      if (frame.message) {
-        this.messageJson = JSON.stringify(frame.message);
-        return frame;
-      }
+    reset() { this.messageJson = null; this.latestFrame = null; this.dirty = false; }
+    seed(message) { this.messageJson = JSON.stringify(message); this.latestFrame = null; this.dirty = false; }
+    // Apply every wire delta in order, but defer the expensive full-message
+    // JSON parse until the animation-frame flush. Only the newest state is rendered.
+    queue(frame) {
+      if (frame.message) { this.seed(frame.message); return frame; }
       if (!frame.messageDelta || this.messageJson == null) { this.reset(); return null; }
       const json = applyTextDelta(this.messageJson, frame.messageDelta);
       if (json == null) { this.reset(); return null; }
+      this.messageJson = json;
+      this.latestFrame = frame;
+      this.dirty = true;
+      return { messageId: frame.messageId, deferred: true };
+    }
+    take() {
+      if (!this.dirty || !this.latestFrame) return null;
       try {
-        const message = JSON.parse(json);
-        this.messageJson = json;
-        return { ...frame, message };
+        const message = JSON.parse(this.messageJson);
+        this.dirty = false;
+        return { ...this.latestFrame, message };
       } catch { this.reset(); return null; }
     }
-    seed(message) { this.messageJson = JSON.stringify(message); }
   }
   OMP.RpcDeltaDecoder = RpcDeltaDecoder;
 
@@ -145,7 +151,8 @@
       this.open = !!this.start;
       this.icon = OMP.mascot.svg("think", { size: 18, title: "Thinking" });
       this.labelNode = el("span.thinking-label");
-      this.head = el("button.thinking-head", { type: "button", onclick: () => this.toggle() }, this.icon, this.labelNode);
+      this.head = el("button.thinking-head", { type: "button", onclick: () => this.toggle() }, this.icon, this.labelNode,
+        el("span.thinking-wave", {"aria-hidden": "true"}, el("i"), el("i"), el("i")));
       this.body = el("div.md");
       this.inner = el("div.thinking-inner", null, this.body);
       this.node = el("div.thinking", null, this.head, el("div.thinking-clip", null, this.inner));
@@ -355,29 +362,35 @@
       this.scroller = scroller;
       this.decoder = new RpcDeltaDecoder();
       this.pendingOlder = []; // not-yet-rendered older history, chronological
+      this.pendingNewer = []; // evicted newer history, chronological
       this.loadingOlder = false;
+      this.restoringNewer = false;
       this.batchTarget = null; // set while rendering into a detached fragment
       this.reset();
       this.scheduleScroll = OMP.rafThrottle(() => this.scrollToBottom());
       this.scheduleFlush = OMP.rafThrottle(() => this.flushUpdates());
-      scroller.addEventListener?.("scroll", () => this.maybeLoadOlder());
+      scroller.addEventListener?.("scroll", () => { this.maybeLoadOlder(); this.maybeLoadNewer(); });
     }
 
     flushUpdates() {
       const updates = [...this.pendingUpdates];
       this.pendingUpdates.clear();
-      for (const [id, msg] of updates) this.updateAssistant(this.assistantEntry(id), msg, true);
+      for (const [id, staged] of updates) {
+        const msg = staged || this.decoder.take()?.message;
+        if (msg) this.updateAssistant(this.assistantEntry(id), msg, true);
+      }
     }
 
     reset() {
-      for (const e of (this.live ? this.live.values() : [])) if (e.timer) { clearInterval(e.timer); e.timer = null; }
       this.root.replaceChildren();
       this.live = new Map(); // messageId -> {node, parts, msg}
       this.cards = new Map(); // toolCallId -> ToolCard
       this.pendingUpdates = new Map(); // messageId -> newest streaming message
       this.turnStartedAt = null; // timestamp of the latest user prompt (total response time)
       this.pendingOlder = [];
+      this.pendingNewer = [];
       this.loadingOlder = false;
+      this.restoringNewer = false;
       this.batchTarget = null;
       this.olderSource = null;
       this.windowStart = null; // first node of the latest window (insert marker)
@@ -394,6 +407,7 @@
     }
     append(node) {
       if (this.batchTarget) { this.batchTarget.append(node); return node; }
+      if (this.pendingNewer.length && !this.restoringNewer) this.appendNewer(this.pendingNewer.length);
       this.stick = this.isNearBottom() || this.stick;
       this.root.append(node);
       this.scheduleScroll();
@@ -462,6 +476,7 @@
         // Keep the viewport anchored on the same content despite the growth.
         s.scrollTop = prevTop + (s.scrollHeight - prevHeight);
         this.stick = false;
+        this.trimNewer();
         return chunk;
       } finally { this.loadingOlder = false; }
     }
@@ -493,6 +508,12 @@
         .finally(() => { if (this.olderSource === src) this.loadingOlder = false; });
     }
 
+    maybeLoadNewer() {
+      if (!this.pendingNewer.length || this.restoringNewer) return;
+      const s = this.scroller;
+      if (s.scrollHeight - s.scrollTop - s.clientHeight < 240) this.appendNewer(128);
+    }
+
     addSystem(text, cls = "") {
       const long = String(text).split("\n").length > 18;
       return this.append(el("div.system" + (cls ? "." + cls : "") + (long ? ".collapsible" : ""), { text }));
@@ -522,13 +543,25 @@
         const n = g.steps.children.length;
         if (n > 3 && !g.header) {
           g.collapsed = true; // many steps: fold into an "N steps" group
-          g.header = el("div.group-head", {
+          g.header = el("button.group-head", {
+            type: "button",
             onclick: () => { g.collapsed = !g.collapsed; g.refresh(); },
           });
           g.node.prepend(g.header);
         }
         if (g.header) {
-          g.header.replaceChildren(el("span.group-count", { text: `${n} step${n === 1 ? "" : "s"}` }));
+          const cards = [...g.steps.children].map((node) => node.__toolCard).filter(Boolean);
+          const labels = cards.map((card) => card.name === "eval"
+            ? ({ py: "python", js: "JS" }[card.args.language] || card.args.language || "code") + " calls"
+            : card.name + " calls");
+          const family = labels.every((label) => label === labels[0]) ? labels[0] : "tool calls";
+          const totalMs = cards.reduce((sum, card) => {
+            const wall = card.result?.details?.wallTimeMs;
+            return sum + (typeof wall === "number" ? wall : Math.max(0, (card.endedAt || 0) - (card.startedAt || 0)));
+          }, 0);
+          const duration = totalMs >= 5 ? ` · ${OMP.fmtDuration(totalMs)}` : "";
+          g.header.replaceChildren(el("span.group-count", { text: `${n} ${family}${duration}` }));
+          g.header.setAttribute("aria-expanded", String(!g.collapsed));
           g.node.classList.toggle("collapsed", g.collapsed);
           g.node.classList.toggle("expanded", !g.collapsed);
         }
@@ -538,38 +571,89 @@
       return g;
     }
 
+    trackMessage(node, msg, messageId) {
+      if (node) { node.__ompMessage = msg; node.__ompMessageId = messageId || msg.toolCallId || null; }
+      return node;
+    }
+    releaseMessageNode(node) {
+      if (!node) return;
+      if (node.__ompMessageId) this.live.delete(node.__ompMessageId);
+      if (node.contains) for (const [id, card] of this.cards) if (node.contains(card.node)) this.cards.delete(id);
+      if (node.parentNode) node.parentNode.removeChild(node); else this.root.removeChild(node);
+    }
+    trimNewer() {
+      if (this.root.childElementCount <= MAX_RENDERED_MESSAGES) return;
+      const removed = [];
+      let node = this.root.lastChild;
+      while (node && this.root.childElementCount > MIN_RENDERED_MESSAGES) {
+        const previous = node.previousSibling || this.root.children?.[this.root.children.indexOf(node) - 1] || null;
+        if (node.__ompMessage && !(node.__ompMessageId && this.live.has(node.__ompMessageId))) {
+          removed.push(node.__ompMessage);
+          const wasWindowStart = node === this.windowStart;
+          this.releaseMessageNode(node);
+          if (wasWindowStart) this.windowStart = null;
+        }
+        node = previous;
+      }
+      if (removed.length) this.pendingNewer.unshift(...removed.reverse());
+      if (this.windowStart && !this.windowStart.isConnected) this.windowStart = null;
+    }
+    trimOlder() {
+      if (this.root.childElementCount <= MAX_RENDERED_MESSAGES) return;
+      const removed = [];
+      while (this.root.firstChild && this.root.childElementCount > MIN_RENDERED_MESSAGES) {
+        const node = this.root.firstChild;
+        if (!node.__ompMessage) break;
+        removed.push(node.__ompMessage);
+        if (node === this.windowStart) this.windowStart = null;
+        this.releaseMessageNode(node);
+      }
+      if (removed.length) this.pendingOlder.push(...removed);
+    }
+    appendNewer(chunkSize = 128) {
+      if (!this.pendingNewer.length) return null;
+      const chunk = this.pendingNewer.splice(0, Math.max(1, chunkSize));
+      this.restoringNewer = true;
+      try { for (const msg of chunk) this.renderMessage(msg); }
+      finally { this.restoringNewer = false; }
+      this.trimOlder();
+      this.stick = true;
+      this.scheduleScroll();
+      return chunk;
+    }
+
     /** Render one complete message (history or message_end without a live node). */
     renderMessage(msg, messageId) {
       if (!msg || typeof msg !== "object") return;
       switch (msg.role) {
         case "user":
           if (typeof msg.timestamp === "number") this.turnStartedAt = msg.timestamp;
-          return this.renderUser(msg);
+          return this.trackMessage(this.renderUser(msg), msg, messageId);
         case "assistant": {
           const entry = this.assistantEntry(messageId);
           this.updateAssistant(entry, msg, false);
-          return entry.node;
+          return this.trackMessage(entry.node, msg, messageId);
         }
-        case "toolResult": return this.toolResult(msg);
+        case "toolResult": return this.trackMessage(this.toolResult(msg), msg, messageId);
         case "bashExecution": {
           const c = this.card("bash-" + (msg.timestamp || Math.random()), "bash");
           c.setArgs({ command: msg.command });
           const out = (msg.output || "") + (msg.exitCode ? `\n[exit ${msg.exitCode}]` : "") + (msg.cancelled ? "\n[cancelled]" : "");
           c.finish({ content: [{ type: "text", text: out }] }, !!msg.exitCode);
-          return this.append(c.node);
+          return this.trackMessage(this.append(c.node), msg, messageId);
         }
         case "compactionSummary": case "branchSummary": {
           const label = msg.role === "compactionSummary"
             ? `Context compacted${msg.tokensBefore ? ` (${OMP.fmtTokens(msg.tokensBefore)} tokens before)` : ""}`
             : "Branch summary";
           const box = el("details.summary-box", null, el("summary", { text: label }), el("div.md", { html: OMP.md(msg.summary || "") }));
-          return this.append(box);
+          return this.trackMessage(this.append(box), msg, messageId);
         }
         case "custom": case "hookMessage": {
           if (msg.display === false) return;
           const text = typeof msg.content === "string" ? msg.content : OMP.contentText(msg.content);
           if (!text) return;
-          return this.append(el("div.system", { text: (msg.customType ? `[${msg.customType}] ` : "") + text }));
+          return this.trackMessage(this.append(el("div.system", { text: (msg.customType ? `[${msg.customType}] ` : "") + text })), msg, messageId);
         }
         default: return;
       }
@@ -593,12 +677,13 @@
       }
       const card = this.card(msg.toolCallId || "r" + Math.random(), msg.toolName);
       card.finish(msg, msg.isError);
-      this.append(card.node);
+      return this.append(card.node);
     }
 
     assistantEntry(messageId) {
       if (messageId && this.live.has(messageId)) return this.live.get(messageId);
-      const entry = { node: el("div.msg.assistant"), parts: [], tail: null, timer: null, startedAt: null, badge: null, done: false };
+      const entry = { node: el("div.msg.assistant"), parts: [], tail: null, startedAt: null, done: false };
+      entry.node.__ompMessageId = messageId || null;
       if (messageId) this.live.set(messageId, entry);
       this.append(entry.node);
       return entry;
@@ -609,28 +694,15 @@
       return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
     }
 
-    // Message-level elapsed timer: starts with the first live content, ticks
-    // once per second, freezes at message_end. History never gets one.
-    startTimer(entry) {
+    // Timing is metadata, not a separate ticking row in the reading flow.
+    startTiming(entry) {
       if (entry.startedAt && !entry.done) return;
-      if (entry.timer) { clearInterval(entry.timer); entry.timer = null; }
       entry.done = false;
       entry.startedAt = Date.now();
-      if (!entry.badge) entry.badge = el("span.msg-timer");
-      entry.badge.classList.add("live");
-      entry.badge.textContent = this.fmtElapsed(0);
-      if (!entry.badge.isConnected) entry.node.append(entry.badge);
-      entry.timer = setInterval(() => {
-        entry.badge.textContent = this.fmtElapsed(Date.now() - entry.startedAt);
-      }, 1000);
     }
 
-    stopTimer(entry) {
-      if (entry.timer) { clearInterval(entry.timer); entry.timer = null; }
-      if (!entry.startedAt) return;
-      entry.done = true;
-      entry.badge.classList.remove("live");
-      entry.badge.textContent = this.fmtElapsed(Date.now() - entry.startedAt);
+    stopTiming(entry) {
+      if (entry.startedAt) entry.done = true;
     }
 
     /** One copy action per assistant message: created once, updated in place
@@ -662,10 +734,12 @@
     }
 
     updateAssistant(entry, msg, streaming) {
+      entry.node.__ompMessage = msg;
+      entry.node.__ompMessageId = msg.messageId || entry.node.__ompMessageId || null;
       const stick = this.isNearBottom();
       const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content || "") }];
-      if (streaming && content.length) this.startTimer(entry);
-      else if (!streaming && entry.badge) this.stopTimer(entry);
+      if (streaming && content.length) this.startTiming(entry);
+      else if (!streaming && entry.badge) this.stopTiming(entry);
       content.forEach((block, i) => {
         let part = entry.parts[i];
         const kind = block.type;
@@ -685,6 +759,7 @@
             // Consecutive calls collect into one compact step group.
             const g = this.toolGroup(entry, before ? before.node : entry.tail);
             g.steps.append(part.node);
+            part.node.__refreshGroup = g.refresh;
             g.refresh();
           } else {
             entry.group = null; // a non-tool part closes the current step group
@@ -748,52 +823,48 @@
             if (this.turnStartedAt <= endedAt) entry.totalMs = endedAt - this.turnStartedAt;
             this.turnStartedAt = null;
           }
-          const totalSpan = entry.totalMs > 0
-            ? el("span.msg-total", { text: `⏱ ${this.fmtElapsed(entry.totalMs)}`, title: `total response time: ${this.fmtElapsed(entry.totalMs)}` })
-            : null;
           // Wall-clock time the answer was finished (local, HH:MM). History
           // replay uses the stamped completedAt; a live turn uses now.
           const doneAt = new Date(msg.completedAt || (perf && perf.endedAt) || Date.now());
           const clockSpan = el("span.msg-clock", {
             text: doneAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
             title: `answered ${doneAt.toLocaleString()}` });
-          const meta = el("div.meta", null,
+          const details = [
+            entry.totalMs > 0 ? `Total response: ${this.fmtElapsed(entry.totalMs)}` : null,
+            perf ? `Final model call: ${this.fmtElapsed(perf.durMs)}${perf.tps ? ` · ${perf.tps.toFixed(1)} t/s` : ""}` : null,
+            u.cost && u.cost.total ? `Cost: ${OMP.fmtCost(u.cost.total)}` : null,
+          ].filter(Boolean).join("\n");
+          const meta = el("div.meta", { title: details },
             clockSpan,
             el("span", { text: modelName(msg.model), title: msg.model || "" }),
-            totalSpan,
-            perfSpan,
-            el("span", { text: `↑${OMP.fmtTokens((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0))} ↓${OMP.fmtTokens(u.output)}` }),
-            u.cost && u.cost.total ? el("span", { text: OMP.fmtCost(u.cost.total) }) : null);
+            el("span", { text: `↑${OMP.fmtTokens((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0))} ↓${OMP.fmtTokens(u.output)}` }));
           if (entry.meta) entry.meta.replaceWith(meta); else entry.node.append(meta);
           entry.meta = meta;
-          // The meta footer carries the final timing; drop the live timer badge.
-          if (perfSpan && entry.badge) { entry.badge.remove(); entry.badge = null; }
         }
       }
-      // Keep the timer badge last (parts are inserted before it as they stream).
-      if (entry.badge && entry.badge.isConnected) entry.node.append(entry.badge);
       if (!entry.node.childNodes.length) entry.node.hidden = true; else entry.node.hidden = false;
       if (stick) this.scheduleScroll();
     }
 
     /** Apply one rpc event frame. Returns true when handled. */
     onEvent(f) {
-      const expanded = this.decoder.expand(f);
-      if (!expanded) return true;
-      f = expanded;
+      if (["message_start", "message_end", "agent_start", "agent_end"].includes(f.type)) this.decoder.reset();
       switch (f.type) {
         case "message_start":
+          if (f.message) this.decoder.seed(f.message);
           if (f.message && f.message.role === "assistant") this.updateAssistant(this.assistantEntry(f.messageId), f.message, true);
           else this.renderMessage(f.message, f.messageId);
           return true;
-        case "message_update":
-          if (f.message && f.message.role === "assistant") {
-            // Coalesce deltas: each update carries the full message, so only
-            // the newest one per frame needs rendering.
-            this.pendingUpdates.set(f.messageId, f.message);
+        case "message_update": {
+          const staged = this.decoder.queue(f);
+          if (staged) {
+            // Raw deltas retain only their reconstructed JSON source until the
+            // frame flush; full snapshots can skip the decoder entirely.
+            this.pendingUpdates.set(f.messageId, staged.deferred ? null : staged.message);
             this.scheduleFlush();
           }
           return true;
+        }
         case "message_end":
           this.pendingUpdates.delete(f.messageId);
           if (f.message && f.message.role === "assistant") {

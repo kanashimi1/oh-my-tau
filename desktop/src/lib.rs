@@ -36,6 +36,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 static WINDOW_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 mod dictation;
+mod dictation_runtime;
 mod quick;
 mod settings;
 
@@ -76,12 +77,23 @@ async fn dictation_settings() -> settings::DictationSettings {
 #[tauri::command]
 async fn set_dictation(enabled: bool, hold_ms: u64, language: String) -> Result<(), String> {
     let language = language.trim();
-    if language.is_empty() || language.len() > 32 || !language.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+    if language.is_empty()
+        || language.len() > 32
+        || !language
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    {
         return Err("invalid language".into());
     }
     let mut s = settings::load();
-    s.dictation = settings::DictationSettings { enabled, hold_ms, language: language.into() };
-    settings::save(&s)
+    s.dictation = settings::DictationSettings {
+        enabled,
+        hold_ms,
+        language: language.into(),
+    };
+    settings::save(&s)?;
+    dictation_runtime::update(&s.dictation);
+    Ok(())
 }
 
 /// Re-register the capture shortcut live; on failure the previous one stays.
@@ -284,9 +296,9 @@ fn register_toast_app_id() {
 }
 
 /// Screen pixels of a region of the calling window's page (CSS px relative
-/// to the viewport) as a `data:image/png;base64,…` URL. Used to pin pages,
-/// PDFs and documents in the preview panel, whose content a page script
-/// cannot read.
+/// to the viewport) as raw PNG bytes. The web bridge performs the one required
+/// data-URL conversion for composer storage; no large JSON string or numeric
+/// array crosses the Tauri command boundary.
 #[tauri::command]
 async fn capture_rect(
     window: tauri::WebviewWindow,
@@ -294,7 +306,7 @@ async fn capture_rect(
     y: f64,
     w: f64,
     h: f64,
-) -> Result<String, String> {
+) -> Result<tauri::ipc::Response, String> {
     // Monitor pixels: the caller is the window the user just clicked, so it
     // is on top.
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
@@ -331,10 +343,7 @@ async fn capture_rect(
     image::DynamicImage::ImageRgba8(img)
         .write_to(&mut out, image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
-    Ok(format!(
-        "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(out.into_inner())
-    ))
+    Ok(tauri::ipc::Response::new(out.into_inner()))
 }
 
 pub fn run() {
@@ -383,6 +392,7 @@ pub fn run() {
             setup_global_shortcut(app)?;
             quick::register(app.handle());
             setup_main_window(app)?;
+            dictation_runtime::register(app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -739,7 +749,7 @@ async fn capture_done(window: tauri::WebviewWindow) {
 }
 
 /// Append one line to `%TEMP%\\tau.log` (a GUI-subsystem exe has no stderr).
-fn log_line(msg: &str) {
+pub(crate) fn log_line(msg: &str) {
     let path = std::env::temp_dir().join("tau.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)

@@ -119,7 +119,7 @@
     const ws = new WebSocket(`${proto}://${location.host}/ws/${S.agentId}`);
     S.ws = ws;
     ws.onopen = () => { loadModels(); };
-    ws.onmessage = (e) => { let f; try { f = JSON.parse(e.data); } catch { return; } onFrame(f); };
+    ws.onmessage = (e) => { let f; try { f = JSON.parse(e.data); } catch { return; } for (const item of OMP.framesFrom(f)) onFrame(item); };
     ws.onclose = () => { if (S.ws === ws) { S.ws = null; setNote("Agent connection lost."); } };
   }
 
@@ -137,8 +137,7 @@
   }
 
   function onFrame(f) {
-    f = S.decoder.expand(f);
-    if (!f) return;
+    if (["message_start", "message_end", "agent_start", "agent_end"].includes(f.type)) S.decoder.reset();
     if (f.type === "response" && f.id && S.pending.has(f.id)) {
       const p = S.pending.get(f.id);
       S.pending.delete(f.id);
@@ -162,9 +161,16 @@
         S.streaming = false;
         setButtons();
         return;
-      case "message_start": case "message_update": {
+      case "message_start":
+        if (f.message) S.decoder.seed(f.message);
         if (!f.message || f.message.role !== "assistant") return;
         S.pendingMessages.set(f.messageId || "live", f.message);
+        scheduleMessageFlush();
+        return;
+      case "message_update": {
+        const staged = S.decoder.queue(f);
+        if (!staged) return;
+        S.pendingMessages.set(f.messageId || "live", staged.deferred ? null : staged.message);
         scheduleMessageFlush();
         return;
       }
@@ -193,8 +199,9 @@
       S.flushScheduled = false;
       const pending = [...S.pendingMessages];
       S.pendingMessages.clear();
-      for (const [id, message] of pending) {
-        answerEl(id === "live" ? null : id).replaceChildren(renderText(OMP.contentText(message.content)));
+      for (const [id, staged] of pending) {
+        const message = staged || S.decoder.take()?.message;
+        if (message) answerEl(id === "live" ? null : id).replaceChildren(renderText(OMP.contentText(message.content)));
       }
     });
   }

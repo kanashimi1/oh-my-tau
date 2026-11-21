@@ -148,7 +148,7 @@
     composer.setTextOnly(!!herdrPane);
     $("#attach-btn").hidden = false;
     $("#composer").placeholder = herdrPane ? "Message this Herdr agent…" : "Ask anything… (/ commands · ! shell · Enter send · Shift+Enter newline)";
-    Object.assign(S, { herdrActivity: false, herdrSending: null, herdrOmitted: false, herdrTokens: null, herdrModel: null, herdrThinkingLevel: null, herdrUltra: null, liveReply: null });
+    Object.assign(S, { herdrActivity: false, herdrSending: null, herdrOmitted: false, herdrTokens: null, herdrModel: null, herdrThinkingLevel: null, herdrUltra: null, liveReply: null, runUsage: null, streamPhase: null, runTimeline: null });
     $("#herdr-output").textContent = "";
     $("#empty-state").hidden = !!(agentId || herdrPane);
     $("#menu-btn").hidden = !!herdrPane;
@@ -167,11 +167,12 @@
       S.lastFrameAt = Date.now();
       let frame;
       try { frame = JSON.parse(e.data); } catch { return; }
-      onFrame(frame);
+      for (const item of OMP.framesFrom(frame)) onFrame(item);
     };
     ws.onclose = (ev) => {
       if (S.ws !== ws) return;
       S.ws = null;
+      if (S.streaming) setStreaming(false);
       composer.setEnabled(false);
       sessionCache.markAllDirty(); // frames may have been missed while detached
       if (!S.dead) {
@@ -324,6 +325,7 @@
   }
 
   async function onOpen(ws) {
+    const timelineAtOpen = S.runTimeline;
     composer.setEnabled(true);
     send({ type: "set_ask_dialog", enabled: true });
     try {
@@ -403,7 +405,8 @@
       } else {
         transcript.loadLatest(messages);
       }
-      setStreaming(streaming);
+      // Events received during history load are newer than the state snapshot.
+      if (S.runTimeline === timelineAtOpen) setStreaming(streaming, true);
       renderHeader();
       refreshStats();
     } catch (e) {
@@ -430,10 +433,34 @@
     composer.setCommands([...S.commands, ...LOCAL_COMMANDS.filter((c) => !names.has(c.name))]);
   }
 
-  function setStreaming(on) {
-    if (on && !S.streaming) S.runStart = Date.now();
-    if (!on) S.toolsRunning = 0;
+  function markRunPhase() {
+    if (!S.streaming || !S.runTimeline) return;
+    const phase = S.toolsRunning > 0 ? "tool" : S.streamPhase;
+    const steps = S.runTimeline.steps;
+    const previous = steps.at(-1);
+    if (previous?.phase === phase) return;
+    const now = performance.now();
+    if (previous) previous.end = now;
+    steps.push({ phase, start: now, end: null });
+  }
+
+  function setStreaming(on, partial = false) {
+    if (on && !S.streaming) {
+      S.runStart = Date.now();
+      S.runUsage = { output: 0, estimated: false, completed: new Set() };
+      S.liveReply = null;
+      S.streamPhase = "waiting";
+      S.runTimeline = { steps: [], partial };
+    }
+    if (!on) {
+      const step = S.runTimeline?.steps.at(-1);
+      if (step && step.end == null) step.end = performance.now();
+      if (S.streaming && S.liveReply) finishLiveReply(S.liveReply.id);
+      S.toolsRunning = 0;
+      S.streamPhase = null;
+    }
     S.streaming = on;
+    markRunPhase();
     composer.setStreaming(on);
     renderStatus();
   }
@@ -442,6 +469,25 @@
     send({ type: "extension_ui_response", id, ...value });
   }
 
+  const deltaEncoder = new TextEncoder();
+
+  function liveOutput(reply) {
+    if (!reply) return { output: 0, estimated: false };
+    const pending = reply.bytes - reply.reportedBytes;
+    return { output: (reply.reported ?? 0) + Math.ceil(pending / 4), estimated: pending > 0 };
+  }
+  function finishLiveReply(id, output) {
+    const run = S.runUsage;
+    if (!run || run.completed.has(id)) return;
+    const reply = S.liveReply?.id === id ? S.liveReply : null;
+    // Providers without usage send the default zero. Do not discard a stream
+    // estimate when zero accompanies output that we actually received.
+    const count = Number.isSafeInteger(output) && output > 0 ? { output, estimated: false } : liveOutput(reply);
+    run.output += count.output;
+    run.estimated ||= count.estimated;
+    run.completed.add(id);
+    if (reply) S.liveReply = null;
+  }
   function onFrame(f) {
     // Public frame bus: feature modules (artifacts, desktop bridge, …) observe
     // agent frames here instead of patching this switch.
@@ -473,16 +519,21 @@
       case "agent_end": setStreaming(false); refreshStats(); refreshAgents(); loadSessions(); updateHome(); return;
       case "session_settled": setStreaming(false); refreshAgents(); return;
       case "agent_settled": setStreaming(false); return;
+      case "turn_start":
+        if (S.streaming) { S.streamPhase = "waiting"; markRunPhase(); OMP.repaintUsage(); }
+        return;
       case "turn_end": refreshStats(); refreshState(); return;
       case "queue_update":
         S.queue = { steering: f.steering || [], followUp: f.followUp || [] };
         return renderQueue();
       case "session_loaded":
+        if (!S.streaming) { S.runTimeline = null; renderStatus(); }
         sessionCache.markAllDirty();
         transcript.loadLatest(f.messages);
         refreshState(); refreshStats(); refreshAgents();
         return;
       case "session_reset":
+        if (!S.streaming) { S.runTimeline = null; renderStatus(); }
         sessionCache.markAllDirty();
         transcript.reset();
         refreshState(); refreshStats(); refreshAgents();
@@ -497,23 +548,38 @@
         return;
       case "tool_execution_start": case "tool_execution_end":
         S.toolsRunning = Math.max(0, (S.toolsRunning || 0) + (f.type === "tool_execution_start" ? 1 : -1));
+        if (f.type === "tool_execution_end" && S.streamPhase === "toolcall") S.streamPhase = "waiting";
+        markRunPhase();
         renderStatus();
         return transcript.onEvent(f);
       case "message_update": {
         const d = f.assistantMessageEvent;
-        if (!S.liveReply || S.liveReply.id !== f.messageId) S.liveReply = {id: f.messageId, bytes: 0, actual: 0, actualBytes: 0};
-        if (/^(text|thinking|toolcall)_delta$/.test(d?.type)) S.liveReply.bytes += (d.delta || "").length;
-        const actual = f.liveUsage?.output ?? f.message?.usage?.output;
-        if (Number.isFinite(actual) && actual > 0) {
-          S.liveReply.actual = actual;
-          S.liveReply.actualBytes = S.liveReply.bytes;
+        if (S.streaming && !S.runUsage?.completed.has(f.messageId)) {
+          if (S.liveReply && S.liveReply.id !== f.messageId) finishLiveReply(S.liveReply.id);
+          const reply = S.liveReply ??= { id: f.messageId, bytes: 0, reported: null, reportedBytes: 0 };
+          if (/^(text|thinking|toolcall)_(start|delta)$/.test(d?.type)) {
+            S.streamPhase = d.type.split("_")[0];
+            markRunPhase();
+            if (typeof d.delta === "string") reply.bytes += deltaEncoder.encode(d.delta).length;
+          }
+          const output = f.liveUsage?.output ?? f.message?.usage?.output;
+          // Some providers repeat the cumulative snapshot in every frame.
+          if (Number.isSafeInteger(output) && output > (reply.reported ?? 0)) {
+            reply.reported = output;
+            reply.reportedBytes = reply.bytes;
+          }
+          OMP.repaintUsage();
         }
-        OMP.repaintUsage();
         return transcript.onEvent(f);
       }
       case "message_start": case "message_end":
         if (f.type === "message_end" && f.message?.role === "assistant") {
-          S.liveReply = null;
+          if (S.streaming) {
+            finishLiveReply(f.messageId, f.message.usage?.output);
+            // Keep the last text segment active until the request ends or
+            // the next turn starts; there is no second model wait after it.
+            OMP.repaintUsage();
+          }
           refreshStats();
         }
         sessionCache.markAllDirty();
@@ -697,7 +763,11 @@
 
   // Shell rendering and actions live in shell.js (loaded first).
   function renderHeader() { OMP.shellImpl.renderHeader(S); }
-  function renderStatus() { OMP.shellImpl.renderStatus(S); }
+  function renderStatus() {
+    const reply = liveOutput(S.liveReply);
+    const usage = S.runUsage && { output: S.runUsage.output + reply.output, estimated: S.runUsage.estimated || reply.estimated };
+    OMP.shellImpl.renderStatus(S, usage);
+  }
   OMP.repaintUsage = OMP.rafThrottle(renderStatus);
   function renderSidebar() { OMP.shellImpl.renderSidebar(S); }
   function renderQueue() { OMP.shellImpl.renderQueue(S); }

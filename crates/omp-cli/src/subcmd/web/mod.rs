@@ -813,10 +813,11 @@ async fn preview_api(req: Request<Incoming>) -> Response<Body> {
     }
 }
 
-/// Dictation: raw audio body (`?ext=webm&lang=ru`) → `{text, language}`.
+/// Dictation: raw audio body (`?ext=wav&lang=ru&partial=1`) → `{text, language}`.
 async fn transcribe(req: Request<Incoming>) -> Response<Body> {
     let ext = query_param(&req, "ext").unwrap_or_else(|| "webm".to_owned());
     let lang = query_param(&req, "lang").filter(|l| !l.is_empty() && l != "auto");
+    let partial = query_param(&req, "partial").is_some_and(|v| v == "1");
     let body = match http_body_util::Limited::new(req.into_body(), stt::MAX_AUDIO)
         .collect()
         .await
@@ -827,7 +828,7 @@ async fn transcribe(req: Request<Incoming>) -> Response<Body> {
     if body.is_empty() {
         return error(StatusCode::BAD_REQUEST, "empty recording");
     }
-    match stt::transcribe(&body, &ext, lang.as_deref()).await {
+    match stt::transcribe(&body, &ext, lang.as_deref(), partial).await {
         Ok(v) => json_response(StatusCode::OK, &v),
         Err(e) => error(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
     }
@@ -919,6 +920,36 @@ fn websocket(hub: &Hub, req: Request<Incoming>, id: &str) -> Response<Body> {
 /// the network layer, so an otherwise idle socket (agent parked waiting for
 /// subagents) keeps traffic flowing and a half-open peer is noticed on send.
 const WS_PING_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+const WS_BATCH_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
+const WS_BATCH_MAX_FRAMES: usize = 64;
+const WS_BATCH_MAX_BYTES: usize = 256 * 1024;
+
+fn ws_immediate(frame: &str) -> bool {
+    [
+        "\"type\":\"message_end\"",
+        "\"type\":\"agent_end\"",
+        "\"type\":\"prompt_result\"",
+        "\"type\":\"error\"",
+        "\"type\":\"web_error\"",
+        "\"type\":\"web_lagged\"",
+        "\"type\":\"web_agent_exit\"",
+    ]
+    .iter()
+    .any(|kind| frame.contains(kind))
+}
+
+fn take_ws_batch(frames: &mut Vec<String>, bytes: &mut usize) -> Option<String> {
+    if frames.is_empty() {
+        return None;
+    }
+    let mut payload = String::with_capacity(*bytes + 32);
+    payload.push_str("{\"type\":\"web_batch\",\"frames\":[");
+    payload.push_str(&frames.join(","));
+    payload.push_str("]}");
+    frames.clear();
+    *bytes = 0;
+    Some(payload)
+}
 
 /// Pump one browser socket <-> one agent until either side ends. Every close
 /// is logged to stderr (journal) with its reason, age and frame counts.
@@ -955,24 +986,71 @@ async fn bridge(agent: Arc<Agent>, ws: WebSocketStream<TokioIo<hyper::upgrade::U
     let mut ping =
         tokio::time::interval_at(tokio::time::Instant::now() + WS_PING_EVERY, WS_PING_EVERY);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut batch = Vec::new();
+    let mut batch_bytes = 0usize;
+    let mut out_batches = 0u64;
+    let mut flush = tokio::time::interval_at(
+        tokio::time::Instant::now() + WS_BATCH_EVERY,
+        WS_BATCH_EVERY,
+    );
+    flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let reason: String = loop {
         tokio::select! {
             frame = rx.recv() => match frame {
                 Ok(line) => {
-                    if sink.send(Message::text(line.to_string())).await.is_err() {
-                        break "send to browser failed".to_string();
-                    }
                     out_frames += 1;
+                    let immediate = ws_immediate(&line);
+                    let text = line.to_string();
+                    if immediate {
+                        if let Some(payload) = take_ws_batch(&mut batch, &mut batch_bytes) {
+                            out_batches += 1;
+                            if sink.send(Message::text(payload)).await.is_err() {
+                                break "send to browser failed".to_string();
+                            }
+                        }
+                        if sink.send(Message::text(text)).await.is_err() {
+                            break "send to browser failed".to_string();
+                        }
+                    } else {
+                        batch_bytes += text.len() + 1;
+                        batch.push(text);
+                        if batch.len() >= WS_BATCH_MAX_FRAMES || batch_bytes >= WS_BATCH_MAX_BYTES {
+                            if let Some(payload) = take_ws_batch(&mut batch, &mut batch_bytes) {
+                                out_batches += 1;
+                                if sink.send(Message::text(payload)).await.is_err() {
+                                    break "send to browser failed".to_string();
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     lagged_total += n;
+                    if let Some(payload) = take_ws_batch(&mut batch, &mut batch_bytes) {
+                        out_batches += 1;
+                        if sink.send(Message::text(payload)).await.is_err() {
+                            break "send to browser failed (lag note)".to_string();
+                        }
+                    }
                     let note = json!({"type": "web_lagged", "skipped": n});
                     if sink.send(Message::text(note.to_string())).await.is_err() {
                         break "send to browser failed (lag note)".to_string();
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    if let Some(payload) = take_ws_batch(&mut batch, &mut batch_bytes) {
+                        out_batches += 1;
+                        let _ = sink.send(Message::text(payload)).await;
+                    }
                     break "agent event channel closed".to_string();
+                }
+            },
+            _ = flush.tick(), if !batch.is_empty() => {
+                if let Some(payload) = take_ws_batch(&mut batch, &mut batch_bytes) {
+                    out_batches += 1;
+                    if sink.send(Message::text(payload)).await.is_err() {
+                        break "batched send to browser failed".to_string();
+                    }
                 }
             },
             _ = ping.tick() => {
@@ -1004,11 +1082,12 @@ async fn bridge(agent: Arc<Agent>, ws: WebSocketStream<TokioIo<hyper::upgrade::U
         }
     };
     eprintln!(
-        "omt web: ws close agent={} reason={} age={}s out={} in={} lagged={}",
+        "omt web: ws close agent={} reason={} age={}s out={} batches={} in={} lagged={}",
         agent.id,
         reason,
         started.elapsed().as_secs(),
         out_frames,
+        out_batches,
         in_frames,
         lagged_total
     );
@@ -1017,6 +1096,23 @@ async fn bridge(agent: Arc<Agent>, ws: WebSocketStream<TokioIo<hyper::upgrade::U
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn websocket_batches_preserve_order_and_bound_payloads() {
+        let mut frames = vec!["{\"type\":\"one\"}".into(), "{\"type\":\"two\"}".into()];
+        let mut bytes = 31usize;
+        let payload = take_ws_batch(&mut frames, &mut bytes).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["type"], "web_batch");
+        assert_eq!(value["frames"][0]["type"], "one");
+        assert_eq!(value["frames"][1]["type"], "two");
+        assert!(frames.is_empty());
+        assert_eq!(bytes, 0);
+        assert!(take_ws_batch(&mut frames, &mut bytes).is_none());
+        assert!(ws_immediate("{\"type\":\"message_end\"}"));
+        assert!(ws_immediate("{\"type\":\"error\"}"));
+        assert!(!ws_immediate("{\"type\":\"message_update\"}"));
+    }
 
     #[test]
     fn cross_site_pages_cannot_drive_the_agent() {

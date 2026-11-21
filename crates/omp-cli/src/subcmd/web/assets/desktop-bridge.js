@@ -68,11 +68,21 @@
   };
 
   // ── capture (preview pins) ─────────────────────────────────────────────
+  /** Raw native PNG IPC -> the data URL required by the composer attachment. */
+  const blobDataUrl = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("could not encode captured PNG"));
+    reader.readAsDataURL(blob);
+  });
   /** Screen pixels of a viewport rect as a PNG data URL: native capture in
    *  the desktop app, tab capture (asks once per pin) in a browser. */
   desktop.captureRect = async function (rect) {
     const r = { x: Math.max(0, rect.left), y: Math.max(0, rect.top), w: rect.width, h: rect.height };
-    if (inTauri()) return TAURI.core.invoke("capture_rect", r);
+    if (inTauri()) {
+      const bytes = await TAURI.core.invoke("capture_rect", r);
+      return blobDataUrl(new Blob([bytes], { type: "image/png" }));
+    }
     if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("screen capture is not available in this browser");
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: "browser" }, preferCurrentTab: true, audio: false });
     try {

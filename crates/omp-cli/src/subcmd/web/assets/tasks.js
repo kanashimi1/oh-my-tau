@@ -96,8 +96,8 @@ window.OMP = window.OMP || {};
       ws.onmessage = (e) => {
         let f;
         try { f = JSON.parse(e.data); } catch { return; }
-        if (f.type === "response" && f.id === "tc-stats") {
-          const data = f.success === false ? null : (f.data || null);
+        for (const item of OMP.framesFrom(f)) if (item.type === "response" && item.id === "tc-stats") {
+          const data = item.success === false ? null : (item.data || null);
           stats.set(id, data && (data.tokens || data.cost != null)
             ? { status: "ok", data, at: Date.now() }
             : { status: "empty", at: Date.now() });

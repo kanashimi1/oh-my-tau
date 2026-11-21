@@ -282,7 +282,7 @@ async fn attach_once(port: u16, agent_id: &str, seq: &mut usize) -> Result<Attac
     let mut marks: Vec<(&'static str, f64)> = Vec::new();
     let mut frames: Vec<String> = Vec::new();
     let mut messages = None;
-    loop {
+    'socket: loop {
         let frame = match tokio::time::timeout(ATTACH_TIMEOUT, stream.next()).await {
             Ok(Some(Ok(frame))) => frame,
             Ok(Some(Err(e))) => return Err(format!("ws read: {e}; frames: {}", trail(&frames))),
@@ -298,6 +298,12 @@ async fn attach_once(port: u16, agent_id: &str, seq: &mut usize) -> Result<Attac
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
+        let values = if value.get("type").and_then(Value::as_str) == Some("web_batch") {
+            value.get("frames").and_then(Value::as_array).cloned().unwrap_or_default()
+        } else {
+            vec![value]
+        };
+        for value in values {
         let ftype = value
             .get("type")
             .and_then(Value::as_str)
@@ -332,7 +338,8 @@ async fn attach_once(port: u16, agent_id: &str, seq: &mut usize) -> Result<Attac
         }
         pending.retain(|(id, _, _)| id.as_str() != fid);
         if pending.is_empty() {
-            break;
+            break 'socket;
+        }
         }
     }
     let total_ms = t0.elapsed().as_secs_f64() * 1000.0;

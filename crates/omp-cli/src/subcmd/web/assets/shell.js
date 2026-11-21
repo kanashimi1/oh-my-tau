@@ -80,11 +80,76 @@
   let live = null;
   const usageDetails = el("details.usage-details", null, el("summary", {text:"Usage"}), el("div.usage-metrics"));
 
-  function renderStatus(s) {
+  // These nodes stay mounted while the rest of the strip is refreshed.
+  const activity = el("span.live-activity", {"aria-hidden": "true"}, el("i"), el("i"), el("i"));
+  const count = el("span.live-tokens");
+  const countFmt = new Intl.NumberFormat();
+  let countScope, lastCount, countFlash;
+
+  function paintCount(scope, output, text, title) {
+    if (scope !== countScope) { countFlash?.cancel(); lastCount = undefined; countScope = scope; }
+    count.hidden = output == null;
+    if (output == null) return;
+    if (count.textContent !== text) count.textContent = text;
+    count.title = title;
+    if (lastCount != null && lastCount !== output && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      countFlash?.cancel();
+      countFlash = count.animate([{ backgroundColor: "var(--accent-muted)", transform: "translateY(-1px)" },
+        { backgroundColor: "transparent", transform: "none" }], { duration: 340, easing: "ease-out" });
+    }
+    lastCount = output;
+  }
+  const phaseLabels = { waiting: "Ожидание", thinking: "Обдумывание", toolcall: "Подготовка вызова", tool: "Инструменты", text: "Ответ" };
+  let traceRun = null;
+  let traceSteps = [];
+  const traceTitle = el("span.run-trace-label");
+  const traceList = el("ol.run-trace-list", { tabindex: 0, "aria-label": "Этапы запроса" });
+
+  function renderRunTrace(run) {
+    const host = $("#run-trace");
+    host.hidden = !run?.steps.length;
+    if (run !== traceRun) {
+      traceRun = run;
+      traceSteps = [];
+      traceList.replaceChildren();
+      traceTitle.textContent = run?.partial ? "С подключения" : "Этапы запроса";
+      host.replaceChildren(traceTitle, traceList);
+    }
+    if (host.hidden) return;
+    const follow = traceList.scrollWidth - traceList.clientWidth - traceList.scrollLeft < 24;
+    const now = performance.now();
+    const changed = traceSteps.length !== run.steps.length;
+    for (let i = Math.max(0, traceSteps.length - 1); i < run.steps.length; ++i) {
+      const step = run.steps[i];
+      if (!traceSteps[i]) {
+        const time = el("time.run-trace-time");
+        const row = el("li.run-trace-step", { dataset: { phase: step.phase } }, el("span", {text: phaseLabels[step.phase]}), time);
+        traceList.append(row);
+        traceSteps.push({ row, time });
+      }
+      const { row, time } = traceSteps[i];
+      const active = step.end == null;
+      if (active) row.setAttribute("aria-current", "step");
+      else row.removeAttribute("aria-current");
+      const ms = Math.max(0, (step.end ?? now) - step.start);
+      const text = ms < 100 ? (ms < 10 ? "<10 мс" : Math.round(ms) + " мс") : OMP.fmtDuration(Math.round(ms));
+      if (time.textContent !== text) time.textContent = text;
+      if (!active && !time.hasAttribute("datetime")) time.setAttribute("datetime", "PT" + (ms / 1000).toFixed(3) + "S");
+    }
+    if (follow && changed) traceList.scrollLeft = traceList.scrollWidth;
+  }
+  function renderStatus(s, usage) {
+    renderRunTrace(s.agentId && !s.herdrPane ? s.runTimeline ?? null : null);
     const bar = $("#statusbar");
     if (s.herdrPane) {
       const t = s.herdrTokens;
-      bar.replaceChildren(el("span", {text: t?.reported ? `Токены ↑${OMP.fmtTokens(t.input + t.cacheRead + t.cacheWrite)} ↓${OMP.fmtTokens(t.output)}` : "Токены —", title: "Usage reported in the Herdr journal; updates when each model response is recorded"}));
+      const peer = s.herdr?.agents.find((a) => a.paneId === s.herdrPane);
+      activity.hidden = peer?.status !== "working";
+      activity.dataset.phase = "waiting";
+      paintCount(s.herdrPane, t?.reported ? t.output : 0, t?.reported
+        ? "Токены ↑" + countFmt.format(t.input + t.cacheRead + t.cacheWrite) + " ↓" + countFmt.format(t.output) : "Токены —",
+      "Точный расход из журнала Herdr; обновляется после записи ответа модели");
+      if (bar.firstChild !== activity) bar.replaceChildren(activity, count);
       return;
     }
     if (!s.agentId) { bar.replaceChildren(); return; }
@@ -103,8 +168,12 @@
     }
     if (s.dead) parts.push(el("span.warn", { text: "stopped" }));
     else if (mood === "wave") parts.push(el("span.busy", { text: "waiting for you" }));
-    else if (s.streaming) parts.push(el("span.busy", { text: `${mood === "work" ? "working" : "thinking"} ${OMP.fmtDuration(Date.now() - s.runStart)}` }));
-    else parts.push(el("span", { text: "ready" }));
+    const phase = mood === "work" ? "tool" : (s.streamPhase || "waiting");
+    activity.hidden = !s.streaming || !!s.dead || mood === "wave";
+    if (!activity.hidden) activity.dataset.phase = phase;
+    if (!parts.length) parts.push(s.streaming
+      ? el("span.busy", { text: ({ tool: "Инструменты", toolcall: "Вызов инструмента", text: "Ответ", thinking: "Думаю", waiting: "Жду модель" })[phase] + " · " + OMP.fmtDuration(Date.now() - s.runStart) })
+      : el("span", { text: "ready" }));
     const core = parts.length;
     const cu = stats.contextUsage;
     if (cu && cu.contextWindow) {
@@ -117,18 +186,14 @@
     const t = stats.tokens;
     if (t && t.total) parts.push(el("span", { text: `↑${OMP.fmtTokens(t.input + (t.cacheRead || 0) + (t.cacheWrite || 0))} ↓${OMP.fmtTokens(t.output)}`, title: `input ${t.input} · output ${t.output} · cache read ${t.cacheRead} · cache write ${t.cacheWrite}` }));
     const metrics = parts.splice(core);
-    const reply = s.liveReply;
-    if (s.streaming && reply && (reply.actual || reply.bytes)) {
-      const pendingBytes = Math.max(0, reply.bytes - (reply.actualBytes || 0));
-      const value = reply.actual + Math.ceil(pendingBytes / 4);
-      const estimated = pendingBytes > 0 || !reply.actual;
-      parts.push(el("span.busy", { text: `+${estimated ? "≈" : ""}${OMP.fmtTokens(value)} ток.`, title: estimated ? "Reported output tokens plus an estimate for newer streamed text; reconciled when the provider reports usage" : "Output tokens reported by the provider for this response" }));
-    }
+    paintCount(s.runUsage ?? s.agentId, usage?.output,
+      (usage?.estimated ? "≈" : "") + countFmt.format(usage?.output ?? 0) + " ток. ↓",
+      usage?.estimated ? "Оценка выходных токенов за запрос; сверяется с данными провайдера" : "Выходные токены за запрос по данным провайдера");
     if (t && (t.cacheRead || t.cacheWrite)) metrics.push(el("span", { text: "cache " + OMP.fmtTokens((t.cacheRead || 0) + (t.cacheWrite || 0)), title: "cache read " + (t.cacheRead || 0) + " · cache write " + (t.cacheWrite || 0) }));
     if (s.streaming && s.runStart) {
-      const out = Math.max(0, (t?.output || 0) - (runOut0.get(s.agentId) || 0));
+      const out = usage?.output ?? 0;
       const sec = (Date.now() - s.runStart) / 1000;
-      if (sec >= 2 && out > 0) parts.push(el("span.busy", { text: (out / sec).toFixed(1) + " t/s", title: "output tokens per second (live)" }));
+      if (sec >= 2 && out > 0) parts.push(el("span.busy", { text: (usage?.estimated ? "≈" : "") + (out / sec).toFixed(1) + " t/s", title: "output tokens per second (live)" }));
     }
     const L = !s.streaming ? OMP.perf.last : null;
     if (L) {
@@ -148,7 +213,7 @@
     const strip = el("span.status-strip", null, ...parts);
     const previous = bar.querySelector(".status-strip");
     if (previous) previous.replaceWith(strip);
-    else bar.replaceChildren(liveHost, strip, usageDetails);
+    else bar.replaceChildren(liveHost, activity, strip, count, usageDetails);
   }
 
   function renderQueue(s) {
@@ -385,13 +450,15 @@
     const label = row.status === "waiting" ? `Waiting · ${waitText(Date.now() - row.waitingSinceMs)}` : statusLabels[row.status];
     const external = row.kind === "herdr";
     const name = agentName(row);
+    const prepared = OMP.sidebar.prepareBrandSvg(brand.key, `<svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true">${brand.paths}</svg>`);
     const open = el("button.fleet-open", {
       type: "button", title: `${row.address ? row.address + "\n" : ""}${row.title}\n${row.sub}\n${label}`,
       "aria-current": row.active ? "true" : null, "aria-label": `${name}, ${label}`, dataset: { fleetFocus: `open:${row.key}` },
       onclick: () => external ? navigateHerdr(row.id) : navigate(row.id),
-    }, el("span.sess-brand" + (row.status === "working" ? ".working" : ""), {
-      role: "img", "aria-label": brand.label, dataset: { brand: brand.key },
-      html: `<svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true">${brand.paths}</svg>`,
+    }, el("span.sess-brand.brand-mark" + (row.status === "working" ? ".working" : ""), {
+      role: "img", "aria-label": brand.label,
+      dataset: prepared.split ? { brand: brand.key, state: row.status, split: "1" } : { brand: brand.key, state: row.status },
+      html: prepared.html,
     }), el("span.fleet-name", { text: name }),
     el("span.sess-status." + row.status + (row.status === "waiting" && Date.now() - row.waitingSinceMs > STUCK_MS ? ".stuck" : ""), { "aria-hidden": "true" }));
     if (external) {
@@ -403,13 +470,13 @@
           OMP.toast(ok ? `Copied ${row.address}` : "Clipboard unavailable", ok ? "success" : "error");
         },
       }) : null;
-      return el("div.session-row.fleet-row" + (row.active ? ".active" : ""), { dataset: { herdrPane: row.id } }, open, copy);
+      return el("div.session-row.sidebar-row.fleet-row" + (row.active ? ".active" : ""), { dataset: { herdrPane: row.id } }, open, copy);
     }
     const menu = el("button.row-action.fleet-menu", {
       type: "button", dataset: { fleetFocus: `menu:${row.id}` }, title: "Agent actions", "aria-label": `Actions for ${row.title}`, text: "⋯",
       onclick: (e) => rowMenu(e.currentTarget, s, row),
     });
-    return el("div.session-row.fleet-row" + (row.active ? ".active" : ""), {
+    return el("div.session-row.sidebar-row.fleet-row" + (row.active ? ".active" : ""), {
       oncontextmenu: (e) => { e.preventDefault(); rowMenu(e.target, s, row); },
     }, open, menu);
   }
@@ -864,7 +931,7 @@
         { label: "Compact context", run: async () => {
           app.transcript.addDivider("compacting…");
           try { await app.rpc("compact"); app.transcript.addDivider("context compacted"); } catch (e) { app.transcript.addSystem("Compaction failed: " + e.message, "error"); }
-          app.S.stats = await app.rpc("get_session_stats").catch(() => app.S.stats); renderStatus(s);
+          app.S.stats = await app.rpc("get_session_stats").catch(() => app.S.stats); OMP.repaintUsage();
         } },
         { label: "Copy last response", run: async () => {
           try { const r = await app.rpc("get_last_assistant_text"); const ok = await OMP.copyText(r.text || ""); OMP.toast(ok ? "Copied" : "Clipboard unavailable", ok ? "success" : "error"); } catch (e) { OMP.toast(e.message, "error"); }
@@ -874,7 +941,12 @@
         "-",
         { label: "Stop agent", run: () => stopAgent(s, s.agentId) });
     }
-    items.push("-", { label: "Keyboard shortcuts", run: showHotkeys });
+    items.push("-",
+      { label: "Workspaces…", run: () => OMP.workspaces?.open() },
+      { label: "Session panes…", run: () => OMP.panes?.toggle() },
+      { label: "Activity glyph…", run: () => OMP.appearance.open("activity") },
+      { label: "Appearance…", run: () => OMP.appearance.open() },
+      { label: "Keyboard shortcuts", run: showHotkeys });
     OMP.popupMenu(anchor, items);
   }
 
@@ -892,7 +964,7 @@
     app = a;
     // Ticker: keeps the streaming "working m:ss" chip and live tok/s fresh;
     // otherwise a safe no-op (app.js renders status only on events).
-    setInterval(() => { if (app && S().agentId && (S().streaming || OMP.perf.last)) renderStatus(S()); }, 1000);
+    setInterval(() => { if (app && S().agentId && (S().streaming || OMP.perf.last)) OMP.repaintUsage(); }, 1000);
     const s = S();
     // Explorer prefs survive restarts: history grouping, archived group state.
     try { s.groupByProject = localStorage.getItem("omp-web-group-by") === "project"; } catch { /* storage unavailable */ }
@@ -1004,7 +1076,6 @@
       else if (e.key === "Escape" && OMP.maps && OMP.maps.isOpen()) { e.preventDefault(); if (!OMP.maps.closeDetail()) toggleMaps(); }
       else if (e.key === "Escape" && (s.streaming || s.bashRunning) && document.activeElement !== $("#composer")) { e.preventDefault(); app.abort(); }
     });
-    setInterval(() => { if (s.streaming) renderStatus(s); }, 1000);
     setInterval(() => { refreshAgents(s); refreshHerdr(s); }, 5000);
     window.addEventListener("hashchange", route);
     try { s.info = await api("/api/info"); } catch (e) { OMP.toast("Server unreachable: " + e.message, "error"); }

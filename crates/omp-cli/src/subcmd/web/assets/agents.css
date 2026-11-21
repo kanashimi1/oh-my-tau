@@ -58,7 +58,7 @@
   color: var(--fg);
   font-weight: 500;
 }
-#subagents-dock .ap-phase.active .ap-phase-name { color: var(--accent); }
+#subagents-dock .ap-phase.active .ap-phase-name { color: var(--fg); font-weight: 600; }
 #subagents-dock .ap-progress { color: var(--fg-faint); font-variant-numeric: tabular-nums; }
 #subagents-dock .ap-tasks { margin: 2px 0 0; padding: 0 0 0 4px; list-style: none; }
 #subagents-dock .ap-task {
@@ -68,16 +68,16 @@
   padding: 1.5px 2px;
   border-left: 2px solid transparent;
 }
-#subagents-dock .ap-task.is-active { border-left-color: var(--accent); background: var(--accent-muted); border-radius: 0 4px 4px 0; }
+#subagents-dock .ap-task.is-active { border-left-color: color-mix(in srgb, var(--accent) 65%, var(--fg-muted)); background: var(--bg-hover); border-radius: 0 4px 4px 0; }
 #subagents-dock .ap-task-mark { display: inline-flex; align-items: center; flex: none; width: 12px; height: 12px; text-align: center; color: var(--fg-faint); }
 #subagents-dock .ap-task-mark svg { width: 12px; height: 12px; display: block; }
 #subagents-dock .ap-task.is-blocked .ap-task-mark, #subagents-dock .ap-task.is-blocked .ap-task-status { color: var(--warn); }
-#subagents-dock .ap-task.is-active .ap-task-mark { color: var(--accent); }
+#subagents-dock .ap-task.is-active .ap-task-mark { color: var(--fg-muted); }
 #subagents-dock .ap-task.is-done .ap-task-mark { color: var(--ok); }
 #subagents-dock .ap-task-text { flex: 1; min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
 #subagents-dock .ap-task.is-done .ap-task-text { color: var(--fg-muted); text-decoration: line-through; text-decoration-color: var(--border-strong); }
 #subagents-dock .ap-task-status { flex: none; color: var(--fg-faint); font-size: 11px; }
-#subagents-dock .ap-task.is-active .ap-task-status { color: var(--accent); }
+#subagents-dock .ap-task.is-active .ap-task-status { color: var(--fg-muted); }
 #subagents-dock .ap-task.is-done .ap-task-status { color: var(--ok); }
 #subagents-dock .ap-empty { color: var(--fg-faint); font-size: 11.5px; padding: 2px 2px 3px; }
 
@@ -129,7 +129,7 @@
   gap: 9px;
   width: 100%;
   text-align: left;
-  background: var(--bg-inset);
+  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 7px 9px;
@@ -160,7 +160,7 @@
 
 #subagents-dock .ap-status { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 11px; }
 #subagents-dock .ap-status .ap-ic { width: 12px; height: 12px; }
-#subagents-dock .ap-status.ap-working { color: var(--info); }
+#subagents-dock .ap-status.ap-working { color: var(--fg-muted); }
 #subagents-dock .ap-status.ap-waiting { color: var(--warn); }
 #subagents-dock .ap-status.ap-done { color: var(--ok); }
 #subagents-dock .ap-status.ap-error { color: var(--err); }

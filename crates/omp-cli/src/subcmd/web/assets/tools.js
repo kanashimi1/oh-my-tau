@@ -52,6 +52,25 @@
     return s.length > max ? s.slice(0, max) + "…" : s;
   }
 
+  function meaningfulCode(code) {
+    let importDepth = 0;
+    for (const line of String(code || "").split("\n")) {
+      const text = line.trim();
+      if (!text || /^(?:#!|#\s*[-*]?\s*coding[:=])/.test(text)) continue;
+      if (importDepth) {
+        importDepth += (line.match(/[([]/g) || []).length - (line.match(/[)\]]/g) || []).length;
+        importDepth = Math.max(0, importDepth);
+        continue;
+      }
+      if (/^(?:import\b|from\s+\S+\s+import\b|(?:const|let|var)\s+.*=\s*require\s*\()/.test(text)) {
+        importDepth = (line.match(/[([]/g) || []).length - (line.match(/[)\]]/g) || []).length;
+        continue;
+      }
+      return firstLine(text.replace(/^(?:#|\/\/)\s*/, ""));
+    }
+    return "code";
+  }
+
   /** One-line summary of the call's arguments. */
   function summary(name, args) {
     args = args || {};
@@ -78,7 +97,7 @@
         if (tasks.length > 1) return `${agent}${tasks.length} tasks`;
         return agent + firstLine((tasks[0] && (tasks[0].description || tasks[0].task)) || args.description || args.task || "");
       }
-      case "eval": return `${args.language || ""} ${firstLine(args.code || args.title || "")}`.trim();
+      case "eval": return `${args.language || ""} ${firstLine(args.title || meaningfulCode(args.code))}`.trim();
       case "web_search": return pick("query") || "";
       case "todo": return Array.isArray(args.ops) ? args.ops.map((o) => o.op).join(", ") : pick("op") || "";
       case "ask": return firstLine((args.questions && args.questions[0] && args.questions[0].question) || "");
@@ -197,13 +216,15 @@
       this.endedAt = null;
       this.open = false;
       this.node = el("div.tool.pending");
+      this.node.__toolCard = this;
       this.head = el("div.tool-head", { onclick: () => this.toggle() });
       this.inline = el("div.tool-inline-preview-slot", { hidden: true });
       this.inlineKey = "";
       this.body = el("div.tool-body", { hidden: true });
       this.outcome = el("span.tool-outcome", { hidden: true });
       this.tail = el("pre.tool-tail", { hidden: true });
-      this.node.append(this.head, this.outcome, this.inline, this.tail, this.body);
+      this.motion = el("div.tool-motion", {"aria-hidden": "true"});
+      this.node.append(this.head, this.motion, this.outcome, this.inline, this.tail, this.body);
       this.renderHead();
     }
     setArgs(args) {
@@ -228,6 +249,7 @@
       } else this.renderBody();
     }
     finish(result, isError) {
+      const justFinished = this.status === "running";
       this.result = result || this.result;
       this.isError = !!isError;
       this.status = isError ? "error" : "ok";
@@ -235,6 +257,11 @@
       this.tail.hidden = true;
       this.renderHead();
       if (this.open) this.renderBody();
+      // History and duplicate toolResult messages must not replay the flash.
+      if (justFinished) {
+        this.node.dataset.resultFlash = this.status;
+        setTimeout(() => { delete this.node.dataset.resultFlash; }, 950);
+      }
     }
     toggle(force) {
       this.open = force ?? !this.open;
@@ -243,7 +270,7 @@
       this.renderHead();
     }
     renderHead() {
-      const mark = { pending: "Queued", running: "", ok: "Result", error: "Result · Failed" }[this.status];
+      const mark = { pending: "Queued", running: "Running", ok: "Result", error: "Result · Failed" }[this.status];
       this.outcome.hidden = !this.isError;
       this.outcome.textContent = this.isError ? textOf(this.result).split("\n").find((line) => line.trim())?.slice(0, 180) || "Tool returned an error" : "";
       this.node.className = "tool " + this.status;
@@ -276,6 +303,7 @@
           onclick: (e) => { e.stopPropagation(); OMP.artifacts.open(art); },
         }), this.head.querySelector(".tool-dur"));
       }
+      this.node.__refreshGroup?.();
     }
     renderInline(file) {
       const images = this.result ? OMP.contentImages(this.result.content) : [];

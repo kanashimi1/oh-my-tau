@@ -104,6 +104,10 @@ window.OMP = window.OMP || {};
   OMP.contentImages = (content) =>
     Array.isArray(content) ? content.filter((b) => b && b.type === "image" && b.data) : [];
 
+  /** One websocket payload carries either a single RPC frame or an ordered batch. */
+  OMP.framesFrom = (payload) => payload && payload.type === "web_batch" && Array.isArray(payload.frames)
+    ? payload.frames : [payload];
+
   /** Run `fn` at most once per animation frame. */
   OMP.rafThrottle = (fn) => {
     let queued = false;
