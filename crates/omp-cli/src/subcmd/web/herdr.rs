@@ -122,20 +122,28 @@ pub(super) struct HistoryPage {
 
 impl Roster {
     async fn restore_models(&self, snapshot: &mut Snapshot) {
-        let live: HashSet<PathBuf> = snapshot
-            .agents
-            .iter()
-            .filter_map(|row| row.session_file.as_deref().map(PathBuf::from))
-            .collect();
+        let resume_sources = resumed_session_sources();
+        let mut used = HashSet::new();
         let mut cache = self.models.lock().await;
-        cache.retain(|path, _| live.contains(path));
         for row in &mut snapshot.agents {
             if !matches!(row.model.as_str(), "" | "omp" | "omt") {
                 continue;
             }
-            let Some(path) = row.session_file.as_deref().map(PathBuf::from) else {
+            let Some(declared) = row.session_file.as_deref().map(PathBuf::from) else {
                 continue;
             };
+            // During Herdr session restore the advertised fresh journal may
+            // not exist yet: omt is actually reading the --resume source.
+            // Use it only when exactly one resumed process owns this cwd.
+            let path = if declared.is_file() {
+                declared
+            } else {
+                resume_sources
+                    .get(Path::new(&row.cwd))
+                    .cloned()
+                    .unwrap_or(declared)
+            };
+            used.insert(path.clone());
             let Ok(meta) = tokio::fs::metadata(&path).await else {
                 continue;
             };
@@ -160,6 +168,7 @@ impl Roster {
             }
             cache.insert(path, (stamp.0, stamp.1, model));
         }
+        cache.retain(|path, _| used.contains(path));
     }
 
     pub(super) async fn history(
@@ -521,6 +530,54 @@ async fn collect() -> Snapshot {
         None
     };
     merge(panes, spaces, names)
+}
+
+#[cfg(target_os = "linux")]
+fn resumed_session_sources() -> HashMap<PathBuf, PathBuf> {
+    let mut candidates: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .chars()
+            .all(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+        let root = entry.path();
+        let Ok(cmdline) = std::fs::read(root.join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<&[u8]> = cmdline
+            .split(|byte| *byte == 0)
+            .filter(|a| !a.is_empty())
+            .collect();
+        let resume = args.iter().enumerate().find_map(|(i, arg)| {
+            arg.strip_prefix(b"--resume=").or_else(|| {
+                (*arg == b"--resume")
+                    .then(|| args.get(i + 1).copied())
+                    .flatten()
+            })
+        });
+        let (Some(resume), Ok(cwd)) = (resume, std::fs::read_link(root.join("cwd"))) else {
+            continue;
+        };
+        let resume = PathBuf::from(String::from_utf8_lossy(resume).into_owned());
+        if resume.is_absolute() && resume.extension().is_some_and(|ext| ext == "jsonl") {
+            candidates.entry(cwd).or_default().insert(resume);
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(cwd, paths)| {
+            (paths.len() == 1).then(|| (cwd, paths.into_iter().next().expect("length checked")))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn resumed_session_sources() -> HashMap<PathBuf, PathBuf> {
+    HashMap::new()
 }
 
 fn merge(panes: Vec<Pane>, spaces: Vec<Space>, names: Option<Vec<NamedSpace>>) -> Snapshot {
