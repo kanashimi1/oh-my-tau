@@ -119,15 +119,17 @@ fn normalize_timeout_ms(env: Option<String>, fallback: u64) -> Option<u64> {
 /// request runs with. `compat_*` are the model's `streamIdleTimeoutMs`/`streamFirstEventTimeoutMs`
 /// (0 disables); env `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS`/`PI_STREAM_IDLE_TIMEOUT_MS` and
 /// `PI_STREAM_FIRST_EVENT_TIMEOUT_MS` override them. The first-event wait never undershoots idle.
-fn stream_timeouts(compat_idle: Option<u64>, compat_first: Option<u64>) -> (Option<u64>, Option<u64>) {
+fn stream_timeouts(
+    compat_idle: Option<u64>,
+    compat_first: Option<u64>,
+) -> (Option<u64>, Option<u64>) {
     let env = |k: &str| std::env::var(k).ok();
     let idle = normalize_timeout_ms(
         env("PI_OPENAI_STREAM_IDLE_TIMEOUT_MS").or_else(|| env("PI_STREAM_IDLE_TIMEOUT_MS")),
         compat_idle.unwrap_or(DEFAULT_STREAM_TIMEOUT_MS),
     );
-    let first_fallback = compat_first.unwrap_or_else(|| {
-        DEFAULT_STREAM_TIMEOUT_MS.max(idle.unwrap_or(0))
-    });
+    let first_fallback =
+        compat_first.unwrap_or_else(|| DEFAULT_STREAM_TIMEOUT_MS.max(idle.unwrap_or(0)));
     let first = normalize_timeout_ms(env("PI_STREAM_FIRST_EVENT_TIMEOUT_MS"), first_fallback);
     (idle, first)
 }
@@ -151,7 +153,11 @@ impl HttpResponse {
         {
             return Err(ProviderError::Aborted);
         }
-        let limit = if self.seen_chunk { self.idle_timeout } else { self.first_chunk_timeout };
+        let limit = if self.seen_chunk {
+            self.idle_timeout
+        } else {
+            self.first_chunk_timeout
+        };
         let signal = self.signal.clone();
         let next = self.body.chunk();
         let watchdog = async {
@@ -551,7 +557,10 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(response.next_text().await.unwrap().as_deref(), Some("data: 1"));
+        assert_eq!(
+            response.next_text().await.unwrap().as_deref(),
+            Some("data: 1")
+        );
         let started = std::time::Instant::now();
         let error = response.next_text().await.unwrap_err();
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
@@ -582,7 +591,11 @@ mod tests {
         match result {
             Err(ProviderError::Connection(e)) => {
                 assert_eq!(e.kind, ConnectionErrorKind::Timeout);
-                assert!(e.cause.contains("no response headers after 150ms"), "{}", e.cause);
+                assert!(
+                    e.cause.contains("no response headers after 150ms"),
+                    "{}",
+                    e.cause
+                );
             }
             Err(other) => panic!("expected a connection timeout, got {other:?}"),
             Ok(_) => panic!("expected a timeout"),
@@ -594,8 +607,14 @@ mod tests {
         assert_eq!(normalize_timeout_ms(None, 300_000), Some(300_000));
         assert_eq!(normalize_timeout_ms(Some("0".into()), 300_000), None);
         assert_eq!(normalize_timeout_ms(Some("-5".into()), 300_000), None);
-        assert_eq!(normalize_timeout_ms(Some("abc".into()), 300_000), Some(300_000));
-        assert_eq!(normalize_timeout_ms(Some("1500.9".into()), 300_000), Some(1500));
+        assert_eq!(
+            normalize_timeout_ms(Some("abc".into()), 300_000),
+            Some(300_000)
+        );
+        assert_eq!(
+            normalize_timeout_ms(Some("1500.9".into()), 300_000),
+            Some(1500)
+        );
         assert_eq!(normalize_timeout_ms(None, 0), None);
     }
 }

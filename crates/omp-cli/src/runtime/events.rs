@@ -39,6 +39,15 @@ impl Runtime {
         }
         if st.delta_updates && kind == "message_update" {
             if let Some(obj) = frame.as_object_mut() {
+                if let Some(usage) = obj.get("message").and_then(|m| m.get("usage")) {
+                    if usage
+                        .get("output")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| n > 0)
+                    {
+                        obj.insert("liveUsage".into(), usage.clone());
+                    }
+                }
                 obj.remove("message");
                 if let Some(ev) = obj
                     .get_mut("assistantMessageEvent")

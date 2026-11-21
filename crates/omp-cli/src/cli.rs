@@ -167,7 +167,7 @@ const SERVICE_TIER_VALUES: &[&str] = &[
     "ultrafast",
 ];
 
-const MODE_VALUES: &[&str] = &["text", "json", "rpc", "acp", "rpc-ui"];
+const MODE_VALUES: &[&str] = &["text", "json", "watch", "rpc", "acp", "rpc-ui"];
 
 fn json_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""))
@@ -233,7 +233,7 @@ fn set_string(a: &mut Args, flag: &str, value: String, invalid: &mut Vec<String>
                 a.mode = Some(value);
             } else {
                 invalid.push(format!(
-                    "Invalid --mode value: {}. Expected one of: text, json, rpc, rpc-ui, acp.",
+                    "Invalid --mode value: {}. Expected one of: text, json, watch, rpc, rpc-ui, acp.",
                     json_str(&value)
                 ));
             }
@@ -652,7 +652,7 @@ mod tests {
         let err = parse(&["--mode", "bogus"]).unwrap_err().to_string();
         assert_eq!(
             err,
-            "Invalid --mode value: \"bogus\". Expected one of: text, json, rpc, rpc-ui, acp."
+            "Invalid --mode value: \"bogus\". Expected one of: text, json, watch, rpc, rpc-ui, acp."
         );
     }
 

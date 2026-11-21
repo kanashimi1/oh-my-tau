@@ -1,0 +1,257 @@
+{
+"steps": [
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py\"}",
+"error": true,
+"out": "Run Python code inside the running Blender (bpy available, Z up, units = metres).\nusage: python3 bl.py FILE.py | python3 bl.py -c \"CODE\"   [--inspect]  [--expect-rev REV]\nThe value of the last expression is returned as \"result\"; print() goes to \"stdout\".\n--inspect adds full scene telemetry (bounds, contacts, collisions, topology issues).\n--expect-r …[113 cut]… e), a call is also refused (error_code\nexternal_changes_pending, no side effect) while teammate edits are unacked; the refusal\nprints external_changes, the current rev and a hint: review, then resend the SAME call\nwith --expect-rev <rev> to acknowledge and proceed. A refused call changes nothing.\n\nWall time: 0.07 seconds\n\nCommand exited with code 1"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"[(o.name,o.location.copy()[:],tuple(round(d,4) for d in o.dimensions)) for o in bpy.data.objects]\\\" --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": [\n  [\n   \"Lamp\",\n   [\n    0.30000001192092896,\n    0.10000000149011612,\n    0.8500000238418579\n   ],\n   [\n    0.1,\n    0.1,\n    0.2\n   ]\n  ],\n  [\n   \"Leg1\",\n   [\n    -0.550000011920929,\n    -0.3499999940395355,\n    0.3499999940395355\n   ],\n   [\n    0.05,\n    0.05,\n    0.7\n   ]\n  ],\n  [\n   \"Leg2\",\n   [\n    0.550000011920929 …[3735 cut]…  \"topology\": {\n     \"vertices\": 8,\n     \"faces\": 6,\n     \"boundary_edges\": 0,\n     \"non_manifold_edges\": 0,\n     \"degenerate_faces\": 0,\n     \"inverted_normals\": false,\n     \"signed_volume\": 1.0\n    }\n   }\n  ],\n  \"expected_contacts\": [],\n  \"collisions\": [],\n  \"issues\": [],\n  \"elapsed_seconds\": 0.0014\n },\n \"rev\": \"8393ecba\"\n}\n\nWall time: 0.12 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\ntop = bpy.data.objects['Top']\\ntop.scale.x = 1.6/1.2\\nfor n,(x,y) in {'Leg1':(-0.725,-0.325),'Leg2':(0.725,-0.325),'Leg3':(-0.725,0.325),'Leg4':(0.725,0.325)}.items():\\n    o = bpy.data.objects[n]; o.location.x = x; o.location.y = y; o.location.z = 0.35\\nbpy.data.objects['Lamp'].location.x = 0.5\\n'ok'\\\" --expect-rev 8393ecba --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": \"ok\",\n \"inspection\": {\n  \"object_count\": 6,\n  \"parts\": [\n   {\n    \"name\": \"Lamp\",\n    \"bbox\": {\n     \"min\": [\n      0.45,\n      0.05,\n      0.75\n     ],\n     \"max\": [\n      0.55,\n      0.15,\n      0.95\n     ]\n    },\n    \"dimensions\": [\n     0.1,\n     0.1,\n     0.2\n    ],\n    \"center\": [\n     0.5,\n     0.1,\n     0.85\n    ], …[5729 cut]…     \"max\": [\n       0.6667,\n       0.4,\n       0.75\n      ]\n     }\n    ],\n    \"dims\": [\n     [\n      1.2,\n      0.8,\n      0.05\n     ],\n     [\n      1.3333,\n      0.8,\n      0.05\n     ]\n    ],\n    \"scale\": [\n     [\n      1.2,\n      0.8,\n      0.05\n     ],\n     [\n      1.3333,\n      0.8,\n      0.05\n     ]\n    ]\n   }\n  }\n }\n}\n\nWall time: 0.12 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\ntop = bpy.data.objects['Top']\\ntop.scale.x = 1.6\\n'ok'\\\" --expect-rev fb4dbd2d --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": false,\n \"error_code\": \"external_changes_pending\",\n \"rev\": \"1dfb5fe9\",\n \"external_changes\": {\n  \"changed\": {\n   \"Lamp\": {\n    \"bounds\": [\n     {\n      \"min\": [\n       0.45,\n       0.05,\n       0.75\n      ],\n      \"max\": [\n       0.55,\n       0.15,\n       0.95\n      ]\n     },\n     {\n      \"min\": [\n       0.45,\n       0.05,\n       0.9\n      ] …[385 cut]…     -0.35,\n       0.3,\n       0.0\n      ],\n      \"max\": [\n       -0.3,\n       0.35,\n       0.7\n      ]\n     }\n    ],\n    \"loc\": [\n     [\n      -0.725,\n      0.325,\n      0.35\n     ],\n     [\n      -0.325,\n      0.325,\n      0.35\n     ]\n    ]\n   }\n  }\n },\n \"hint\": \"review these changes, then resend with expect_rev=1dfb5fe9\"\n}\n\nWall time: 0.12 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\ntop = bpy.data.objects['Top']\\ntop.scale.x = 1.6\\nbpy.data.objects['Leg3'].location.x = -0.725\\nbpy.data.objects['Lamp'].location.z = 0.85\\n'ok'\\\" --expect-rev 1dfb5fe9 --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": \"ok\",\n \"inspection\": {\n  \"object_count\": 6,\n  \"parts\": [\n   {\n    \"name\": \"Lamp\",\n    \"bbox\": {\n     \"min\": [\n      0.45,\n      0.05,\n      0.75\n     ],\n     \"max\": [\n      0.55,\n      0.15,\n      0.95\n     ]\n    },\n    \"dimensions\": [\n     0.1,\n     0.1,\n     0.2\n    ],\n    \"center\": [\n     0.5,\n     0.1,\n     0.85\n    ], …[5274 cut]… \n      \"max\": [\n       0.8,\n       0.4,\n       0.75\n      ]\n     }\n    ],\n    \"dims\": [\n     [\n      1.3333,\n      0.8,\n      0.05\n     ],\n     [\n      1.6,\n      0.8,\n      0.05\n     ]\n    ],\n    \"scale\": [\n     [\n      1.3333,\n      0.8,\n      0.05\n     ],\n     [\n      1.6,\n      0.8,\n      0.05\n     ]\n    ]\n   }\n  }\n }\n}\n\nWall time: 0.10 seconds"
+}
+],
+"final": "All requirements verified at rev `189275bc`:\n\n- **Top**: dimensions 1.6 × 0.8 × 0.05 m, top surface at z=0.75 (height and thickness unchanged).\n- **Legs 1–4**: each 0.05 m inset from its corner (corner ±0.8/±0.4 → leg outer face ±0.75/±0.35), spanning z=0 (floor) to z=0.7 (underside of top) — contact confirmed.\n- **Lamp**: standing on the top surface (bottom at z=0.75, contact confirmed), centre at x=0.5, i.e. exactly 0.3 m from the +X edge (x=0.8).\n\nNote: a teammate edit mid-work had lifted the Lamp (floating) and moved Leg3 off its corner; both were reverted as part of the final call. Inspection reports no issues, collisions, or topology problems.",
+"bl": [
+{
+"call": 0,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "8393ecba",
+"external": null,
+"result": "[[\"Lamp\", [0.30000001192092896, 0.10000000149011612, 0.8500000238418579], [0.1, 0.1, 0.2]], [\"Leg1\", [-0.550000011920929, -0.3499999940395355, 0.3499999940395355], [0.05, 0.05, 0.7]], [\"Leg2\", [0.550000011920929, -0.3499999940395355, 0.3499999940395355], [0.05, 0.05, 0.7]], [\"Leg3\", [-0.550000011920929, 0.3499999940395355, 0.3499999940395355], [0.05, 0.05, 0.7]], [\"Leg4\", [0.550000011920929, 0.3499999940395355, 0.3499999940395355], [0.05, 0.05, 0.7]], [\"Top\", [0.0, 0.0, 0.7250000238418579], [1.2, 0.8, 0.05]]]",
+"stdout": ""
+},
+{
+"call": 1,
+"event": "agent",
+"expect_rev": "8393ecba",
+"ok": true,
+"error_code": null,
+"rev": "fb4dbd2d",
+"external": null,
+"result": "ok",
+"stdout": ""
+},
+{
+"call": 2,
+"event": "teammate",
+"ok": true
+},
+{
+"call": 2,
+"event": "agent",
+"expect_rev": "fb4dbd2d",
+"ok": false,
+"error_code": "external_changes_pending",
+"rev": "1dfb5fe9",
+"external": {
+"changed": {
+"Lamp": {
+"bounds": [
+{
+"min": [
+0.45,
+0.05,
+0.75
+],
+"max": [
+0.55,
+0.15,
+0.95
+]
+},
+{
+"min": [
+0.45,
+0.05,
+0.9
+],
+"max": [
+0.55,
+0.15,
+1.1
+]
+}
+],
+"loc": [
+[
+0.5,
+0.1,
+0.85
+],
+[
+0.5,
+0.1,
+1.0
+]
+]
+},
+"Leg3": {
+"bounds": [
+{
+"min": [
+-0.75,
+0.3,
+0.0
+],
+"max": [
+-0.7,
+0.35,
+0.7
+]
+},
+{
+"min": [
+-0.35,
+0.3,
+0.0
+],
+"max": [
+-0.3,
+0.35,
+0.7
+]
+}
+],
+"loc": [
+[
+-0.725,
+0.325,
+0.35
+],
+[
+-0.325,
+0.325,
+0.35
+]
+]
+}
+}
+},
+"result": "null",
+"stdout": ""
+},
+{
+"call": 3,
+"event": "agent",
+"expect_rev": "1dfb5fe9",
+"ok": true,
+"error_code": null,
+"rev": "189275bc",
+"external": {
+"changed": {
+"Lamp": {
+"bounds": [
+{
+"min": [
+0.45,
+0.05,
+0.75
+],
+"max": [
+0.55,
+0.15,
+0.95
+]
+},
+{
+"min": [
+0.45,
+0.05,
+0.9
+],
+"max": [
+0.55,
+0.15,
+1.1
+]
+}
+],
+"loc": [
+[
+0.5,
+0.1,
+0.85
+],
+[
+0.5,
+0.1,
+1.0
+]
+]
+},
+"Leg3": {
+"bounds": [
+{
+"min": [
+-0.75,
+0.3,
+0.0
+],
+"max": [
+-0.7,
+0.35,
+0.7
+]
+},
+{
+"min": [
+-0.35,
+0.3,
+0.0
+],
+"max": [
+-0.3,
+0.35,
+0.7
+]
+}
+],
+"loc": [
+[
+-0.725,
+0.325,
+0.35
+],
+[
+-0.325,
+0.325,
+0.35
+]
+]
+}
+}
+},
+"result": "ok",
+"stdout": ""
+}
+],
+"checks": {
+"top_size": true,
+"legs": true,
+"lamp": true
+}
+}

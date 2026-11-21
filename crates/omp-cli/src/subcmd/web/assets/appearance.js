@@ -20,6 +20,8 @@
   const THEMES = [
     { id: "calm", name: "Graphite", sw: ["#181818", "#1f1f1f", "#1a88ff", "#d6d6d6"] },
     { id: "ink", name: "Ink", sw: ["#101519", "#171e23", "#a0c8d9", "#e0e8ed"] },
+    { id: "night", name: "Night", sw: ["#0b1020", "#131a2e", "#8fb5ff", "#dfe6f5"] },
+    { id: "vaporwave", name: "Vaporwave", sw: ["#1a1030", "#241740", "#ff71ce", "#f2e9ff"] },
     { id: "paper", name: "Paper", sw: ["#f5f3ed", "#fcfaf5", "#35594a", "#252821"] },
   ];
   const DEFAULTS = { theme: "calm", wallpaper: "", dim: 55, blur: 0, glass: 92 };

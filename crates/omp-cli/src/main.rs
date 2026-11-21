@@ -50,7 +50,7 @@ pub(crate) fn collect_retained_memory() {
     pa_types::memory_release::collect_mimalloc();
 }
 
-const HELP: &str = r"usage: omt [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
+const HELP: &str = r"usage: omt [--mode text|json|watch|rpc] [-p|--print] [--model provider/id[:thinking]]
        [--provider <name>] [--api-key <key>] [--smol <m>] [--slow <m>] [--plan <m>]
        [--cwd DIR] [--add-dir DIR]... [--config FILE]... [--session-dir DIR]
        [-c|--continue] [-r|--resume [ID]] [--fork ID] [--from-claude] [--from-codex]
@@ -61,6 +61,8 @@ const HELP: &str = r"usage: omt [--mode text|json|rpc] [-p|--print] [--model pro
        [--no-extensions] [--no-session] [--no-skills] [--no-rules] [--no-title]
        [--no-lsp] [--no-pty] [--no-ui] [--allow-home] [--auto-approve|--yolo]
        [--approval-mode always-ask|write|yolo] [--export FILE] [--version] [--] <prompt...|@file>
+
+--mode watch          follow a headless run on stderr; final answer remains on stdout
 
 Session control (bare --resume in a terminal opens the session picker; headless
 modes need a session id prefix or path):
@@ -185,29 +187,29 @@ fn resolve_resume_target(
             ),
         },
         Some(Resume::Yes) => {
-                // TS opens the session picker (apps/session-picker.ts);
-                // non-TTY keeps the headless error.
-                if std::io::IsTerminal::is_terminal(&std::io::stdin())
-                    && std::io::IsTerminal::is_terminal(&std::io::stdout())
-                {
-                    use omp_tui::overlays::sessions::SessionSource;
-                    let mut sources = vec![SessionSource::new(dir)];
-                    if let Some(ts) = ts_dir {
-                        sources.push(SessionSource::labeled(ts, "ts"));
-                    }
-                    match omp_tui::overlays::sessions::select_session_standalone(
-                        &sources,
-                        "Resume session",
-                    ) {
-                        Some(p) => Ok(Some(p)),
-                        None => bail!("resume cancelled"),
-                    }
-                } else {
-                    bail!(
-                        "omt: bare --resume needs the interactive session picker; pass a session id prefix or path"
-                    )
+            // TS opens the session picker (apps/session-picker.ts);
+            // non-TTY keeps the headless error.
+            if std::io::IsTerminal::is_terminal(&std::io::stdin())
+                && std::io::IsTerminal::is_terminal(&std::io::stdout())
+            {
+                use omp_tui::overlays::sessions::SessionSource;
+                let mut sources = vec![SessionSource::new(dir)];
+                if let Some(ts) = ts_dir {
+                    sources.push(SessionSource::labeled(ts, "ts"));
                 }
+                match omp_tui::overlays::sessions::select_session_standalone(
+                    &sources,
+                    "Resume session",
+                ) {
+                    Some(p) => Ok(Some(p)),
+                    None => bail!("resume cancelled"),
+                }
+            } else {
+                bail!(
+                    "omt: bare --resume needs the interactive session picker; pass a session id prefix or path"
+                )
             }
+        }
         None => {
             if continue_prev {
                 // TS starts a fresh session when there is no previous one.
@@ -498,9 +500,11 @@ async fn async_main() -> Result<()> {
         Some(e) => e.tools().await.unwrap_or_default(),
         None => Vec::new(),
     };
-    let context_strategy = context::Kind::resolve(
+    let settings = omp_settings::Settings::load(&cwd);
+    let (context_strategy, context_variant) = context::Kind::resolve_for_model(
         args.context_strategy.as_deref(),
-        &omp_settings::Settings::load(&cwd),
+        &settings,
+        &selected.model.id,
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     context::set_active(context_strategy);
@@ -517,6 +521,7 @@ async fn async_main() -> Result<()> {
         extensions.as_ref(),
         &sp_opts,
         context_strategy,
+        context_variant.as_ref(),
     )
     .await?;
     // eval's in-cell bridge: `tool.<name>` dispatches to the session's tools, and
@@ -682,6 +687,7 @@ async fn async_main() -> Result<()> {
         prompt,
         images,
         extensions.as_ref(),
+        args.mode.as_deref() == Some("watch"),
         if args.mode.as_deref() == Some("json") {
             ext::ExtMode::Json
         } else {
@@ -825,9 +831,11 @@ async fn run_print(
     prompt: String,
     images: Vec<pa_agent::types::ImageContent>,
     extensions: Option<&std::sync::Arc<ext::Extensions>>,
+    watch: bool,
     mode: ext::ExtMode,
 ) -> Result<Vec<pa_agent::types::AgentMessage>> {
     let Some(persist) = persist else {
+        anyhow::ensure!(!watch, "--mode watch requires a working session runtime");
         // No session persistence: replaying a transcript is impossible; a
         // direct one-shot prompt matches the old ephemeral behavior.
         if resume.is_some() {
@@ -910,18 +918,111 @@ async fn run_print(
         crate::rpc::slash::Outcome::Prompt(expanded) => prompt = expanded,
         crate::rpc::slash::Outcome::NotSlash => {}
     }
-    // Nothing else reads the UI frame stream in print mode.
-    drop(rx);
-    if !prompt.is_empty() || !images.is_empty() {
-        rt.prompt(None, &prompt, None, images)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.message))?;
+    let run = async {
+        if !prompt.is_empty() || !images.is_empty() {
+            rt.prompt(None, &prompt, None, images)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.message))?;
+        }
+        rt.wait_settled().await;
+        anyhow::Ok(())
+    };
+    if watch {
+        let mut observer = WatchProgress::default();
+        tokio::pin!(run);
+        loop {
+            tokio::select! {
+                result = &mut run => {
+                    while let Ok(frame) = rx.try_recv() { observer.frame(&frame); }
+                    result?;
+                    break;
+                }
+                Some(frame) = rx.recv() => observer.frame(&frame),
+            }
+        }
+    } else {
+        drop(rx);
+        run.await?;
     }
-    rt.wait_settled().await;
     // The automatic title request rides the session lifecycle (TS ties it to
     // the session, not a single turn); let it land before the process exits.
     rt.wait_for_title().await;
     Ok(agent.messages_snapshot().await.into_vec())
+}
+
+#[derive(Default)]
+struct WatchProgress {
+    settled_output: u64,
+    partial_bytes: usize,
+    last_tick: Option<std::time::Instant>,
+}
+
+impl WatchProgress {
+    fn frame(&mut self, frame: &serde_json::Value) {
+        match frame["type"].as_str() {
+            Some("agent_start") => eprintln!("[omt] working"),
+            Some("message_update") => {
+                let event = &frame["assistantMessageEvent"];
+                if !matches!(
+                    event["type"].as_str(),
+                    Some("text_delta" | "thinking_delta" | "toolcall_delta")
+                ) {
+                    return;
+                }
+                self.partial_bytes = self
+                    .partial_bytes
+                    .saturating_add(event["delta"].as_str().map_or(0, str::len));
+                if self.last_tick.is_none_or(|t| t.elapsed().as_secs() >= 1) {
+                    let actual = frame["message"]["usage"]["output"]
+                        .as_u64()
+                        .filter(|n| *n > 0);
+                    let marker = if actual.is_some() { "" } else { "≈" };
+                    let n = actual.unwrap_or(self.partial_bytes.div_ceil(4) as u64);
+                    eprintln!(
+                        "[omt] generating · ↓{marker}{} tok",
+                        self.settled_output.saturating_add(n)
+                    );
+                    self.last_tick = Some(std::time::Instant::now());
+                }
+            }
+            Some("tool_execution_start" | "tool_execution_end") => {
+                let state = if frame["type"] == "tool_execution_start" {
+                    "running"
+                } else if frame["isError"] == true {
+                    "failed"
+                } else {
+                    "finished"
+                };
+                let tool = frame["toolName"]
+                    .as_str()
+                    .unwrap_or("tool")
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(80)
+                    .collect::<String>();
+                eprintln!("[omt] {tool}: {state}");
+            }
+            Some("message_end") if frame["message"]["role"] == "assistant" => {
+                self.partial_bytes = 0;
+                self.last_tick = None;
+                let usage = &frame["message"]["usage"];
+                if let Some(n) = usage["output"].as_u64() {
+                    self.settled_output = self.settled_output.saturating_add(n);
+                    let input = ["input", "cacheRead", "cacheWrite"]
+                        .into_iter()
+                        .fold(0u64, |acc, key| {
+                            acc.saturating_add(usage[key].as_u64().unwrap_or(0))
+                        });
+                    eprintln!(
+                        "[omt] response complete · ↑{input} ↓{n} tok · ↓{} run total",
+                        self.settled_output
+                    );
+                }
+            }
+            Some("agent_end") => eprintln!("[omt] settled"),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

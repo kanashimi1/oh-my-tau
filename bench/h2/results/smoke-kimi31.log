@@ -1,0 +1,1 @@
+{"task": "c_crlf", "score": 0.4, "miss": ["screen.LIGHTING", "sliders", "lang"], "status": "error", "secs": 0.6, "usage": {"uncached": 0, "cached": 0, "cache_write": 0, "completion": 0, "calls": 1}} 0 steps

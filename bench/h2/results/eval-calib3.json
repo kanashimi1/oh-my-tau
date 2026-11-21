@@ -1,0 +1,174 @@
+[
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "score": 0.75,
+  "calls": 5,
+  "errors": 1,
+  "tokens": 23282,
+  "secs": 31.7,
+  "miss": [
+   "mismatches"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 15438,
+  "secs": 54.6,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "score": 1.0,
+  "calls": 10,
+  "errors": 0,
+  "tokens": 36615,
+  "secs": 48.4,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 14272,
+  "secs": 19.5,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "score": 0.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 19530,
+  "secs": 69.1,
+  "miss": [
+   "memo.md unreadable: [Errno 2] No such file or directory: '/tmp/h2w-d_budget-kjvu0s15/memo.md'"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 20222,
+  "secs": 24.6,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_sessions",
+  "score": 0.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 17646,
+  "secs": 28.1,
+  "miss": [
+   "2026-10-10",
+   "2026-10-11",
+   "2026-10-12",
+   "no extra days"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_duration",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 15109,
+  "secs": 31.7,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 17694,
+  "secs": 22.2,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 15574,
+  "secs": 20.8,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "score": 0.333,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 10748,
+  "secs": 11.3,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 11181,
+  "secs": 16.7,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 13110,
+  "secs": 23.0,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 8,
+  "errors": 0,
+  "tokens": 24512,
+  "secs": 32.0,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_sessions",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 11021,
+  "secs": 13.5,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_duration",
+  "score": 1.0,
+  "calls": 13,
+  "errors": 2,
+  "tokens": 50369,
+  "secs": 50.2,
+  "miss": []
+ }
+]

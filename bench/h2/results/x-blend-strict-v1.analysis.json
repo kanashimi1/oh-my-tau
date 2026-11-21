@@ -1,0 +1,97 @@
+{
+ "summary": {
+  "diff": {
+   "runs": 12,
+   "success": 7,
+   "score": 0.861,
+   "per_task_score": {
+    "b_sign": 0.945,
+    "b_table": 0.778
+   },
+   "calls_mean": 5.58,
+   "bl_calls_mean": 4.58,
+   "tokens_mean_k": 34.5,
+   "repair_mean": 0.833,
+   "repair_per_task": {
+    "b_sign": 1.0,
+    "b_table": 0.667
+   },
+   "errors_mean": 0.92
+  },
+  "strict": {
+   "runs": 12,
+   "success": 7,
+   "score": 0.861,
+   "per_task_score": {
+    "b_sign": 0.889,
+    "b_table": 0.834
+   },
+   "calls_mean": 6.0,
+   "bl_calls_mean": 5.08,
+   "tokens_mean_k": 40.5,
+   "repair_mean": 0.792,
+   "repair_per_task": {
+    "b_sign": 0.833,
+    "b_table": 0.75
+   },
+   "errors_mean": 1.0
+  }
+ },
+ "ci_strict_minus_diff": {
+  "score": {
+   "diff": -0.0,
+   "lo": -0.111,
+   "hi": 0.111
+  },
+  "success": {
+   "diff": -0.0,
+   "lo": -0.333,
+   "hi": 0.333
+  },
+  "calls": {
+   "diff": 0.417,
+   "lo": -1.167,
+   "hi": 2.083
+  },
+  "bl_calls": {
+   "diff": 0.5,
+   "lo": -1.167,
+   "hi": 2.167
+  },
+  "tokens": {
+   "diff": 6013.417,
+   "lo": -6670.083,
+   "hi": 18943.0
+  },
+  "repair": {
+   "diff": -0.042,
+   "lo": -0.25,
+   "hi": 0.125
+  }
+ },
+ "repair_given_edit": {
+  "diff": {
+   "runs_edited": 8,
+   "repair_mean": 0.812,
+   "fully_repaired": 5,
+   "success": 4
+  },
+  "strict": {
+   "runs_edited": 9,
+   "repair_mean": 0.833,
+   "fully_repaired": 6,
+   "success": 6
+  }
+ },
+ "strict_traces": {
+  "refusals": 9,
+  "runs_with_refusal": 9,
+  "acks": 24,
+  "teammate_edits": 9,
+  "runs": 12
+ },
+ "diff_traces": {
+  "teammate_edits": 8
+ },
+ "excluded_rows": 0
+}

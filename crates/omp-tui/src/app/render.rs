@@ -317,10 +317,30 @@ impl App {
             return;
         }
         let line = Line::from(Span::styled(
-            format!("{} {label}", SPINNER[frame_idx]),
+            format!(
+                "{} {label}{}",
+                SPINNER[frame_idx],
+                self.loader_token_suffix()
+            ),
             Style::default().fg(self.theme.color("accent")),
         ));
         frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn loader_token_suffix(&self) -> String {
+        if !self.status.streaming || self.maintenance.is_some() {
+            return String::new();
+        }
+        let n = self.run_output_tokens.saturating_add(self.partial_output);
+        let approximate = if self.partial_output > 0 && !self.partial_reported {
+            "≈"
+        } else {
+            ""
+        };
+        format!(
+            " · ↓{approximate}{} tok",
+            crate::chat::blocks::format_number(n)
+        )
     }
 
     /// Clean loader: spinner, what is happening, Omi's face, elapsed time.
@@ -359,7 +379,14 @@ impl App {
                 Span::raw("")
             },
             Span::styled(face(mood, tick).to_owned(), pink),
-            Span::styled(format!("  {}s · esc to interrupt", elapsed.as_secs()), dim),
+            Span::styled(
+                format!(
+                    "  {}s{} · esc to interrupt",
+                    elapsed.as_secs(),
+                    self.loader_token_suffix()
+                ),
+                dim,
+            ),
         ])
     }
 

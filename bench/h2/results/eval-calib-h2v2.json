@@ -1,0 +1,117 @@
+[
+ {
+  "arm": "none",
+  "task": "d_metrics",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.5,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 15017,
+  "secs": 27.9,
+  "miss": [
+   "/api/cart",
+   "/api/login",
+   "/api/user"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_ledger",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 7,
+  "errors": 0,
+  "tokens": 34348,
+  "secs": 40.9,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_cache",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 13046,
+  "secs": 47.6,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_slug",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.857,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 14526,
+  "secs": 24.8,
+  "miss": [
+   "cut"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_metrics",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 10,
+  "errors": 1,
+  "tokens": 53784,
+  "secs": 53.5,
+  "miss": [
+   "/api/cart",
+   "/api/login",
+   "/api/search",
+   "/api/user"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_ledger",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 10,
+  "errors": 3,
+  "tokens": 51902,
+  "secs": 44.8,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_cache",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 20333,
+  "secs": 23.7,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_slug",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 14564,
+  "secs": 21.5,
+  "miss": []
+ }
+]

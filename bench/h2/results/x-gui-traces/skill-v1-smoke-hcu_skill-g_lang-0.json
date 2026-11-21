@@ -1,0 +1,121 @@
+{
+"steps": [
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"frame\": \"1b510143\",\n  \"widgets\": [\n    {\n      \"ref\": \"Singleplayer\",\n      \"text\": \"Singleplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Multiplayer\",\n      \"text\": \"Multiplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Minecraft Realms\",\n      \"text\": \"Minecraft Realms\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Options...\",\n      \"text\": \"Options...\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Quit Game\",\n      \"text\": \"Quit Game\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Language...\\\"}}, {\\\"click\\\": \\\"Language...\\\"}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Language...\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Language...\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"1c50a0f3\",\n  \"diff\": {\n    \"screen_changed\": \"Minecraft -> Language\",\n    \"view\": {\n     …[436 cut]… ntry\"\n        },\n        {\n          \"ref\": \"Español\",\n          \"text\": \"Español\",\n          \"type\": \"LanguageEntry\"\n        },\n        {\n          \"ref\": \"日本語\",\n          \"text\": \"日本語\",\n          \"type\": \"LanguageEntry\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Deutsch\\\", \\\"wait\\\": {\\\"text\\\": \\\"> Deutsch\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Fertig...\\\"}}]\", \"frame\": \"1c50a0f3\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Deutsch\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"text\": \"> Deutsch\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 1,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"ref\": \"Fertig...\"\n    }\n  },\n …[662 cut]…    {\n          \"ref\": \"Resource Packs...\",\n          \"text\": \"Resource Packs...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Language...\",\n          \"text\": \"Language...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"screen\\\": null}}]\", \"frame\": \"a22da764\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 0,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"screen\": null\n    }\n  },\n  \"frame\": \"1b510143\",\n  \"diff\": {\n    \"screen_changed\": \"Options -> Minecraft\",\n    \"view\": {\n      \"screen\": \"TitleScreen\",\n      \"title\": \"Minecr …[291 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Language...\\\"}}, {\\\"click\\\": \\\"Language...\\\", \\\"wait\\\": {\\\"text\\\": \\\"> Deutsch\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Language...\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Language...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"text\": \"> Deutsch\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"673f7 …[519 cut]… ntry\"\n        },\n        {\n          \"ref\": \"Español\",\n          \"text\": \"Español\",\n          \"type\": \"LanguageEntry\"\n        },\n        {\n          \"ref\": \"日本語\",\n          \"text\": \"日本語\",\n          \"type\": \"LanguageEntry\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"673f7978\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 0,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"title\": \"Minecraft\"\n    }\n  },\n  \"frame\": \"a22da764\",\n  \"diff\": {\n    \"screen_changed\": \"Language -> Options\",\n    \"view\": {\n      \"screen\": \"OptionsScreen\",\n      \"title\":  …[520 cut]…    {\n          \"ref\": \"Resource Packs...\",\n          \"text\": \"Resource Packs...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Language...\",\n          \"text\": \"Language...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Singleplayer\\\"}}]\", \"frame\": \"a22da764\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Singleplayer\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"1b510143\",\n  \"diff\": {\n    \"screen_changed\": \"Options -> Minecraft\",\n    \"view\": {\n      \"screen\": \"TitleScreen\",\n      \"title\": \"Minecraft\",\n      \"frame\": \" …[269 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+}
+],
+"final": "Done ✅\n\n- Navigated Title → Options… → Language…\n- Selected **Deutsch**; the entry moved to `> Deutsch` (selector marker)\n- Confirmed with Done twice back to the title screen\n- **Verified**: reopened the language screen and confirmed `> Deutsch` is the selected entry, then returned to the title screen.\n\n(The title screen widget text stays English in this sim; the selection marker `> Deutsch` is the authoritative confirmation.)",
+"clicks": [
+{
+"t": 14.94,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 14.94,
+"screen": "Options",
+"x": 292.0,
+"y": 122.0,
+"hit": "Language...",
+"handled": true
+},
+{
+"t": 20.88,
+"screen": "Language",
+"x": 170.0,
+"y": 72.0,
+"hit": "Deutsch",
+"handled": true
+},
+{
+"t": 20.88,
+"screen": "Language",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 33.84,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 44.87,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 44.87,
+"screen": "Options",
+"x": 292.0,
+"y": 122.0,
+"hit": "Language...",
+"handled": true
+},
+{
+"t": 49.69,
+"screen": "Language",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 57.77,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+}
+]
+}

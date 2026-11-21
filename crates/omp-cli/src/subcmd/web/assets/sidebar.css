@@ -141,13 +141,13 @@
 .side-title-btns { display: flex; align-items: center; gap: 10px; }
 
 @media (prefers-reduced-motion: no-preference) {
-  #session-list .sess-brand.working { position: relative; }
-  #session-list .sess-brand.working svg {
+  #session-list .sess-brand.working:not(.brand-mark) { position: relative; }
+  #session-list .sess-brand.working:not(.brand-mark) svg {
     animation: sess-brand-breathe 1.15s ease-in-out infinite;
     transform-origin: 50% 50%;
     filter: drop-shadow(0 0 3px currentColor);
   }
-  #session-list .sess-brand.working::after {
+  #session-list .sess-brand.working:not(.brand-mark)::after {
     content: "";
     position: absolute;
     inset: -4px;
@@ -211,4 +211,187 @@ button.group-head.arch-head .count { font-size: 10px; color: var(--fg-faint); }
 @media(max-width: 620px) {
   .fleet-entry { grid-template-columns: minmax(0,.9fr) minmax(0,1.4fr) auto; }
   .fleet-entry-context { display: none; }
+}
+
+/* ── Brand motion: анимированные иконки провайдеров в сайдбаре ─────────────
+   Состояния задаются data-state на .brand-mark (idle/working/needs-input/error),
+   составные логотипы (kimi, zai) делятся на части в sidebar.js → prepareBrandSvg. */
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: #a1a1aa;
+  transition: color 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+.brand-mark svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  overflow: visible;
+  transform-origin: center;
+}
+.brand-mark .brand-part {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+}
+/* Выделяем GPU-слой только для активных строк */
+.brand-mark[data-state="working"],
+.brand-mark[data-state="needs-input"] {
+  will-change: transform, opacity;
+  color: #e4e4e7;
+}
+.brand-mark[data-state="needs-input"] {
+  color: #f59e0b;
+}
+.brand-mark[data-state="error"] {
+  color: #ef4444;
+  animation: brand-error-jolt 240ms cubic-bezier(0.2, 0, 0, 1) 1;
+}
+/* Пауза всех анимаций, когда окно свёрнуто или не в фокусе */
+.window-paused .brand-mark,
+.window-paused .brand-mark * {
+  animation-play-state: paused !important;
+}
+/* ---------- Общие статусы needs-input ---------- */
+.brand-mark[data-state="needs-input"] svg {
+  animation: brand-needs-input 1.7s ease-in-out infinite;
+}
+/* ---------- 1. OPENAI ---------- */
+.brand-mark[data-brand="openai"] svg {
+  transition: transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.brand-mark[data-brand="openai"][data-state="working"] svg {
+  animation: brand-spin 6s linear infinite;
+}
+.sidebar-row:hover .brand-mark[data-brand="openai"][data-state="idle"] svg,
+.brand-mark[data-brand="openai"][data-state="idle"]:hover svg {
+  transform: rotate(60deg);
+}
+/* ---------- 2. CLAUDE ---------- */
+.brand-mark[data-brand="claude"] svg {
+  transition: transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.brand-mark[data-brand="claude"][data-state="working"] svg {
+  animation: claude-think 3.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+.sidebar-row:hover .brand-mark[data-brand="claude"][data-state="idle"] svg,
+.brand-mark[data-brand="claude"][data-state="idle"]:hover svg {
+  transform: rotate(30deg) scale(1.07);
+}
+/* ---------- 3. GEMINI ---------- */
+.brand-mark[data-brand="gemini"] svg {
+  transition: transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.brand-mark[data-brand="gemini"][data-state="working"] svg {
+  animation: gemini-twinkle 2.4s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+}
+.sidebar-row:hover .brand-mark[data-brand="gemini"][data-state="idle"] svg,
+.brand-mark[data-brand="gemini"][data-state="idle"]:hover svg {
+  transform: rotate(90deg) scale(1.08);
+}
+/* ---------- 4. KIMI (анимируется только верхняя правая точка) ---------- */
+.brand-mark[data-brand="kimi"][data-state="working"] .kimi-dot {
+  animation: kimi-beacon 1.35s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+/* Фолбэк, если SVG по какой-то причине не разделился на 2 части */
+.brand-mark[data-brand="kimi"][data-state="working"]:not([data-split="1"]) svg {
+  animation: brand-breathe 1.6s ease-in-out infinite;
+}
+.sidebar-row:hover .brand-mark[data-brand="kimi"][data-state="idle"] .kimi-dot,
+.brand-mark[data-brand="kimi"][data-state="idle"]:hover .kimi-dot {
+  transform: translate(0.75px, -0.75px) scale(1.18);
+}
+/* ---------- 5. Z.AI / GLM (волна по 3 элементам Z) ---------- */
+.brand-mark[data-brand="zai"][data-state="working"] .zai-top {
+  animation: zai-shift-right 1.6s ease-in-out infinite;
+}
+.brand-mark[data-brand="zai"][data-state="working"] .zai-slash {
+  animation: zai-pulse 1.6s ease-in-out 0.22s infinite;
+}
+.brand-mark[data-brand="zai"][data-state="working"] .zai-bottom {
+  animation: zai-shift-left 1.6s ease-in-out 0.44s infinite;
+}
+/* Фолбэк, если SVG не разделился на 3 части */
+.brand-mark[data-brand="zai"][data-state="working"]:not([data-split="1"]) svg {
+  animation: brand-breathe 1.6s ease-in-out infinite;
+}
+.sidebar-row:hover .brand-mark[data-brand="zai"][data-state="idle"] .zai-top,
+.brand-mark[data-brand="zai"][data-state="idle"]:hover .zai-top {
+  transform: translateX(0.8px);
+}
+.sidebar-row:hover .brand-mark[data-brand="zai"][data-state="idle"] .zai-bottom,
+.brand-mark[data-brand="zai"][data-state="idle"]:hover .zai-bottom {
+  transform: translateX(-0.8px);
+}
+/* ---------- 6. DEEPSEEK (кит) ---------- */
+.brand-mark[data-brand="deepseek"] svg {
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.brand-mark[data-brand="deepseek"][data-state="working"] svg {
+  animation: deepseek-swim 2.2s ease-in-out infinite;
+}
+.sidebar-row:hover .brand-mark[data-brand="deepseek"][data-state="idle"] svg,
+.brand-mark[data-brand="deepseek"][data-state="idle"]:hover svg {
+  transform: translateY(-1px) rotate(-6deg);
+}
+/* ---------- Keyframes ---------- */
+@keyframes brand-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes claude-think {
+  0%   { transform: rotate(0deg) scale(0.95); }
+  25%  { transform: rotate(45deg) scale(1.06); }
+  50%  { transform: rotate(90deg) scale(0.95); }
+  75%  { transform: rotate(135deg) scale(1.06); }
+  100% { transform: rotate(180deg) scale(0.95); }
+}
+@keyframes gemini-twinkle {
+  0%, 15%  { transform: rotate(0deg) scale(0.9); opacity: 0.75; }
+  45%, 60% { transform: rotate(90deg) scale(1.08); opacity: 1; }
+  85%, 100%{ transform: rotate(180deg) scale(0.9); opacity: 0.75; }
+}
+@keyframes kimi-beacon {
+  0%, 100% { opacity: 0.35; transform: translate(0, 0) scale(0.88); }
+  45%      { opacity: 1;    transform: translate(0.75px, -0.75px) scale(1.22); }
+}
+@keyframes zai-shift-right {
+  0%, 100% { opacity: 0.45; transform: translateX(0); }
+  45%      { opacity: 1;    transform: translateX(0.9px); }
+}
+@keyframes zai-pulse {
+  0%, 100% { opacity: 0.65; }
+  45%      { opacity: 1; }
+}
+@keyframes zai-shift-left {
+  0%, 100% { opacity: 0.45; transform: translateX(0); }
+  45%      { opacity: 1;    transform: translateX(-0.9px); }
+}
+@keyframes deepseek-swim {
+  0%, 100% { transform: translateY(0.7px) rotate(3deg); }
+  50%      { transform: translateY(-0.9px) rotate(-4deg); }
+}
+@keyframes brand-breathe {
+  0%, 100% { opacity: 0.55; transform: scale(0.94); }
+  50%      { opacity: 1;    transform: scale(1.05); }
+}
+@keyframes brand-needs-input {
+  0%, 60%, 100% { opacity: 0.4; }
+  20%, 40%      { opacity: 1; }
+}
+@keyframes brand-error-jolt {
+  0%, 100% { transform: translateX(0); }
+  25%      { transform: translateX(-1.5px); }
+  75%      { transform: translateX(1.5px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-mark,
+  .brand-mark * {
+    animation: none !important;
+    transition: none !important;
+  }
 }

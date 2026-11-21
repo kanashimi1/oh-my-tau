@@ -1,0 +1,413 @@
+{
+"steps": [
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"frame\": \"1b510143\",\n  \"widgets\": [\n    {\n      \"ref\": \"Singleplayer\",\n      \"text\": \"Singleplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Multiplayer\",\n      \"text\": \"Multiplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Minecraft Realms\",\n      \"text\": \"Minecraft Realms\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Options...\",\n      \"text\": \"Options...\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Quit Game\",\n      \"text\": \"Quit Game\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"a22da764\",\n  \"diff\": {\n    \"screen_changed\": \"Minecraft -> Options\",\n    \"view\": {\n      \"screen\": \"OptionsScreen\",\n      \"title\": \"Options\",\n      \"frame\" …[496 cut]…    {\n          \"ref\": \"Resource Packs...\",\n          \"text\": \"Resource Packs...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Language...\",\n          \"text\": \"Language...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Video Settings...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Video Settings\\\"}}]\", \"frame\": \"a22da764\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Video Settings...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Video Settings\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"9f2ac295\",\n  \"diff\": {\n    \"screen_changed\": \"Options -> Video Settings\",\n    \"view\": {\n      \"screen\": \"VideoSettingsScreen\",\n      \"title\": …[335 cut]…       \"ref\": \"Clouds\",\n          \"text\": \"Clouds: Fancy\",\n          \"type\": \"CycleButton\"\n        },\n        {\n          \"ref\": \"Max Framerate\",\n          \"text\": \"Max Framerate: 120 fps\",\n          \"type\": \"OptionSlider\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Graphics\\\"}, {\\\"click\\\": \\\"Clouds\\\"}]\", \"frame\": \"9f2ac295\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Graphics\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Clouds\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"ed4c7eba\",\n  \"diff\": {\n    \"changed\": {\n      \"Graphics\": \"Graphics: Fancy -> Graphics: Fabulous!\",\n      \"Clouds\": \"Clouds: Fancy -> Clouds: Fast\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Clouds\\\"}]\", \"frame\": \"ed4c7eba\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [],\n  \"stopped\": {\n    \"step\": 0,\n    \"reason\": \"frame_stale\",\n    \"hint\": \"screen changed since that view; nothing was sent\"\n  },\n  \"frame\": \"5681395f\",\n  \"diff\": {\n    \"screen_changed\": \"Video Settings -> Graphics Warning\",\n    \"view\": {\n      \"screen\": \"PopupScreen\",\n      \"title\": \"Graphics Warning\",\n      \"frame\": \"5681395f\",\n      \"widgets\": [\n        {\n          \"ref\": \"Cancel\",\n          \"text\": \"Cancel\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"I Understand\",\n          \"text\": \"I Understand\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"I Understand\\\", \\\"wait\\\": {\\\"title\\\": \\\"Video Settings\\\"}}]\", \"frame\": \"5681395f\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"I Understand\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Video Settings\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"ed4c7eba\",\n  \"diff\": {\n    \"screen_changed\": \"Graphics Warning -> Video Settings\",\n    \"view\": {\n      \"screen\": \"VideoSettingsScreen\",\n      \"tit …[342 cut]…        \"ref\": \"Clouds\",\n          \"text\": \"Clouds: Fast\",\n          \"type\": \"CycleButton\"\n        },\n        {\n          \"ref\": \"Max Framerate\",\n          \"text\": \"Max Framerate: 120 fps\",\n          \"type\": \"OptionSlider\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Clouds\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}]\", \"frame\": \"ed4c7eba\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Clouds\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"9d95de60\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 8 chunks -> Render Distance: 12 chunks\",\n      \"Clouds\": \"Clouds: Fast -> Clouds: OFF\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"wait\\\": {\\\"text\\\": \\\"Render Distance: 16 chunks\\\"}}]\", \"frame\": \"9d95de60\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 4,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"text\": \"Render Distance: 16 chunks\"\n    }\n  },\n  \"frame\": \"1459351e\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 12 chunks -> Render Distance: 2 chunks\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"wait\\\": {\\\"text\\\": \\\"Render Distance: 16 chunks\\\"}}]\", \"frame\": \"1459351e\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n …[495 cut]… ed\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 14,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"text\": \"Render Distance: 16 chunks\"\n    }\n  },\n  \"frame\": \"1459351e\",\n  \"diff\": {\n    \"no_change\": true\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"VideoSettingsScreen\",\n  \"title\": \"Video Settings\",\n  \"frame\": \"1459351e\",\n  \"widgets\": [\n    {\n      \"ref\": \"Graphics\",\n      \"text\": \"Graphics: Fabulous!\",\n      \"type\": \"CycleButton\"\n    },\n    {\n      \"ref\": \"Render Distance\",\n      \"text\": \"Render Distance: 2 chunks\",\n      \"type\": \"OptionSlider\"\n    },\n    {\n      \"ref\": \"Clouds\",\n      \"text\": \"Clouds: OFF\",\n      \"type\": \"CycleButton\"\n    },\n    {\n      \"ref\": \"Max Framerate\",\n      \"text\": \"Max Framerate: 120 fps\",\n      \"type\": \"OptionSlider\"\n    },\n    {\n      \"ref\": \"Done\",\n      \"text\": \"Done\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}]\", \"frame\": \"1459351e\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"d356b454\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 2 chunks -> Render Distance: 4 chunks\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}, {\\\"wait\\\": {\\\"text\\\": \\\"Render Distance: 16 chunks\\\"}}]\", \"frame\": \"d356b454\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n …[25 cut]…  },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 6,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"text\": \"Render Distance: 16 chunks\"\n    }\n  },\n  \"frame\": \"1459351e\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 4 chunks -> Render Distance: 2 chunks\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}]\", \"frame\": \"1459351e\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"d356b454\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 2 chunks -> Render Distance: 4 chunks\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}, {\\\"click\\\": \\\"Render Distance\\\"}]\", \"frame\": \"d356b454\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"9d95de60\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 4 chunks -> Render Distance: 12 chunks\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}]\", \"frame\": \"9d95de60\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"088ee3d5\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 12 chunks -> Render Distance: 16 chunks\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"VideoSettingsScreen\",\n  \"title\": \"Video Settings\",\n  \"frame\": \"088ee3d5\",\n  \"widgets\": [\n    {\n      \"ref\": \"Graphics\",\n      \"text\": \"Graphics: Fabulous!\",\n      \"type\": \"CycleButton\"\n    },\n    {\n      \"ref\": \"Render Distance\",\n      \"text\": \"Render Distance: 16 chunks\",\n      \"type\": \"OptionSlider\"\n    },\n    {\n      \"ref\": \"Clouds\",\n      \"text\": \"Clouds: OFF\",\n      \"type\": \"CycleButton\"\n    },\n    {\n      \"ref\": \"Max Framerate\",\n      \"text\": \"Max Framerate: 120 fps\",\n      \"type\": \"OptionSlider\"\n    },\n    {\n      \"ref\": \"Done\",\n      \"text\": \"Done\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"088ee3d5\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Minecraft\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"1b510143\",\n  \"diff\" …[415 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+}
+],
+"final": "✅ Done. All three settings were applied via Options → Video Settings, confirmed on-screen before leaving, and we're back on the title screen:\n\n- **Graphics:** Fabulous! (confirmed a \"Graphics Warning\" popup with \"I Understand\")\n- **Clouds:** OFF\n- **Render Distance:** 16 chunks (verified in the Video Settings view before clicking Done)\n\nNote: the Render Distance slider responded non-uniformly to clicks (steps varied and wrapped past max once), so I re-read the live screen after each batch and clicked from the current value until 16 was reached — final value verified directly in the widget text.",
+"clicks": [
+{
+"t": 9.82,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 14.11,
+"screen": "Options",
+"x": 135.0,
+"y": 98.0,
+"hit": "Video Settings...",
+"handled": true
+},
+{
+"t": 16.89,
+"screen": "Video Settings",
+"x": 135.0,
+"y": 50.0,
+"hit": "Graphics: Fancy",
+"handled": true
+},
+{
+"t": 16.89,
+"screen": "Video Settings",
+"x": 135.0,
+"y": 74.0,
+"hit": "Clouds: Fancy",
+"handled": true
+},
+{
+"t": 20.09,
+"screen": "Graphics Warning",
+"x": 292.0,
+"y": 74.0,
+"hit": "I Understand",
+"handled": true
+},
+{
+"t": 22.08,
+"screen": "Video Settings",
+"x": 135.0,
+"y": 74.0,
+"hit": "Clouds: Fast",
+"handled": true
+},
+{
+"t": 22.08,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 8 chunks",
+"handled": true
+},
+{
+"t": 27.26,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 12 chunks",
+"handled": true
+},
+{
+"t": 27.27,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 16 chunks",
+"handled": true
+},
+{
+"t": 27.27,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 24 chunks",
+"handled": true
+},
+{
+"t": 27.27,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 32 chunks",
+"handled": true
+},
+{
+"t": 38.28,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 2 chunks",
+"handled": true
+},
+{
+"t": 38.28,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 4 chunks",
+"handled": true
+},
+{
+"t": 38.29,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 8 chunks",
+"handled": true
+},
+{
+"t": 38.29,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 12 chunks",
+"handled": true
+},
+{
+"t": 38.29,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 16 chunks",
+"handled": true
+},
+{
+"t": 38.29,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 24 chunks",
+"handled": true
+},
+{
+"t": 38.3,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 32 chunks",
+"handled": true
+},
+{
+"t": 38.3,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 2 chunks",
+"handled": true
+},
+{
+"t": 38.3,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 4 chunks",
+"handled": true
+},
+{
+"t": 38.3,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 8 chunks",
+"handled": true
+},
+{
+"t": 38.3,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 12 chunks",
+"handled": true
+},
+{
+"t": 38.31,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 16 chunks",
+"handled": true
+},
+{
+"t": 38.31,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 24 chunks",
+"handled": true
+},
+{
+"t": 38.32,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 32 chunks",
+"handled": true
+},
+{
+"t": 54.72,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 2 chunks",
+"handled": true
+},
+{
+"t": 61.41,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 4 chunks",
+"handled": true
+},
+{
+"t": 61.41,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 8 chunks",
+"handled": true
+},
+{
+"t": 61.42,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 12 chunks",
+"handled": true
+},
+{
+"t": 61.42,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 16 chunks",
+"handled": true
+},
+{
+"t": 61.42,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 24 chunks",
+"handled": true
+},
+{
+"t": 61.42,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 32 chunks",
+"handled": true
+},
+{
+"t": 83.2,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 2 chunks",
+"handled": true
+},
+{
+"t": 89.3,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 4 chunks",
+"handled": true
+},
+{
+"t": 89.3,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 8 chunks",
+"handled": true
+},
+{
+"t": 101.85,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 12 chunks",
+"handled": true
+},
+{
+"t": 107.87,
+"screen": "Video Settings",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 107.88,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+}
+]
+}

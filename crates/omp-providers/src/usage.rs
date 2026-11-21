@@ -1636,7 +1636,7 @@ mod tests {
             "cedar_ember": {
                 "grants": [
                     {"id": "ce_abc123", "remaining_count": 2, "clears": ["anthropic:5h"],
-                     "ends_at": "2026-11-01T00:00:00+00:00"}
+                     "ends_at": "2099-11-01T00:00:00+00:00"}
                 ],
                 "next_grant_id": "ce_abc123"
             }

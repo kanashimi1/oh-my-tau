@@ -11,7 +11,7 @@ use pa_agent::types::{AgentMessage, AgentTool, DeveloperMessage, Message, UserCo
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-use crate::adapter::{ProviderTarget, json_round_trip, switchable_stream_fn};
+use crate::adapter::{json_round_trip, switchable_stream_fn, ProviderTarget};
 use crate::model::Selected;
 use crate::tools::edit_mode_for;
 
@@ -171,6 +171,7 @@ pub async fn build_agent(
     ext_hooks: Option<&Arc<crate::ext::Extensions>>,
     sysprompt_opts: &crate::sysprompt::Options,
     context_strategy: crate::context::Kind,
+    context_variant: Option<&serde_json::Value>,
 ) -> Result<(Agent, Target, crate::methodology::ToolProjection)> {
     let agent_model: pa_agent::types::Model = json_round_trip(&selected.model)
         .context("model does not convert to the agent model shape")?;
@@ -263,11 +264,15 @@ pub async fn build_agent(
         prompt.push_str(&note);
     }
     let ctx = (context_strategy != crate::context::Kind::Append).then(|| {
-        let policy = crate::context_policy::Policy::resolve(&settings, &|k| std::env::var(k).ok())
-            .unwrap_or_else(|e| {
-                tracing::warn!("{e}; context policy disabled");
-                None
-            });
+        let policy = crate::context_policy::Policy::resolve_with_variant(
+            &settings,
+            &|k| std::env::var(k).ok(),
+            context_variant,
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("{e}; context policy disabled");
+            None
+        });
         crate::context::Shared::with_policy(
             context_strategy,
             crate::context::Limits::from_settings(&settings),

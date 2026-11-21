@@ -1,0 +1,1 @@
+{"arm": "hcu_skill", "task": "g_lang", "rep": 0, "model": "zai/glm-5.3-flash", "status": "completed", "score": 1.0, "success": true, "checks": {"lang": true, "title": true}, "calls": 7, "tools": {"mcp__sim_mc_act": 6, "mcp__sim_mc_ui": 1}, "errors": 0, "clicks": 9, "dead_clicks": 0, "popup_cancel": 0, "tokens": 29942}

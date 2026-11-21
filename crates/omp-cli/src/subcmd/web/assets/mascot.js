@@ -54,17 +54,25 @@
 
   function brainMarkup(id) {
     return `<defs><clipPath id="${id}-clip"><path d="${BRAIN}"/></clipPath></defs>
-      <path class="brain-outline" d="${BRAIN}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-      <g class="brain-circuit" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M32 19V47M19 33H26L32 27M45 33H38L32 39"/>
-      </g>
-      <g fill="currentColor"><circle cx="32" cy="19" r="1.4"/><circle cx="19" cy="33" r="1.4"/><circle cx="45" cy="33" r="1.4"/><circle cx="32" cy="47" r="1.4"/></g>
-      <g clip-path="url(#${id}-clip)"><path class="brain-scan" d="M13 31H51" fill="none" stroke="currentColor" stroke-width="1"/></g>`;
+      <g class="brain-motion">
+        <path class="brain-outline" d="${BRAIN}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        <g class="brain-circuit" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M32 19V47M19 33H26L32 27M45 33H38L32 39"/>
+        </g>
+        <g fill="currentColor">
+          <circle class="brain-node" style="--node:0" cx="32" cy="19" r="1.4"/>
+          <circle class="brain-node" style="--node:1" cx="19" cy="33" r="1.4"/>
+          <circle class="brain-node" style="--node:2" cx="45" cy="33" r="1.4"/>
+          <circle class="brain-node" style="--node:3" cx="32" cy="47" r="1.4"/>
+        </g>
+        <g clip-path="url(#${id}-clip)"><path class="brain-scan" d="M13 31H51" fill="none" stroke="currentColor" stroke-width="1"/></g>
+      </g>`;
   }
 
   function toolMarkup() {
     return `<g class="tool-terminal" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path class="terminal-chevron" d="M15 24L26 33L15 42"/>
+      <path class="terminal-command" d="M32 34H47" pathLength="1"/>
       <path class="terminal-caret" d="M31 43H47"/>
     </g>`;
   }

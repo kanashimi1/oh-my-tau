@@ -1,0 +1,205 @@
+{
+"steps": [
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"widgets\": [\n    {\n      \"type\": \"Button\",\n      \"text\": \"Singleplayer\",\n      \"x\": 113,\n      \"y\": 90,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Multiplayer\",\n    …[284 cut]…   },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Options...\",\n      \"x\": 113,\n      \"y\": 168,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Quit Game\",\n      \"x\": 215,\n      \"y\": 168,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 213, \"y\": 100}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 213,\n  \"y\": 100\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.worldselection.SelectWorldScreen\",\n  \"title\": \"Select World\",\n  \"widgets\": [\n    {\n      \"type\": \"WorldEntry\",\n      \"text\": \"Test World\",\n      \"x\": 63,\n      \"y\": 40,\n      \"w\": 300,\n      \"h\": 36,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \" …[310 cut]… true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Delete\",\n      \"x\": 63,\n      \"y\": 204,\n      \"w\": 72,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Cancel\",\n      \"x\": 215,\n      \"y\": 204,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 150, \"y\": 58}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 150,\n  \"y\": 58\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 138, \"y\": 190}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 138,\n  \"y\": 190\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.ReceivingLevelScreen\",\n  \"title\": \"Loading terrain...\",\n  \"widgets\": []\n}"
+},
+{
+"tool": "mcp__sim_mc_state",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"inWorld\": true,\n  \"screen\": null\n}"
+},
+{
+"tool": "mcp__sim_mc_key",
+"args": "{\"key\": \"ESCAPE\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"key\": \"ESCAPE\",\n  \"action\": \"tap\"\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.PauseScreen\",\n  \"title\": \"Game Menu\",\n  \"widgets\": [\n    {\n      \"type\": \"Button\",\n      \"text\": \"Back to Game\",\n      \"x\": 113,\n      \"y\": 60,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Advancements\",\n   …[461 cut]…   \"type\": \"Button\",\n      \"text\": \"Open to LAN\",\n      \"x\": 215,\n      \"y\": 132,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Save and Quit to Title\",\n      \"x\": 113,\n      \"y\": 156,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 162, \"y\": 142}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 162,\n  \"y\": 142\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.OptionsScreen\",\n  \"title\": \"Options\",\n  \"widgets\": [\n    {\n      \"type\": \"OptionSlider\",\n      \"text\": \"FOV: Normal\",\n      \"x\": 60,\n      \"y\": 40,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Online...\",\n  …[632 cut]…     },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Language...\",\n      \"x\": 217,\n      \"y\": 112,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 209, \"y\": 50}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 209,\n  \"y\": 50\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.OptionsScreen\",\n  \"title\": \"Options\",\n  \"widgets\": [\n    {\n      \"type\": \"OptionSlider\",\n      \"text\": \"FOV: 90\",\n      \"x\": 60,\n      \"y\": 40,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Online...\",\n      …[628 cut]…     },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Language...\",\n      \"x\": 217,\n      \"y\": 112,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 212, \"y\": 50}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": false,\n  \"x\": 212,\n  \"y\": 50\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.OptionsScreen\",\n  \"title\": \"Options\",\n  \"widgets\": [\n    {\n      \"type\": \"OptionSlider\",\n      \"text\": \"FOV: 90\",\n      \"x\": 60,\n      \"y\": 40,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Online...\",\n      …[628 cut]…     },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Language...\",\n      \"x\": 217,\n      \"y\": 112,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 150, \"y\": 50}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 150,\n  \"y\": 50\n}"
+},
+{
+"tool": "mcp__sim_mc_key",
+"args": "{\"action\": \"hold\", \"key\": \"RIGHT\", \"ticks\": 120}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"key\": \"RIGHT\",\n  \"action\": \"tap\"\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.OptionsScreen\",\n  \"title\": \"Options\",\n  \"widgets\": [\n    {\n      \"type\": \"OptionSlider\",\n      \"text\": \"FOV: Quake Pro\",\n      \"x\": 60,\n      \"y\": 40,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Online...\" …[635 cut]…     },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Language...\",\n      \"x\": 217,\n      \"y\": 112,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 213, \"y\": 210}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 213,\n  \"y\": 210\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 213, \"y\": 70}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 213,\n  \"y\": 70\n}"
+},
+{
+"tool": "mcp__sim_mc_state",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"inWorld\": true,\n  \"screen\": null\n}"
+}
+],
+"final": "✅ Done and verified.\n\n- Loaded 'Test World' via Singleplayer → world entry → Play Selected World\n- Options → FOV slider: first click landed at 90, so I focused the slider and held RIGHT until it read **FOV: Quake Pro** (110)\n- Clicked Done twice to exit menus\n\nFinal verification: `state` shows `inWorld: true`, `screen: null` — in game, no menu open.",
+"clicks": [
+{
+"t": 6.18,
+"screen": "Minecraft",
+"x": 213,
+"y": 100,
+"hit": "Singleplayer",
+"handled": true
+},
+{
+"t": 33.7,
+"screen": "Select World",
+"x": 150,
+"y": 58,
+"hit": "Test World",
+"handled": true
+},
+{
+"t": 36.5,
+"screen": "Select World",
+"x": 138,
+"y": 190,
+"hit": "Play Selected World",
+"handled": true
+},
+{
+"t": 52.55,
+"screen": "Game Menu",
+"x": 162,
+"y": 142,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 61.23,
+"screen": "Options",
+"x": 209,
+"y": 50,
+"hit": "FOV: Normal",
+"handled": true
+},
+{
+"t": 69.83,
+"screen": "Options",
+"x": 212,
+"y": 50,
+"hit": null,
+"handled": false
+},
+{
+"t": 76.66,
+"screen": "Options",
+"x": 150,
+"y": 50,
+"hit": "FOV: 90",
+"handled": true
+},
+{
+"t": 85.27,
+"screen": "Options",
+"x": 213,
+"y": 210,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 88.3,
+"screen": "Game Menu",
+"x": 213,
+"y": 70,
+"hit": "Back to Game",
+"handled": true
+}
+]
+}

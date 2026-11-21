@@ -1,6 +1,6 @@
 //! User wallpapers for the web UI: raster images uploaded from the browser,
 //! kept in `~/.omp-rs/web/wallpapers/`. The bundled wallpapers ship with the
-//! embedded assets (`assets/wallpapers/*.svg`).
+//! embedded assets (`assets/wallpapers/*.webp`).
 //!
 //! Uploads are sniffed by magic bytes and only raster formats are accepted:
 //! an uploaded SVG could carry script and run same-origin when opened

@@ -252,7 +252,10 @@ fn handle_chunk(
     // Mid-stream error frame (OpenRouter documents `{"error": {"code", "message"}}` after a 200
     // and an SSE start; OpenAI-compatible relays do the same): the turn failed. Without this the
     // following `[DONE]` settled an empty "completed" message.
-    if let Some(error) = chunk.get("error").filter(|e| e.is_object() || e.is_string()) {
+    if let Some(error) = chunk
+        .get("error")
+        .filter(|e| e.is_object() || e.is_string())
+    {
         let message = error
             .get("message")
             .and_then(Value::as_str)
@@ -941,12 +944,18 @@ mod tests {
         });
         let mut reader = stream_openai_completions(
             &model,
-            &Context { system_prompt: None, messages: vec![], tools: None },
+            &Context {
+                system_prompt: None,
+                messages: vec![],
+                tools: None,
+            },
             Some(&options),
         );
         loop {
             match reader.next_event().await.unwrap() {
-                AssistantMessageEvent::Done { .. } => panic!("error frame settled as a completed message"),
+                AssistantMessageEvent::Done { .. } => {
+                    panic!("error frame settled as a completed message")
+                }
                 AssistantMessageEvent::Error { error, .. } => {
                     let msg = error.error_message.unwrap_or_default();
                     assert!(msg.contains("402") && msg.contains("expired"), "{msg}");

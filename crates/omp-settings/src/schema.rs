@@ -695,6 +695,13 @@ pub static SETTINGS: &[SettingDef] = &[
         credential: false,
     },
     SettingDef {
+        id: "context.modelVariants",
+        ty: crate::SettingType::Record,
+        env: None,
+        default_yaml: Some("{}"),
+        credential: false,
+    },
+    SettingDef {
         id: "contextFiles.extra",
         ty: crate::SettingType::Array,
         env: None,

@@ -1,0 +1,125 @@
+{
+"steps": [
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"frame\": \"1b510143\",\n  \"widgets\": [\n    {\n      \"ref\": \"Singleplayer\",\n      \"text\": \"Singleplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Multiplayer\",\n      \"text\": \"Multiplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Minecraft Realms\",\n      \"text\": \"Minecraft Realms\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Options...\",\n      \"text\": \"Options...\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Quit Game\",\n      \"text\": \"Quit Game\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Singleplayer\\\", \\\"wait\\\": {\\\"title\\\": \\\"Select World\\\"}, \\\"timeout\\\": 5}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Singleplayer\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Select World\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"044e538c\",\n  \"diff\": {\n    \"screen_changed\": \"Minecraft -> Select World\",\n    \"view\": {\n      \"screen\": \"SelectWorldScreen\",\n      \"title\": \"Select  …[323 cut]… },\n        {\n          \"ref\": \"Create New World\",\n          \"text\": \"Create New World\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Delete\",\n          \"text\": \"Delete\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Cancel\",\n          \"text\": \"Cancel\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Test World\\\"}, {\\\"click\\\": \\\"Play Selected World\\\", \\\"wait\\\": {\\\"screen\\\": null}, \\\"timeout\\\": 15}]\", \"frame\": \"044e538c\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Test World\",\n      \"handled\": true\n    },\n    {\n      \"click\": \"Play Selected World\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"screen\": null\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"none\",\n  \"diff\": {\n    \"screen_changed\": \"Select World -> None\",\n    \"view\": {\n      \"screen\": null,\n      \"title\": null,\n      \"frame\": \"none\",\n      \"widgets\": []\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"key\\\": \\\"escape\\\", \\\"wait\\\": {\\\"title\\\": \\\"Game Menu\\\"}, \\\"timeout\\\": 5}]\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"key\": \"escape\"\n    }\n  ],\n  \"frame\": \"1aca8631\",\n  \"diff\": {\n    \"screen_changed\": \"None -> Game Menu\",\n    \"view\": {\n      \"screen\": \"PauseScreen\",\n      \"title\": \"Game Menu\",\n      \"frame\": \"1aca8631\",\n      \"widgets\": [\n        {\n          \"ref\": \"Back to Game\",\n          \"text\": \"Back to Game\",\n     …[287 cut]… \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Open to LAN\",\n          \"text\": \"Open to LAN\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Save and Quit to Title\",\n          \"text\": \"Save and Quit to Title\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}, \\\"timeout\\\": 5}]\", \"frame\": \"1aca8631\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"a22da764\",\n  \"diff\": {\n    \"screen_changed\": \"Game Menu -> Options\",\n    \"view\": {\n      \"screen\": \"OptionsScreen\",\n      \"title\": \"Options\",\n      \"frame\" …[496 cut]…    {\n          \"ref\": \"Resource Packs...\",\n          \"text\": \"Resource Packs...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Language...\",\n          \"text\": \"Language...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"FOV\\\"}]\", \"frame\": \"a22da764\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"FOV\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"df711f45\",\n  \"diff\": {\n    \"changed\": {\n      \"FOV\": \"FOV: Normal -> FOV: 90\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"FOV\\\"}]\", \"frame\": \"df711f45\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"FOV\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"c43a4a76\",\n  \"diff\": {\n    \"changed\": {\n      \"FOV\": \"FOV: 90 -> FOV: Quake Pro\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Game Menu\\\"}, \\\"timeout\\\": 5}, {\\\"click\\\": \\\"Back to Game\\\", \\\"wait\\\": {\\\"screen\\\": null}, \\\"timeout\\\": 5}]\", \"frame\": \"c43a4a76\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Game Menu\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Back to Game\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"screen\": null\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"none\",\n  \"diff\": {\n    \"screen_changed\": \"Options -> None\",\n    \"view\": {\n      \"screen\": null,\n      \"title\": null,\n      \"frame\": \"none\",\n      \"widgets\": []\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_state",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"inWorld\": true,\n  \"screen\": null\n}"
+}
+],
+"final": "✅ Done and verified:\n\n1. Title screen → **Singleplayer** → selected **Test World** → **Play Selected World**.\n2. Pause menu → **Options...** → clicked the FOV slider until it read **FOV: Quake Pro** (110).\n3. **Done** → **Back to Game**.\n\nVerification: `mc_state` reports `inWorld: true, screen: null` — in game, no menu open.",
+"clicks": [
+{
+"t": 7.89,
+"screen": "Minecraft",
+"x": 213.0,
+"y": 100.0,
+"hit": "Singleplayer",
+"handled": true
+},
+{
+"t": 9.5,
+"screen": "Select World",
+"x": 213.0,
+"y": 58.0,
+"hit": "Test World",
+"handled": true
+},
+{
+"t": 9.51,
+"screen": "Select World",
+"x": 138.0,
+"y": 190.0,
+"hit": "Play Selected World",
+"handled": true
+},
+{
+"t": 16.84,
+"screen": "Game Menu",
+"x": 162.0,
+"y": 142.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 19.82,
+"screen": "Options",
+"x": 135.0,
+"y": 50.0,
+"hit": "FOV: Normal",
+"handled": true
+},
+{
+"t": 22.96,
+"screen": "Options",
+"x": 135.0,
+"y": 50.0,
+"hit": "FOV: 90",
+"handled": true
+},
+{
+"t": 25.76,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 25.77,
+"screen": "Game Menu",
+"x": 213.0,
+"y": 70.0,
+"hit": "Back to Game",
+"handled": true
+}
+]
+}

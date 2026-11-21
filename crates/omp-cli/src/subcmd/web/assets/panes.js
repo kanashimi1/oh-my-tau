@@ -206,7 +206,7 @@
     prefixTimer = setTimeout(() => {
       armed = false;
       // Bare Ctrl+B keeps its old meaning: sidebar toggle (panes closed).
-      if (!isActive()) {  b = $("#sidebar-hide"); if (b) b.click(); }
+      if (!isActive()) $("#sidebar-hide")?.click();
     }, PREFIX_MS);
   }
   function handleFollow(e) {

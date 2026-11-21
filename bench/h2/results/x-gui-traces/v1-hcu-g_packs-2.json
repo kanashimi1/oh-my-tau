@@ -1,0 +1,247 @@
+{
+"steps": [
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"frame\": \"1b510143\",\n  \"widgets\": [\n    {\n      \"ref\": \"Singleplayer\",\n      \"text\": \"Singleplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Multiplayer\",\n      \"text\": \"Multiplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Minecraft Realms\",\n      \"text\": \"Minecraft Realms\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Options...\",\n      \"text\": \"Options...\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Quit Game\",\n      \"text\": \"Quit Game\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Resource Packs\\\", \\\"wait\\\": {\\\"title\\\": \\\"Select Resource Packs\\\"}}, {\\\"click\\\": \\\"Programmer Art\\\", \\\"wait\\\": {\\\"text\\\": \\\"Programmer Art\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 1,\n    \"reason\": \"no_target\",\n    \"ref\": \"Resource Packs\"\n  },\n  \"frame\": \"a22da764\",\n  \"diff\": {\n    \"screen_changed\": \"Minecraft -> Optio …[587 cut]…    {\n          \"ref\": \"Resource Packs...\",\n          \"text\": \"Resource Packs...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Language...\",\n          \"text\": \"Language...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Resource Packs...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Select Resource Packs\\\"}}]\", \"frame\": \"a22da764\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Resource Packs...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Select Resource Packs\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"689b70bb\",\n  \"diff\": {\n    \"screen_changed\": \"Options -> Select Resource Packs\",\n    \"view\": {\n      \"screen\": \"PackSelectionScreen\",\n …[250 cut]… ,\n          \"text\": \"High Contrast\",\n          \"type\": \"PackEntry\"\n        },\n        {\n          \"ref\": \"Move to Selected >\",\n          \"text\": \"Move to Selected >\",\n          \"type\": \"Button\",\n          \"inactive\": true\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Programmer Art\\\", \\\"wait\\\": {\\\"text\\\": \\\"Programmer Art\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"689b70bb\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Programmer Art\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"text\": \"Programmer Art\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\":  …[578 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Resource Packs...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Select Resource Packs\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Resource Packs...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Select Resource Packs\"\n      },\n      \"ok\": true\n    }\n  ],\n …[398 cut]… ,\n          \"text\": \"High Contrast\",\n          \"type\": \"PackEntry\"\n        },\n        {\n          \"ref\": \"Move to Selected >\",\n          \"text\": \"Move to Selected >\",\n          \"type\": \"Button\",\n          \"inactive\": true\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_state",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"inWorld\": false,\n  \"screen\": \"net.minecraft.client.gui.screens.packs.PackSelectionScreen\"\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Programmer Art\\\"}]\", \"frame\": \"689b70bb\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Programmer Art\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"064e70ad\",\n  \"diff\": {\n    \"changed\": {\n      \"Programmer Art\": \"Programmer Art -> > Programmer Art\"\n    },\n    \"activated\": [\n      \"Move to Selected >\"\n    ]\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Move to Selected >\\\", \\\"wait\\\": {\\\"ref\\\": \\\"< Move to Available\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"064e70ad\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Move to Selected >\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 0,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"ref\": \"< Move to Available\"\n    }\n  },\n  \"frame\": \"c8b0e4a6\",\n  \"diff\": {\n    \"changed\": {\n      \"Programmer Art\": \"> Programmer Art -> Programmer Art\"\n    },\n    \"deactivated\": [\n      \"Move to Selected >\"\n    ],\n    \"moved\": [\n      \"High Contrast\",\n      \"Programmer Art\"\n    ]\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"PackSelectionScreen\",\n  \"title\": \"Select Resource Packs\",\n  \"frame\": \"c8b0e4a6\",\n  \"widgets\": [\n    {\n      \"ref\": \"High Contrast\",\n      \"text\": \"High Contrast\",\n      \"type\": \"PackEntry\"\n    },\n    {\n      \"ref\": \"Programmer Art\",\n      \"text\": \"Programmer Art\",\n      \"type\": \"PackEntry\"\n    },\n    {\n      \"ref\": \"Move to Selected >\",\n      \"text\": \"Move to Selected >\",\n      \"type\": \"Button\",\n      \"inactive\": true\n    },\n    {\n      \"ref\": \"Done\",\n      \"text\": \"Done\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"c8b0e4a6\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 0,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"title\": \"Minecraft\"\n    }\n  },\n  \"frame\": \"a22da764\",\n  \"diff\": {\n    \"screen_changed\": \"Select Resource Packs -> Options\",\n    \"view\": {\n      \"screen\": \"OptionsScreen\",\n   …[533 cut]…    {\n          \"ref\": \"Resource Packs...\",\n          \"text\": \"Resource Packs...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Language...\",\n          \"text\": \"Language...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"a22da764\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Minecraft\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"1b510143\",\n  \"diff\": {\n    \"screen_changed\": \"Options -> Minecraft\",\n    \"view\": {\n      \"screen\": \"TitleScreen\",\n      \"title\": \"Minecraft\",\n      \"frame\": \"1 …[268 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Resource Packs...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Select Resource Packs\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Resource Packs...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Select Resource Packs\"\n      },\n      \"ok\": true\n    }\n  ],\n …[398 cut]… \n          \"text\": \"Programmer Art\",\n          \"type\": \"PackEntry\"\n        },\n        {\n          \"ref\": \"Move to Selected >\",\n          \"text\": \"Move to Selected >\",\n          \"type\": \"Button\",\n          \"inactive\": true\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_state",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"inWorld\": false,\n  \"screen\": \"net.minecraft.client.gui.screens.packs.PackSelectionScreen\"\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Programmer Art\\\"}]\", \"frame\": \"c8b0e4a6\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Programmer Art\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"c8b0e4a6\",\n  \"diff\": {\n    \"no_change\": true\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"High Contrast\\\"}]\", \"frame\": \"c8b0e4a6\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"High Contrast\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"b48ba844\",\n  \"diff\": {\n    \"changed\": {\n      \"High Contrast\": \"High Contrast -> > High Contrast\"\n    },\n    \"activated\": [\n      \"Move to Selected >\"\n    ]\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"High Contrast\\\", \\\"wait\\\": {\\\"ref\\\": \\\"High Contrast\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"b48ba844\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"High Contrast\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"High Contrast\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Do …[575 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+}
+],
+"final": "✅ Done — Programmer Art is enabled and applied, and the client is back on the title screen.\n\nWhat happened and evidence:\n- First attempt: clicking the pack entry and hitting Done didn't actually move it — re-entering the screen showed Programmer Art still in the Available column (clicking it staged `\"> Programmer Art\"` and enabled \"Move to Selected >\").\n- Fixed by explicitly clicking **Move to Selected >** (the entry moved to the selected side of the list), then **Done → Done** to apply.\n- Verification: re-opened the pack screen after applying — the list order changed to [High Contrast, Programmer Art] (selected packs appended after available), and a behavioral probe confirmed it: clicking available High Contrast stages `\"> High Contrast\"` / activates the move button, while clicking Programmer Art produces no Available-column behavior — it's in the Selected column. No other settings were touched; ended on `TitleScreen`.",
+"clicks": [
+{
+"t": 9.08,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 13.18,
+"screen": "Options",
+"x": 135.0,
+"y": 122.0,
+"hit": "Resource Packs...",
+"handled": true
+},
+{
+"t": 16.01,
+"screen": "Select Resource Packs",
+"x": 110.0,
+"y": 50.0,
+"hit": "Programmer Art",
+"handled": true
+},
+{
+"t": 16.02,
+"screen": "Select Resource Packs",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 16.02,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 20.65,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 20.66,
+"screen": "Options",
+"x": 135.0,
+"y": 122.0,
+"hit": "Resource Packs...",
+"handled": true
+},
+{
+"t": 51.23,
+"screen": "Select Resource Packs",
+"x": 110.0,
+"y": 50.0,
+"hit": "Programmer Art",
+"handled": true
+},
+{
+"t": 62.68,
+"screen": "Select Resource Packs",
+"x": 213.0,
+"y": 170.0,
+"hit": "Move to Selected >",
+"handled": true
+},
+{
+"t": 77.12,
+"screen": "Select Resource Packs",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 85.17,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 88.1,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 88.11,
+"screen": "Options",
+"x": 135.0,
+"y": 122.0,
+"hit": "Resource Packs...",
+"handled": true
+},
+{
+"t": 96.15,
+"screen": "Select Resource Packs",
+"x": 317.0,
+"y": 50.0,
+"hit": "Programmer Art",
+"handled": true
+},
+{
+"t": 108.01,
+"screen": "Select Resource Packs",
+"x": 110.0,
+"y": 50.0,
+"hit": "High Contrast",
+"handled": true
+},
+{
+"t": 114.54,
+"screen": "Select Resource Packs",
+"x": 110.0,
+"y": 50.0,
+"hit": "> High Contrast",
+"handled": true
+},
+{
+"t": 114.54,
+"screen": "Select Resource Packs",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 114.54,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+}
+]
+}

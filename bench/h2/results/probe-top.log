@@ -1,0 +1,10 @@
+btm_promote: probe bash / output wall time seconds command exited with code -> rejected  control hits/errors=2/2  treated=2/2
+btm_promote: probe bash / wall time seconds command exited with code -> rejected  control hits/errors=3/3  treated=3/3
+btm_promote: probe eval / kernel state was lost fresh kernel generation eval variables -> inconclusive  control hits/errors=0/0  treated=0/0
+btm_promote: probe eval / syntaxerror unexpected eof parse eval unknown failed: probe task generation failed: '```json\n{\n  "lesson": "Before submitting code for evaluation, check that every quote and bracket is balanced and that nested string escaping (e.g., a shell command with quotes embedded in a code strin'
+btm_promote: probe bash / output wall time 300 seconds command timed out after 300 sec -> inconclusive  control hits/errors=0/2  treated=0/2
+btm_promote: probe bash / service mode does not accept async timeout use ready timeout -> inconclusive  control hits/errors=0/11  treated=0/6
+btm_promote: probe eval / syntaxerror return statements are only valid inside function -> inconclusive  control hits/errors=0/5  treated=0/6
+btm_promote: probe eval / traceback most recent call last file cell line module file c -> inconclusive  control hits/errors=0/5  treated=0/3
+btm_promote: probe bash / bash line bun command not found wall time seconds command ex -> inconclusive  control hits/errors=0/1  treated=0/2
+btm_promote: probe bash / output wall time seconds command failed missing exit status -> inconclusive  control hits/errors=0/12  treated=0/3

@@ -187,17 +187,37 @@ impl Kind {
         }
     }
 
-    /// Flag wins over the `context.strategy` setting; default `append`.
+    /// Resolve an exact model-id variant from `context.modelVariants`. The CLI flag wins over
+    /// the variant's `strategy`; the variant wins over global `context.strategy`. The returned
+    /// value also carries optional flat `policy` / `rule*` fields for `Policy::resolve_with_variant`.
+    /// Project-local settings are the task scope; no model is opted in by default.
     ///
     /// # Errors
-    /// Unknown strategy name in the flag or the setting.
-    pub fn resolve(flag: Option<&str>, settings: &omp_settings::Settings) -> Result<Self, String> {
-        match flag {
+    /// Unknown strategy name in the flag, model variant, or global setting.
+    pub fn resolve_for_model(
+        flag: Option<&str>,
+        settings: &omp_settings::Settings,
+        model_id: &str,
+    ) -> Result<(Self, Option<Value>), String> {
+        let variant = settings
+            .get_record("context.modelVariants")
+            .remove(model_id);
+        let strategy = match flag {
             Some(f) => Self::parse(f),
-            None => settings
-                .get_string("context.strategy")
-                .map_or(Ok(Self::Append), |s| Self::parse(&s)),
-        }
+            None => variant
+                .as_ref()
+                .and_then(|v| v.get("strategy"))
+                .and_then(Value::as_str)
+                .map_or_else(
+                    || {
+                        settings
+                            .get_string("context.strategy")
+                            .map_or(Ok(Self::Append), |s| Self::parse(&s))
+                    },
+                    Self::parse,
+                ),
+        }?;
+        Ok((strategy, variant))
     }
 }
 
@@ -357,14 +377,14 @@ pub fn parse_ops(args: &Value) -> Result<Vec<Op>, String> {
             ("replace", Some(text)) => Op::Replace { slot, text },
             ("append", Some(text)) => Op::Append { slot, text },
             ("replace" | "append", None) => {
-                return Err(format!("ops[{i}]: `{kind}` requires `text`"))
+                return Err(format!("ops[{i}]: `{kind}` requires `text`"));
             }
             ("evict", None) => Op::Evict { slot },
             ("evict", Some(_)) => return Err(format!("ops[{i}]: `evict` takes no `text`")),
             (other, _) => {
                 return Err(format!(
                     "ops[{i}]: unknown op {other:?} (replace|append|evict)"
-                ))
+                ));
             }
         });
     }
@@ -1301,7 +1321,9 @@ impl AgentTool for ContextEditTool {
                     "ok: {n} op(s) accepted; slots after edit: {}. Takes effect at your next user turn (this turn's raw history stays visible).",
                     names(&table)
                 )),
-                Err(e) => AgentToolResult::error(format!("context_edit rejected, nothing changed: {e}")),
+                Err(e) => {
+                    AgentToolResult::error(format!("context_edit rejected, nothing changed: {e}"))
+                }
             })
         })
     }
@@ -1358,6 +1380,31 @@ mod tests {
             is_error: err,
             timestamp: 0,
         }))
+    }
+
+    #[test]
+    fn model_variant_resolution_preserves_cli_precedence() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yml");
+        std::fs::write(
+            &config,
+            "context:\n  strategy: append\n  modelVariants:\n    provider/model:\n      strategy: clm\n      policy: rule\n      ruleTokens: 24000\n",
+        )
+        .unwrap();
+        let settings = omp_settings::Settings::load_from(Some(&config), dir.path());
+        let (kind, variant) = Kind::resolve_for_model(None, &settings, "provider/model").unwrap();
+        assert_eq!(kind, Kind::Clm);
+        assert_eq!(variant.unwrap()["ruleTokens"], 24_000);
+        let (kind, _) =
+            Kind::resolve_for_model(Some("append"), &settings, "provider/model").unwrap();
+        assert_eq!(kind, Kind::Append);
+        let (kind, variant) = Kind::resolve_for_model(None, &settings, "provider/other").unwrap();
+        assert_eq!(kind, Kind::Append);
+        assert!(variant.is_none());
+        assert!(!settings
+            .unknown_keys()
+            .iter()
+            .any(|key| key.starts_with("context.modelVariants")));
     }
 
     fn wire_json(m: &[AgentMessage]) -> String {

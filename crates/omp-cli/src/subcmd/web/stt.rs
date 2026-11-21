@@ -133,7 +133,12 @@ pub async fn warmup() -> Result<Value> {
 ///
 /// # Errors
 /// The worker cannot start, or the model failed on this audio.
-pub async fn transcribe(audio: &[u8], ext: &str, language: Option<&str>) -> Result<Value> {
+pub async fn transcribe(
+    audio: &[u8],
+    ext: &str,
+    language: Option<&str>,
+    partial: bool,
+) -> Result<Value> {
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let dir = stt_dir();
     std::fs::create_dir_all(&dir)?;
@@ -148,7 +153,12 @@ pub async fn transcribe(audio: &[u8], ext: &str, language: Option<&str>) -> Resu
         if ext.is_empty() { "webm" } else { &ext }
     ));
     std::fs::write(&path, audio).context("save recording")?;
-    let req = json!({"id": n, "path": path.display().to_string(), "language": language});
+    let req = json!({
+        "id": n,
+        "path": path.display().to_string(),
+        "language": language,
+        "partial": partial,
+    });
     let result = request_worker(&req).await;
     let _ = std::fs::remove_file(&path);
     let v = result?;

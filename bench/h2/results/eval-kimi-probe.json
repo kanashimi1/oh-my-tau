@@ -1,0 +1,18 @@
+[
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "model": "kimi-code/kimi-for-coding",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 7,
+  "errors": 0,
+  "tokens": 16626,
+  "secs": 34.5,
+  "miss": [
+   "screen.LIGHTING",
+   "sliders"
+  ]
+ }
+]

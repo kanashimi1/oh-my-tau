@@ -21,7 +21,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 use parking_lot::Mutex;
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// Smallest block `rlm_offload` will move (shorter blocks are not worth a reference line).
 pub const OFFLOAD_MIN_CHARS: usize = 2_000;
@@ -122,9 +122,20 @@ impl State {
             "context controller\nstep: {}\nhistory_tokens: {}\nslots_chars: {} ({} slots)\nsteps_since_last_edit: {}\n\
              edits_so_far: {}\nlargest_old_block_chars: {}\nblock_age_turns: {}\nblock_restated_pct: {}\n\
              block_since_ref_turns: {}\noffloads_so_far: {}\noffload_reads: {}\ncache_hit_pct: {}\nnext_instruction: {}",
-            self.step, self.history_tokens, self.slots_chars, self.slots_count, since, self.edits_total,
-            self.largest_block_chars, self.block_age_turns, self.block_restated_pct, self.block_since_ref_turns,
-            self.offloads_total, self.offload_reads, self.cache_hit_pct, self.excerpt
+            self.step,
+            self.history_tokens,
+            self.slots_chars,
+            self.slots_count,
+            since,
+            self.edits_total,
+            self.largest_block_chars,
+            self.block_age_turns,
+            self.block_restated_pct,
+            self.block_since_ref_turns,
+            self.offloads_total,
+            self.offload_reads,
+            self.cache_hit_pct,
+            self.excerpt
         )
     }
 
@@ -141,9 +152,21 @@ impl State {
              edits_so_far: {}\nlargest_old_block_chars: {}\nblock_age_turns: {}\nblock_restated_pct: {}\n\
              block_since_ref_turns: {}\noffloads_so_far: {}\noffload_reads: {}\noffload_match_pct: {}\ncache_hit_pct: {}\n\
              next_instruction: {}",
-            self.step, self.history_tokens, self.slots_chars, self.slots_count, since, self.edits_total,
-            self.largest_block_chars, self.block_age_turns, self.block_restated_pct, self.block_since_ref_turns,
-            self.offloads_total, self.offload_reads, self.offload_match_pct, self.cache_hit_pct, self.excerpt
+            self.step,
+            self.history_tokens,
+            self.slots_chars,
+            self.slots_count,
+            since,
+            self.edits_total,
+            self.largest_block_chars,
+            self.block_age_turns,
+            self.block_restated_pct,
+            self.block_since_ref_turns,
+            self.offloads_total,
+            self.offload_reads,
+            self.offload_match_pct,
+            self.cache_hit_pct,
+            self.excerpt
         )
     }
 }
@@ -247,7 +270,28 @@ impl Policy {
         settings: &omp_settings::Settings,
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, String> {
-        let name = env("OMP_CONTEXT_POLICY").or_else(|| settings.get_string("context.policy"));
+        Self::resolve_with_variant(settings, env, None)
+    }
+
+    /// Resolve a model variant with precedence env > variant > global settings > defaults.
+    /// A variant uses flat fields: `policy`, `ruleTokens`, `ruleOffloadChars`, `recallChars`, etc.
+    ///
+    /// # Errors
+    /// Unknown policy name.
+    pub fn resolve_with_variant(
+        settings: &omp_settings::Settings,
+        env: &dyn Fn(&str) -> Option<String>,
+        variant: Option<&Value>,
+    ) -> Result<Option<Self>, String> {
+        let variant_string = |key: &str| {
+            variant
+                .and_then(|v| v.get(key))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        };
+        let name = env("OMP_CONTEXT_POLICY")
+            .or_else(|| variant_string("policy"))
+            .or_else(|| settings.get_string("context.policy"));
         let Some(name) = name.filter(|n| !n.trim().is_empty() && n.trim() != "none") else {
             return Ok(None);
         };
@@ -255,6 +299,11 @@ impl Policy {
         let num = |envk: &str, id: &str, d: usize| {
             env(envk)
                 .and_then(|v| v.parse().ok())
+                .or_else(|| {
+                    let key = id.strip_prefix("context.policy.").unwrap_or(id);
+                    variant.and_then(|v| v.get(key)).and_then(Value::as_f64)
+                })
+                .map(saturating_usize)
                 .or_else(|| settings.get_number(id).map(saturating_usize))
                 .unwrap_or(d)
         };
@@ -619,8 +668,43 @@ mod tests {
         let r = s.render_v2();
         assert!(r.contains("\noffload_reads: 3\noffload_match_pct: 75\ncache_hit_pct: 90\n"));
         assert!(r.ends_with("next_instruction: read proj/mod_07.py"));
-        assert_eq!(s.render().matches('\n').count() + 1, 14, "v1 render unchanged");
+        assert_eq!(
+            s.render().matches('\n').count() + 1,
+            14,
+            "v1 render unchanged"
+        );
         assert_eq!(r.matches('\n').count() + 1, 15, "v2 adds exactly one line");
+    }
+
+    #[test]
+    fn model_variant_policy_precedence() {
+        let d = tempfile::tempdir().unwrap();
+        let config = d.path().join("config.yml");
+        std::fs::write(&config, "context:\n  policy: always\n").unwrap();
+        let s = omp_settings::Settings::load_from(Some(&config), d.path());
+        let none = |_: &str| None;
+        let variant =
+            json!({"policy":"rule","ruleTokens":24000,"ruleOffloadChars":8000,"recallChars":12000});
+        let p = Policy::resolve_with_variant(&s, &none, Some(&variant))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (p.kind, p.rule_tokens, p.rule_offload_chars, p.recall_chars),
+            (Kind::Rule, 24000, 8000, 12000)
+        );
+        let env = |k: &str| match k {
+            "OMP_CONTEXT_POLICY" => Some("rule".to_owned()),
+            "OMP_CONTEXT_POLICY_RULE_TOKENS" => Some("16000".to_owned()),
+            _ => None,
+        };
+        let p = Policy::resolve_with_variant(&s, &env, Some(&variant))
+            .unwrap()
+            .unwrap();
+        assert_eq!(p.rule_tokens, 16000);
+        let disable = |k: &str| (k == "OMP_CONTEXT_POLICY").then(|| "none".to_owned());
+        assert!(Policy::resolve_with_variant(&s, &disable, Some(&variant))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

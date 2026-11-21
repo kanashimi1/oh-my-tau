@@ -1,0 +1,169 @@
+{
+"steps": [
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"widgets\": [\n    {\n      \"type\": \"Button\",\n      \"text\": \"Singleplayer\",\n      \"x\": 113,\n      \"y\": 90,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Multiplayer\",\n    …[284 cut]…   },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Options...\",\n      \"x\": 113,\n      \"y\": 168,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Quit Game\",\n      \"x\": 215,\n      \"y\": 168,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 162, \"y\": 178}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 162,\n  \"y\": 178\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.OptionsScreen\",\n  \"title\": \"Options\",\n  \"widgets\": [\n    {\n      \"type\": \"OptionSlider\",\n      \"text\": \"FOV: Normal\",\n      \"x\": 60,\n      \"y\": 40,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Online...\",\n  …[632 cut]…     },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Language...\",\n      \"x\": 217,\n      \"y\": 112,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 135, \"y\": 122}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 135,\n  \"y\": 122\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.packs.PackSelectionScreen\",\n  \"title\": \"Select Resource Packs\",\n  \"widgets\": [\n    {\n      \"type\": \"PackEntry\",\n      \"text\": \"Programmer Art\",\n      \"x\": 20,\n      \"y\": 40,\n      \"w\": 180,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"PackEntry\", …[145 cut]…    {\n      \"type\": \"Button\",\n      \"text\": \"Move to Selected >\",\n      \"x\": 113,\n      \"y\": 160,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": false,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 110, \"y\": 50}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 110,\n  \"y\": 50\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.packs.PackSelectionScreen\",\n  \"title\": \"Select Resource Packs\",\n  \"widgets\": [\n    {\n      \"type\": \"PackEntry\",\n      \"text\": \"> Programmer Art\",\n      \"x\": 20,\n      \"y\": 40,\n      \"w\": 180,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"PackEntry …[146 cut]…     {\n      \"type\": \"Button\",\n      \"text\": \"Move to Selected >\",\n      \"x\": 113,\n      \"y\": 160,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 213, \"y\": 170}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 213,\n  \"y\": 170\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.packs.PackSelectionScreen\",\n  \"title\": \"Select Resource Packs\",\n  \"widgets\": [\n    {\n      \"type\": \"PackEntry\",\n      \"text\": \"High Contrast\",\n      \"x\": 20,\n      \"y\": 40,\n      \"w\": 180,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"PackEntry\",\n …[146 cut]…    {\n      \"type\": \"Button\",\n      \"text\": \"Move to Selected >\",\n      \"x\": 113,\n      \"y\": 160,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": false,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 213, \"y\": 210}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": true,\n  \"x\": 213,\n  \"y\": 210\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.LoadingOverlay\",\n  \"title\": \"\",\n  \"widgets\": []\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.OptionsScreen\",\n  \"title\": \"Options\",\n  \"widgets\": [\n    {\n      \"type\": \"OptionSlider\",\n      \"text\": \"FOV: Normal\",\n      \"x\": 60,\n      \"y\": 40,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Online...\",\n  …[632 cut]…     },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Language...\",\n      \"x\": 217,\n      \"y\": 112,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_click",
+"args": "{\"x\": 162, \"y\": 178}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"handled\": false,\n  \"x\": 162,\n  \"y\": 178\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.OptionsScreen\",\n  \"title\": \"Options\",\n  \"widgets\": [\n    {\n      \"type\": \"OptionSlider\",\n      \"text\": \"FOV: Normal\",\n      \"x\": 60,\n      \"y\": 40,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Online...\",\n  …[632 cut]…     },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Language...\",\n      \"x\": 217,\n      \"y\": 112,\n      \"w\": 150,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Done\",\n      \"x\": 113,\n      \"y\": 200,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_key",
+"args": "{\"action\": \"press\", \"key\": \"escape\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"key\": \"escape\",\n  \"action\": \"tap\"\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"widgets\": [\n    {\n      \"type\": \"Button\",\n      \"text\": \"Singleplayer\",\n      \"x\": 113,\n      \"y\": 90,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Multiplayer\",\n    …[284 cut]…   },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Options...\",\n      \"x\": 113,\n      \"y\": 168,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Quit Game\",\n      \"x\": 215,\n      \"y\": 168,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_key",
+"args": "{\"action\": \"hold\", \"key\": \"space\", \"ticks\": 5}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"key\": \"space\",\n  \"action\": \"tap\"\n}"
+},
+{
+"tool": "mcp__sim_mc_screen",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"net.minecraft.client.gui.screens.TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"widgets\": [\n    {\n      \"type\": \"Button\",\n      \"text\": \"Singleplayer\",\n      \"x\": 113,\n      \"y\": 90,\n      \"w\": 200,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Multiplayer\",\n    …[284 cut]…   },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Options...\",\n      \"x\": 113,\n      \"y\": 168,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    },\n    {\n      \"type\": \"Button\",\n      \"text\": \"Quit Game\",\n      \"x\": 215,\n      \"y\": 168,\n      \"w\": 98,\n      \"h\": 20,\n      \"active\": true,\n      \"visible\": true\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_state",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"inWorld\": false,\n  \"screen\": \"net.minecraft.client.gui.screens.TitleScreen\"\n}"
+}
+],
+"final": "✅ Done.\n\n- Options → Resource Packs → selected the \"Programmer Art\" entry (highlighted with `>`) → clicked **Move to Selected >** — it moved to the selected (right) column → clicked **Done**.\n- The reload ran (LoadingOverlay observed), and the client is verified back on `TitleScreen` via the live state (`inWorld: false`, screen: `TitleScreen`).\n\nProgrammer Art is selected and applied; no other settings were touched.",
+"clicks": [
+{
+"t": 75.5,
+"screen": "Minecraft",
+"x": 162,
+"y": 178,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 80.08,
+"screen": "Options",
+"x": 135,
+"y": 122,
+"hit": "Resource Packs...",
+"handled": true
+},
+{
+"t": 87.6,
+"screen": "Select Resource Packs",
+"x": 110,
+"y": 50,
+"hit": "Programmer Art",
+"handled": true
+},
+{
+"t": 93.22,
+"screen": "Select Resource Packs",
+"x": 213,
+"y": 170,
+"hit": "Move to Selected >",
+"handled": true
+},
+{
+"t": 99.74,
+"screen": "Select Resource Packs",
+"x": 213,
+"y": 210,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 130.17,
+"screen": "Options",
+"x": 162,
+"y": 178,
+"hit": null,
+"handled": false
+}
+]
+}

@@ -1,0 +1,52 @@
+{
+"steps": [
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py\"}",
+"error": true,
+"out": "Run Python code inside the running Blender (bpy available, Z up, units = metres).\nusage: python3 bl.py FILE.py | python3 bl.py -c \"CODE\"   [--inspect]  [--expect-rev REV]\nThe value of the last expression is returned as \"result\"; print() goes to \"stdout\".\n--inspect adds full scene telemetry (bounds, contacts, collisions, topology issues).\n--expect-r …[113 cut]… e), a call is also refused (error_code\nexternal_changes_pending, no side effect) while teammate edits are unacked; the refusal\nprints external_changes, the current rev and a hint: review, then resend the SAME call\nwith --expect-rev <rev> to acknowledge and proceed. A refused call changes nothing.\n\nWall time: 0.07 seconds\n\nCommand exited with code 1"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"import json;[print(o.name, o.type, tuple(o.dimensions), tuple(o.location)) for o in bpy.data.objects]\\\" --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": [\n  null,\n  null,\n  null,\n  null,\n  null,\n  null\n ],\n \"stdout\": \"Lamp MESH (0.10000000149011612, 0.10000000149011612, 0.20000000298023224) (0.30000001192092896, 0.10000000149011612, 0.8500000238418579)\\nLeg1 MESH (0.05000000074505806, 0.05000000074505806, 0.699999988079071) (-0.550000011920929, -0.3499999940395355, 0.34999 …[3766 cut]…  \"topology\": {\n     \"vertices\": 8,\n     \"faces\": 6,\n     \"boundary_edges\": 0,\n     \"non_manifold_edges\": 0,\n     \"degenerate_faces\": 0,\n     \"inverted_normals\": false,\n     \"signed_volume\": 1.0\n    }\n   }\n  ],\n  \"expected_contacts\": [],\n  \"collisions\": [],\n  \"issues\": [],\n  \"elapsed_seconds\": 0.0022\n },\n \"rev\": \"8393ecba\"\n}\n\nWall time: 0.11 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"cat > /tmp/fix.py <<'EOF'\\nimport bpy\\nt = bpy.data.objects['Top']\\nt.scale.x = 1.6/t.dimensions[0]*t.scale.x\\nfor n in ['Leg1','Leg2','Leg3','Leg4']:\\n    o = bpy.data.objects[n]\\n    sx = 1 if n in ('Leg2','Leg4') else -1\\n    sy = 1 if n in ('Leg3','Leg4') else -1\\n    o.location = (sx*0.725, sy*0.325, 0.35)\\nl = bpy.data.objects['Lamp']\\nl.location = (0.5, 0.1, 0.85)\\nEOF\\npython3 bl.py /tmp/fix.py --expect-rev 8393ecba --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"inspection\": {\n  \"object_count\": 6,\n  \"parts\": [\n   {\n    \"name\": \"Lamp\",\n    \"bbox\": {\n     \"min\": [\n      0.45,\n      0.05,\n      0.75\n     ],\n     \"max\": [\n      0.55,\n      0.15,\n      0.95\n     ]\n    },\n    \"dimensions\": [\n     0.1,\n     0.1,\n     0.2\n    ],\n    \"center\": [\n     0.5,\n     0.1,\n     0.85\n    ],\n    \"anchors\": { …[5665 cut]…     ],\n      \"max\": [\n       0.8,\n       0.4,\n       0.75\n      ]\n     }\n    ],\n    \"dims\": [\n     [\n      1.2,\n      0.8,\n      0.05\n     ],\n     [\n      1.6,\n      0.8,\n      0.05\n     ]\n    ],\n    \"scale\": [\n     [\n      1.2,\n      0.8,\n      0.05\n     ],\n     [\n      1.6,\n      0.8,\n      0.05\n     ]\n    ]\n   }\n  }\n }\n}\n\nWall time: 0.13 seconds"
+}
+],
+"final": "Done, applied in one call against rev `8393ecba` (no teammate conflicts) and verified with `--inspect`:\n\n- **Top**: bbox now X ±0.8 → 1.6 m long; width 0.8, thickness 0.05, underside z=0.7 unchanged.\n- **Legs**: each 0.05 m inset from its corner (bbox edges at 0.05 from the top's edges in both X and Y), spanning z = 0.0 to 0.7 — floor contact and top-underside contact both exact (contact distance 0.0).\n- **Lamp**: center at x = 0.5 = 0.8 − 0.3 (0.3 m from +X edge), base sitting on the top surface at z=0.75.\n\nInspection reports no collisions or topology issues; final scene rev `189275bc`.",
+"bl": [
+{
+"call": 0,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "8393ecba",
+"external": null,
+"result": "[null, null, null, null, null, null]",
+"stdout": "Lamp MESH (0.10000000149011612, 0.10000000149011612, 0.20000000298023224) (0.30000001192092896, 0.10000000149011612, 0.8500000238418579)\nLeg1 MESH (0.05000000074505806, 0.05000000074505806, 0.699999988079071) (-0.550000011920929, -0.3499999940395355, 0.3499999940395355)\nLeg2 MESH (0.05000000074505806, 0.05000000074505806, 0.699999988079071) (0.550000011920929, -0.3499999940395355, 0.3499999940395355)\nLeg3 MESH (0.05000000074505806, 0.05000000074505806, 0.699999988079071) (-0.550000011920929, 0.3499999940395355, 0.3499999940395355)\nLeg4 MESH (0.05000000074505806, 0.05000000074505806, 0.699999988079071) (0.550000011920929, 0.3499999940395355, 0.3499999940395355)\nTop MESH (1.2000000476837158, 0.800000011920929, 0.05000000074505806) (0.0, 0.0, 0.7250000238418579)\n"
+},
+{
+"call": 1,
+"event": "agent",
+"expect_rev": "8393ecba",
+"ok": true,
+"error_code": null,
+"rev": "189275bc",
+"external": null,
+"result": "null",
+"stdout": ""
+}
+],
+"checks": {
+"top_size": true,
+"legs": true,
+"lamp": true
+}
+}

@@ -1242,11 +1242,17 @@ mod render_tests {
         let mut terminal = Terminal::new(TestBackend::new(60, 2)).unwrap();
         terminal
             .draw(|f| {
-                let area = ratatui::layout::Rect { y: 1, height: 1, ..f.area() };
+                let area = ratatui::layout::Rect {
+                    y: 1,
+                    height: 1,
+                    ..f.area()
+                };
                 e.render(f, area, &crate::theme::Theme::default());
             })
             .unwrap();
-        let row0: String = (0..60).map(|x| terminal.backend().buffer()[(x, 0)].symbol()).collect();
+        let row0: String = (0..60)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect();
         assert_eq!(row0.trim_end(), "", "nothing painted above the area");
     }
 

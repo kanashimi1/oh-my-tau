@@ -1,0 +1,274 @@
+{
+"steps": [
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py\"}",
+"error": true,
+"out": "Run Python code inside the running Blender (bpy available, Z up, units = metres).\nusage: python3 bl.py FILE.py | python3 bl.py -c \"CODE\"   [--inspect]  [--expect-rev REV]\nThe value of the last expression is returned as \"result\"; print() goes to \"stdout\".\n--inspect adds full scene telemetry (bounds, contacts, collisions, topology issues).\n--expect-r …[113 cut]… e), a call is also refused (error_code\nexternal_changes_pending, no side effect) while teammate edits are unacked; the refusal\nprints external_changes, the current rev and a hint: review, then resend the SAME call\nwith --expect-rev <rev> to acknowledge and proceed. A refused call changes nothing.\n\nWall time: 0.05 seconds\n\nCommand exited with code 1"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"import bpy; [(o.name, tuple(round(v,4) for v in o.dimensions), tuple(round(v,4) for v in o.matrix_world.translation)) for o in bpy.data.objects]\\\"\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": [\n  [\n   \"Lamp\",\n   [\n    0.1,\n    0.1,\n    0.2\n   ],\n   [\n    0.3,\n    0.1,\n    0.85\n   ]\n  ],\n  [\n   \"Leg1\",\n   [\n    0.05,\n    0.05,\n    0.7\n   ],\n   [\n    -0.55,\n    -0.35,\n    0.35\n   ]\n  ],\n  [\n   \"Leg2\",\n   [\n    0.05,\n    0.05,\n    0.7\n   ],\n   [\n    0.55,\n    -0.35,\n    0.35\n   ]\n  ],\n  [\n   \"Leg3\",\n   [\n    0.05,\n    0.05,\n    0.7\n   ],\n   [\n    -0.55,\n    0.35,\n    0.35\n   ]\n  ],\n  [\n   \"Leg4\",\n   [\n    0.05,\n    0.05,\n    0.7\n   ],\n   [\n    0.55,\n    0.35,\n    0.35\n   ]\n  ],\n  [\n   \"Top\",\n   [\n    1.2,\n    0.8,\n    0.05\n   ],\n   [\n    0.0,\n    0.0,\n    0.725\n   ]\n  ]\n ],\n \"rev\": \"8393ecba\"\n}\n\nWall time: 0.08 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\nimport bpy\\ntop=bpy.data.objects['Top']\\ns=1.6/top.dimensions.x\\ntop.scale.x*=s\\nfor i,(sx,sy) in enumerate([(-1,-1),(1,-1),(-1,1),(1,1)],1):\\n    leg=bpy.data.objects['Leg%d'%i]\\n    leg.location=(sx*(0.8-0.05-0.025), sy*(0.4-0.05-0.025), 0.35)\\nbpy.data.objects['Lamp'].location.x=0.8-0.3\\n\\\"\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"rev\": \"189275bc\",\n \"diff\": {\n  \"changed\": {\n   \"Lamp\": {\n    \"bounds\": [\n     {\n      \"min\": [\n       0.25,\n       0.05,\n       0.75\n      ],\n      \"max\": [\n       0.35,\n       0.15,\n       0.95\n      ]\n     },\n     {\n      \"min\": [\n       0.45,\n       0.05,\n       0.75\n      ],\n      \"max\": [\n       0.55,\n       0.15,\n       0.95\n …[2130 cut]…     ],\n      \"max\": [\n       0.8,\n       0.4,\n       0.75\n      ]\n     }\n    ],\n    \"dims\": [\n     [\n      1.2,\n      0.8,\n      0.05\n     ],\n     [\n      1.6,\n      0.8,\n      0.05\n     ]\n    ],\n    \"scale\": [\n     [\n      1.2,\n      0.8,\n      0.05\n     ],\n     [\n      1.6,\n      0.8,\n      0.05\n     ]\n    ]\n   }\n  }\n }\n}\n\nWall time: 0.08 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\nimport bpy\\ntop=bpy.data.objects['Top']; r={}\\nr['top_dims']=tuple(round(v,6) for v in top.dimensions)\\nok=True\\nfor i in range(1,5):\\n    l=bpy.data.objects['Leg%d'%i]; b=l.matrix_world.translation; d=l.dimensions/2\\n    ex=abs(b.x)-(0.8-d.x); ey=abs(b.y)-(0.4-d.y); r['Leg%d'%i]=(round(ex,6),round(ey,6),round(b.z-d.z,6),round(b.z+d.z,6))\\nl=bpy.data.objects['Lamp']; b=l.matrix_world.translation\\nr['lamp']=(round(0.8-b.x,6), round(b.z-l.dimensions.z/2,6))\\n\\\" --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": false,\n \"error_code\": \"external_changes_pending\",\n \"rev\": \"d57b7d1c\",\n \"external_changes\": {\n  \"changed\": {\n   \"Lamp\": {\n    \"bounds\": [\n     {\n      \"min\": [\n       0.45,\n       0.05,\n       0.75\n      ],\n      \"max\": [\n       0.55,\n       0.15,\n       0.95\n      ]\n     },\n     {\n      \"min\": [\n       0.45,\n       0.05,\n       0.9\n      ] …[385 cut]…     -0.35,\n       0.3,\n       0.0\n      ],\n      \"max\": [\n       -0.3,\n       0.35,\n       0.7\n      ]\n     }\n    ],\n    \"loc\": [\n     [\n      -0.725,\n      0.325,\n      0.35\n     ],\n     [\n      -0.325,\n      0.325,\n      0.35\n     ]\n    ]\n   }\n  }\n },\n \"hint\": \"review these changes, then resend with expect_rev=d57b7d1c\"\n}\n\nWall time: 0.08 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\nimport bpy\\nbpy.data.objects['Leg3'].location.x=-0.725\\nbpy.data.objects['Lamp'].location.z=0.85\\n\\\" --expect-rev d57b7d1c\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"rev\": \"189275bc\",\n \"external_changes\": {\n  \"changed\": {\n   \"Lamp\": {\n    \"bounds\": [\n     {\n      \"min\": [\n       0.45,\n       0.05,\n       0.75\n      ],\n      \"max\": [\n       0.55,\n       0.15,\n       0.95\n      ]\n     },\n     {\n      \"min\": [\n       0.45,\n       0.05,\n       0.9\n      ],\n      \"max\": [\n       0.55,\n       0.15,\n  …[1168 cut]… -0.3,\n       0.35,\n       0.7\n      ]\n     },\n     {\n      \"min\": [\n       -0.75,\n       0.3,\n       0.0\n      ],\n      \"max\": [\n       -0.7,\n       0.35,\n       0.7\n      ]\n     }\n    ],\n    \"loc\": [\n     [\n      -0.325,\n      0.325,\n      0.35\n     ],\n     [\n      -0.725,\n      0.325,\n      0.35\n     ]\n    ]\n   }\n  }\n }\n}\n\nWall time: 0.08 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\nimport bpy\\nr={}\\nr['top']=tuple(round(v,6) for v in bpy.data.objects['Top'].dimensions)\\nfor i in range(1,5):\\n    l=bpy.data.objects['Leg%d'%i]; b=l.matrix_world.translation; d=l.dimensions/2\\n    r['Leg%d'%i]=('inset_x',round(0.8-abs(b.x)-d.x,6),'inset_y',round(0.4-abs(b.y)-d.y,6),'bottom',round(b.z-d.z,6),'top',round(b.z+d.z,6))\\nl=bpy.data.objects['Lamp']; b=l.matrix_world.translation\\nr['Lamp']=('from_plusX_edge',round(0.8-b.x,6),'bottom',round(b.z-l.dimensions.z/2,6))\\n\\\" --inspect --expect-rev 189275bc\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"inspection\": {\n  \"object_count\": 6,\n  \"parts\": [\n   {\n    \"name\": \"Lamp\",\n    \"bbox\": {\n     \"min\": [\n      0.45,\n      0.05,\n      0.75\n     ],\n     \"max\": [\n      0.55,\n      0.15,\n      0.95\n     ]\n    },\n    \"dimensions\": [\n     0.1,\n     0.1,\n     0.2\n    ],\n    \"center\": [\n     0.5,\n     0.1,\n     0.85\n    ],\n    \"anchors\": { …[2895 cut]…  \"topology\": {\n     \"vertices\": 8,\n     \"faces\": 6,\n     \"boundary_edges\": 0,\n     \"non_manifold_edges\": 0,\n     \"degenerate_faces\": 0,\n     \"inverted_normals\": false,\n     \"signed_volume\": 1.0\n    }\n   }\n  ],\n  \"expected_contacts\": [],\n  \"collisions\": [],\n  \"issues\": [],\n  \"elapsed_seconds\": 0.0021\n },\n \"rev\": \"189275bc\"\n}\n\nWall time: 0.09 seconds"
+}
+],
+"final": "Done and verified (rev `189275bc`):\n\n- **Top**: dimensions $1.6 \\times 0.8 \\times 0.05$ m, bbox $[-0.8, 0.8]\\times[-0.4,0.4]\\times[0.7,0.75]$ — length 1.6 m in X; width, thickness, height unchanged.\n- **Legs 1–4**: centers at $(\\pm0.725, \\pm0.325)$; inset $0.8 - |x| - 0.025 = 0.05$ m from X edges and $0.4 - |y| - 0.025 = 0.05$ m from Y edges; each spans $z=0$ (floor) to $z=0.7$ (underside of top) — contacts confirmed at distance 0.0.\n- **Lamp**: center at $x=0.5$ → 0.3 m from the +X edge at $x=0.8$; bottom at $z=0.75$, resting on the top surface (contact distance 0.0).\n\nMid-work the bridge flagged a teammate edit that had moved Leg3 inward (x=-0.325) and lifted the Lamp to z=1.0; I acknowledged the rev and restored both to spec-compliant positions. Final `--inspect` reports no collisions or issues.",
+"bl": [
+{
+"call": 0,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "8393ecba",
+"external": null,
+"result": "[[\"Lamp\", [0.1, 0.1, 0.2], [0.3, 0.1, 0.85]], [\"Leg1\", [0.05, 0.05, 0.7], [-0.55, -0.35, 0.35]], [\"Leg2\", [0.05, 0.05, 0.7], [0.55, -0.35, 0.35]], [\"Leg3\", [0.05, 0.05, 0.7], [-0.55, 0.35, 0.35]], [\"Leg4\", [0.05, 0.05, 0.7], [0.55, 0.35, 0.35]], [\"Top\", [1.2, 0.8, 0.05], [0.0, 0.0, 0.725]]]",
+"stdout": ""
+},
+{
+"call": 1,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "189275bc",
+"external": null,
+"result": "null",
+"stdout": ""
+},
+{
+"call": 2,
+"event": "teammate",
+"ok": true
+},
+{
+"call": 2,
+"event": "agent",
+"expect_rev": null,
+"ok": false,
+"error_code": "external_changes_pending",
+"rev": "d57b7d1c",
+"external": {
+"changed": {
+"Lamp": {
+"bounds": [
+{
+"min": [
+0.45,
+0.05,
+0.75
+],
+"max": [
+0.55,
+0.15,
+0.95
+]
+},
+{
+"min": [
+0.45,
+0.05,
+0.9
+],
+"max": [
+0.55,
+0.15,
+1.1
+]
+}
+],
+"loc": [
+[
+0.5,
+0.1,
+0.85
+],
+[
+0.5,
+0.1,
+1.0
+]
+]
+},
+"Leg3": {
+"bounds": [
+{
+"min": [
+-0.75,
+0.3,
+0.0
+],
+"max": [
+-0.7,
+0.35,
+0.7
+]
+},
+{
+"min": [
+-0.35,
+0.3,
+0.0
+],
+"max": [
+-0.3,
+0.35,
+0.7
+]
+}
+],
+"loc": [
+[
+-0.725,
+0.325,
+0.35
+],
+[
+-0.325,
+0.325,
+0.35
+]
+]
+}
+}
+},
+"result": "null",
+"stdout": ""
+},
+{
+"call": 3,
+"event": "agent",
+"expect_rev": "d57b7d1c",
+"ok": true,
+"error_code": null,
+"rev": "189275bc",
+"external": {
+"changed": {
+"Lamp": {
+"bounds": [
+{
+"min": [
+0.45,
+0.05,
+0.75
+],
+"max": [
+0.55,
+0.15,
+0.95
+]
+},
+{
+"min": [
+0.45,
+0.05,
+0.9
+],
+"max": [
+0.55,
+0.15,
+1.1
+]
+}
+],
+"loc": [
+[
+0.5,
+0.1,
+0.85
+],
+[
+0.5,
+0.1,
+1.0
+]
+]
+},
+"Leg3": {
+"bounds": [
+{
+"min": [
+-0.75,
+0.3,
+0.0
+],
+"max": [
+-0.7,
+0.35,
+0.7
+]
+},
+{
+"min": [
+-0.35,
+0.3,
+0.0
+],
+"max": [
+-0.3,
+0.35,
+0.7
+]
+}
+],
+"loc": [
+[
+-0.725,
+0.325,
+0.35
+],
+[
+-0.325,
+0.325,
+0.35
+]
+]
+}
+}
+},
+"result": "null",
+"stdout": ""
+},
+{
+"call": 4,
+"event": "agent",
+"expect_rev": "189275bc",
+"ok": true,
+"error_code": null,
+"rev": "189275bc",
+"external": null,
+"result": "null",
+"stdout": ""
+}
+],
+"checks": {
+"top_size": true,
+"legs": true,
+"lamp": true
+}
+}

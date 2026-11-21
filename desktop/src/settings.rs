@@ -17,7 +17,11 @@ pub struct DictationSettings {
 
 impl Default for DictationSettings {
     fn default() -> Self {
-        Self { enabled: true, hold_ms: 250, language: "ru".into() }
+        Self {
+            enabled: true,
+            hold_ms: 250,
+            language: "ru".into(),
+        }
     }
 }
 

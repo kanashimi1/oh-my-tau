@@ -1,0 +1,4 @@
+d_reconcile: base=0.75 cands=2 supported=1 probe_scores=[0.75, 1.0] lib=274ch
+c_pricing: base=1.0 cands=2 supported=1 probe_scores=[1.0, 1.0] lib=473ch
+d_logs: base=0.333 cands=2 supported=2 probe_scores=[0.333, 1.0] lib=1013ch
+c_crlf: base=1.0 cands=2 supported=0 probe_scores=[1.0, 1.0] lib=1013ch

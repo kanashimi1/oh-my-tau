@@ -29,3 +29,4 @@ rpc-leak-*.progress
 bench/context/results/
 bench/context/RESULTS-*.md
 bench/rlm/results/
+.env

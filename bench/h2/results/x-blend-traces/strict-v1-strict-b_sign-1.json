@@ -1,0 +1,207 @@
+{
+"steps": [
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py\"}",
+"error": true,
+"out": "Run Python code inside the running Blender (bpy available, Z up, units = metres).\nusage: python3 bl.py FILE.py | python3 bl.py -c \"CODE\"   [--inspect]  [--expect-rev REV]\nThe value of the last expression is returned as \"result\"; print() goes to \"stdout\".\n--inspect adds full scene telemetry (bounds, contacts, collisions, topology issues).\n--expect-r …[113 cut]… e), a call is also refused (error_code\nexternal_changes_pending, no side effect) while teammate edits are unacked; the refusal\nprints external_changes, the current rev and a hint: review, then resend the SAME call\nwith --expect-rev <rev> to acknowledge and proceed. A refused call changes nothing.\n\nWall time: 0.07 seconds\n\nCommand exited with code 1"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"import json; print(json.dumps({o.name:{'loc':list(o.location),'dim':list(o.dimensions)} for o in bpy.data.objects}, indent=1))\\\" --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"stdout\": \"{\\n \\\"LegL\\\": {\\n  \\\"loc\\\": [\\n   -0.5249999761581421,\\n   0.0,\\n   0.22499999403953552\\n  ],\\n  \\\"dim\\\": [\\n   0.05000000074505806,\\n   0.05000000074505806,\\n   0.44999998807907104\\n  ]\\n },\\n \\\"LegR\\\": {\\n  \\\"loc\\\": [\\n   0.5249999761581421,\\n   0.0,\\n   0.22499999403953552\\n  ],\\n  \\\"dim\\\": [\\n   0.05000000074505806,\\n …[2543 cut]…  \"topology\": {\n     \"vertices\": 8,\n     \"faces\": 6,\n     \"boundary_edges\": 0,\n     \"non_manifold_edges\": 0,\n     \"degenerate_faces\": 0,\n     \"inverted_normals\": false,\n     \"signed_volume\": 1.0\n    }\n   }\n  ],\n  \"expected_contacts\": [],\n  \"collisions\": [],\n  \"issues\": [],\n  \"elapsed_seconds\": 0.0008\n },\n \"rev\": \"61555e39\"\n}\n\nWall time: 0.09 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\nseat=bpy.data.objects['Seat']\\nseat.scale.x=1.5\\nfor name,x in (('LegL',-0.825),('LegR',0.825)):\\n    o=bpy.data.objects[name]; o.location.x=x; o.location.z=0.225\\nsign=bpy.data.objects['Sign']; sign.location=(0,0,0.525)\\n'set'\\\"\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": \"set\",\n \"rev\": \"0a1a3cc1\",\n \"diff\": {\n  \"changed\": {\n   \"LegL\": {\n    \"bounds\": [\n     {\n      \"min\": [\n       -0.55,\n       -0.025,\n       0.0\n      ],\n      \"max\": [\n       -0.5,\n       0.025,\n       0.45\n      ]\n     },\n     {\n      \"min\": [\n       -0.85,\n       -0.025,\n       0.0\n      ],\n      \"max\": [\n       -0.8,\n   …[1284 cut]…  0.475,\n       0.05,\n       0.575\n      ]\n     },\n     {\n      \"min\": [\n       -0.075,\n       -0.05,\n       0.5\n      ],\n      \"max\": [\n       0.075,\n       0.05,\n       0.55\n      ]\n     }\n    ],\n    \"loc\": [\n     [\n      0.4,\n      0.0,\n      0.55\n     ],\n     [\n      0.0,\n      0.0,\n      0.525\n     ]\n    ]\n   }\n  }\n }\n}\n\nWall time: 0.09 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\\" --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": false,\n \"error_code\": \"external_changes_pending\",\n \"rev\": \"34ee2df9\",\n \"external_changes\": {\n  \"removed\": [\n   \"Sign\"\n  ],\n  \"scene\": {\n   \"active\": [\n    \"Sign\",\n    null\n   ]\n  }\n },\n \"hint\": \"review these changes, then resend with expect_rev=34ee2df9\"\n}\n\nWall time: 0.10 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\nimport bpy\\nd=bpy.data\\nsign=d.objects.get('Sign')\\nif sign is None:\\n    sign=d.objects.new('Sign',d.meshes.get('Sign_mesh') or d.meshes.new('Sign_mesh'))\\n    bpy.context.scene.collection.objects.link(sign)\\n    import bmesh\\n    bm=bmesh.new(); bmesh.ops.create_cube(bm,size=1); bm.to_mesh(sign.data); bm.free()\\nsign.scale=(0.15,0.1,0.05)\\nsign.location=(0,0,0.525)\\n'recreated'\\\" --expect-rev 34ee2df9\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": \"recreated\",\n \"rev\": \"c07f090e\",\n \"external_changes\": {\n  \"removed\": [\n   \"Sign\"\n  ],\n  \"scene\": {\n   \"active\": [\n    \"Sign\",\n    null\n   ]\n  }\n },\n \"diff\": {\n  \"added\": {\n   \"Sign\": \"MESH 8v/6f @(0.0,0.0,0.525)\"\n  }\n }\n}\n\nWall time: 0.10 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\\" --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"inspection\": {\n  \"object_count\": 4,\n  \"parts\": [\n   {\n    \"name\": \"LegL\",\n    \"bbox\": {\n     \"min\": [\n      -0.85,\n      -0.025,\n      0.0\n     ],\n     \"max\": [\n      -0.8,\n      0.025,\n      0.45\n     ]\n    },\n    \"dimensions\": [\n     0.05,\n     0.05,\n     0.45\n    ],\n    \"center\": [\n     -0.825,\n     0.0,\n     0.225\n    ],\n    \"a …[1786 cut]…  \"topology\": {\n     \"vertices\": 8,\n     \"faces\": 6,\n     \"boundary_edges\": 0,\n     \"non_manifold_edges\": 0,\n     \"degenerate_faces\": 0,\n     \"inverted_normals\": false,\n     \"signed_volume\": 1.0\n    }\n   }\n  ],\n  \"expected_contacts\": [],\n  \"collisions\": [],\n  \"issues\": [],\n  \"elapsed_seconds\": 0.0008\n },\n \"rev\": \"c07f090e\"\n}\n\nWall time: 0.10 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\nfor n,x in (('LegL',-0.675),('LegR',0.675)):\\n    bpy.data.objects[n].location.x=x\\n'fixed'\\\"\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": \"fixed\",\n \"rev\": \"e3dd65d7\",\n \"diff\": {\n  \"changed\": {\n   \"LegL\": {\n    \"bounds\": [\n     {\n      \"min\": [\n       -0.85,\n       -0.025,\n       0.0\n      ],\n      \"max\": [\n       -0.8,\n       0.025,\n       0.45\n      ]\n     },\n     {\n      \"min\": [\n       -0.7,\n       -0.025,\n       0.0\n      ],\n      \"max\": [\n       -0.65,\n …[297 cut]… .85,\n       0.025,\n       0.45\n      ]\n     },\n     {\n      \"min\": [\n       0.65,\n       -0.025,\n       0.0\n      ],\n      \"max\": [\n       0.7,\n       0.025,\n       0.45\n      ]\n     }\n    ],\n    \"loc\": [\n     [\n      0.825,\n      0.0,\n      0.225\n     ],\n     [\n      0.675,\n      0.0,\n      0.225\n     ]\n    ]\n   }\n  }\n }\n}\n\nWall time: 0.11 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\\" --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"inspection\": {\n  \"object_count\": 4,\n  \"parts\": [\n   {\n    \"name\": \"LegL\",\n    \"bbox\": {\n     \"min\": [\n      -0.7,\n      -0.025,\n      0.0\n     ],\n     \"max\": [\n      -0.65,\n      0.025,\n      0.45\n     ]\n    },\n    \"dimensions\": [\n     0.05,\n     0.05,\n     0.45\n    ],\n    \"center\": [\n     -0.675,\n     0.0,\n     0.225\n    ],\n    \"a …[1784 cut]…  \"topology\": {\n     \"vertices\": 8,\n     \"faces\": 6,\n     \"boundary_edges\": 0,\n     \"non_manifold_edges\": 0,\n     \"degenerate_faces\": 0,\n     \"inverted_normals\": false,\n     \"signed_volume\": 1.0\n    }\n   }\n  ],\n  \"expected_contacts\": [],\n  \"collisions\": [],\n  \"issues\": [],\n  \"elapsed_seconds\": 0.0009\n },\n \"rev\": \"e3dd65d7\"\n}\n\nWall time: 0.10 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\ns=bpy.data.objects['Seat']\\nprint('raw scale:',tuple(s.scale),'dims:',tuple(s.dimensions))\\ns.scale.x = 1.8/ (s.dimensions.x/ s.scale.x)\\nprint('new scale.x:',s.scale.x,'dims:',tuple(s.dimensions))\\n'set'\\\" --expect-rev e3dd65d7\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": \"set\",\n \"stdout\": \"raw scale: (1.5, 0.30000001192092896, 0.05000000074505806) dims: (1.5, 0.30000001192092896, 0.05000000074505806)\\nnew scale.x: 1.7999999523162842 dims: (1.5, 0.30000001192092896, 0.05000000074505806)\\n\",\n \"rev\": \"797a3bdf\",\n \"diff\": {\n  \"changed\": {\n   \"Seat\": {\n    \"bounds\": [\n     {\n      \"min\": [\n     …[176 cut]…     ],\n      \"max\": [\n       0.9,\n       0.15,\n       0.5\n      ]\n     }\n    ],\n    \"dims\": [\n     [\n      1.5,\n      0.3,\n      0.05\n     ],\n     [\n      1.8,\n      0.3,\n      0.05\n     ]\n    ],\n    \"scale\": [\n     [\n      1.5,\n      0.3,\n      0.05\n     ],\n     [\n      1.8,\n      0.3,\n      0.05\n     ]\n    ]\n   }\n  }\n }\n}\n\nWall time: 0.12 seconds"
+},
+{
+"tool": "bash",
+"args": "{\"command\": \"python3 bl.py -c \\\"\\nfor n,x in (('LegL',-0.825),('LegR',0.825)):\\n    bpy.data.objects[n].location.x=x\\n'set'\\\" && python3 bl.py -c \\\"\\\" --inspect\"}",
+"error": false,
+"out": "{\n \"ok\": true,\n \"result\": \"set\",\n \"rev\": \"98e55e2a\",\n \"diff\": {\n  \"changed\": {\n   \"LegL\": {\n    \"bounds\": [\n     {\n      \"min\": [\n       -0.7,\n       -0.025,\n       0.0\n      ],\n      \"max\": [\n       -0.65,\n       0.025,\n       0.45\n      ]\n     },\n     {\n      \"min\": [\n       -0.85,\n       -0.025,\n       0.0\n      ],\n      \"max\": [\n       -0.8,\n   …[2752 cut]…   \"topology\": {\n     \"vertices\": 8,\n     \"faces\": 6,\n     \"boundary_edges\": 0,\n     \"non_manifold_edges\": 0,\n     \"degenerate_faces\": 0,\n     \"inverted_normals\": false,\n     \"signed_volume\": 1.0\n    }\n   }\n  ],\n  \"expected_contacts\": [],\n  \"collisions\": [],\n  \"issues\": [],\n  \"elapsed_seconds\": 0.001\n },\n \"rev\": \"98e55e2a\"\n}\n\nWall time: 0.19 seconds"
+}
+],
+"final": "✅ All requirements verified at final rev **`98e55e2a`**:\n\n| Requirement | Verified state |\n|---|---|\n| Seat 1.8 m in X | dims 1.8 × 0.3 × 0.05, bounds x ∈ [−0.9, 0.9] |\n| Width/thickness/height/centre kept | 0.3 × 0.05, top z=0.5, centre (0, 0, 0.475) |\n| Legs 0.05 m inset from seat ends | LegL bbox x ∈ [−0.85, −0.8], LegR x ∈ [0.8, 0.85] → outer faces 0.05 from ±0.9 |\n| Legs on floor, touching seat underside | bbox z ∈ [0.0, 0.45], seat underside z=0.45, contact distance 0.0 |\n| Sign on Seat top at (0, 0) | centre (0, 0, 0.525), bottom z=0.5 resting on seat, contact distance 0.0 |\n\nNotes on the session: the teammate deleted the Sign mid-work (acknowledged via `--expect-rev`, recreated with its original 0.15 × 0.1 × 0.05 dims at the required position). Also, the seat mesh's unscaled base is 1.0 m, so the correct scale.x is 1.8 (my first 1.5 gave 1.5 m — caught by inspection, corrected, and legs re-inset to the final ±0.9 ends). Final inspection reports no collisions or issues; all contacts exact.",
+"bl": [
+{
+"call": 0,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "61555e39",
+"external": null,
+"result": "null",
+"stdout": "{\n \"LegL\": {\n  \"loc\": [\n   -0.5249999761581421,\n   0.0,\n   0.22499999403953552\n  ],\n  \"dim\": [\n   0.05000000074505806,\n   0.05000000074505806,\n   0.44999998807907104\n  ]\n },\n \"LegR\": {\n  \"loc\": [\n   0.5249999761581421,\n   0.0,\n   0.22499999403953552\n  ],\n  \"dim\": [\n   0.05000000074505806,\n   0.05000000074505806,\n   0.44999998807907104\n  ]\n },\n \"Seat\": {\n  \"loc\": [\n   0.0,\n   0.0,\n   0.4749999940395355\n  ],\n  \"dim\": [\n   1.2000000476837158,\n   0.30000001192092896,\n   0.05000000074505806\n  ]\n },\n \"Sign\": {\n  \"loc\": [\n   0.4000000059604645,\n   0.0,\n   0.550000011920929\n  ],\n  \"dim\": [\n   0.15000000596046448,\n   0.10000000149011612,\n   0.05000000074505806\n  ]\n }\n}\n"
+},
+{
+"call": 1,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "0a1a3cc1",
+"external": null,
+"result": "set",
+"stdout": ""
+},
+{
+"call": 2,
+"event": "teammate",
+"ok": true
+},
+{
+"call": 2,
+"event": "agent",
+"expect_rev": null,
+"ok": false,
+"error_code": "external_changes_pending",
+"rev": "34ee2df9",
+"external": {
+"removed": [
+"Sign"
+],
+"scene": {
+"active": [
+"Sign",
+null
+]
+}
+},
+"result": "null",
+"stdout": ""
+},
+{
+"call": 3,
+"event": "agent",
+"expect_rev": "34ee2df9",
+"ok": true,
+"error_code": null,
+"rev": "c07f090e",
+"external": {
+"removed": [
+"Sign"
+],
+"scene": {
+"active": [
+"Sign",
+null
+]
+}
+},
+"result": "recreated",
+"stdout": ""
+},
+{
+"call": 4,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "c07f090e",
+"external": null,
+"result": "null",
+"stdout": ""
+},
+{
+"call": 5,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "e3dd65d7",
+"external": null,
+"result": "fixed",
+"stdout": ""
+},
+{
+"call": 6,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "e3dd65d7",
+"external": null,
+"result": "null",
+"stdout": ""
+},
+{
+"call": 7,
+"event": "agent",
+"expect_rev": "e3dd65d7",
+"ok": true,
+"error_code": null,
+"rev": "797a3bdf",
+"external": null,
+"result": "set",
+"stdout": "raw scale: (1.5, 0.30000001192092896, 0.05000000074505806) dims: (1.5, 0.30000001192092896, 0.05000000074505806)\nnew scale.x: 1.7999999523162842 dims: (1.5, 0.30000001192092896, 0.05000000074505806)\n"
+},
+{
+"call": 8,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "98e55e2a",
+"external": null,
+"result": "set",
+"stdout": ""
+},
+{
+"call": 9,
+"event": "agent",
+"expect_rev": null,
+"ok": true,
+"error_code": null,
+"rev": "98e55e2a",
+"external": null,
+"result": "null",
+"stdout": ""
+}
+],
+"checks": {
+"seat": true,
+"legs": true,
+"sign": true
+}
+}

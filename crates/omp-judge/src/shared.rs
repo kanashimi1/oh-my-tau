@@ -42,7 +42,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 pub fn socket_path(paths: &ModelPaths) -> PathBuf {
     let mut h = DefaultHasher::new();
     for p in [&paths.ckpt, &paths.onnx] {
-        fs::canonicalize(p).unwrap_or_else(|_| p.clone()).hash(&mut h);
+        fs::canonicalize(p)
+            .unwrap_or_else(|_| p.clone())
+            .hash(&mut h);
     }
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
     home.join(".omp-rs/judge/run")
@@ -176,20 +178,22 @@ fn spawn_daemon(paths: &ModelPaths, sock: &Path, log: &Path) -> Result<Child> {
 fn tail(path: &Path, max: usize) -> String {
     let s = fs::read_to_string(path).unwrap_or_default();
     let cut = s.len().saturating_sub(max);
-    let start = (cut..=s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len());
+    let start = (cut..=s.len())
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(s.len());
     s[start..].to_owned()
 }
 
 fn request(sock: &Path, req: &str) -> Result<String> {
-    let mut s =
-        UnixStream::connect(sock).with_context(|| format!("connect {}", sock.display()))?;
+    let mut s = UnixStream::connect(sock).with_context(|| format!("connect {}", sock.display()))?;
     s.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     s.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     s.write_all(req.as_bytes())?;
     s.write_all(b"\n")?;
     s.shutdown(std::net::Shutdown::Write)?;
     let mut resp = String::new();
-    s.read_to_string(&mut resp).context("read laya daemon reply")?;
+    s.read_to_string(&mut resp)
+        .context("read laya daemon reply")?;
     if resp.trim().is_empty() {
         bail!("laya daemon closed the connection without a reply");
     }
@@ -312,7 +316,8 @@ fn handle(conn: &UnixStream, judge: &Mutex<Box<JudgeFn>>) -> Result<()> {
 /// Lock/socket I/O or model load failure.
 pub fn serve(paths: &ModelPaths, sock: &Path) -> Result<()> {
     let lock_path = sock.with_extension("lock");
-    let lock = File::create(&lock_path).with_context(|| format!("create {}", lock_path.display()))?;
+    let lock =
+        File::create(&lock_path).with_context(|| format!("create {}", lock_path.display()))?;
     if lock.try_lock().is_err() {
         return Ok(()); // a daemon for this model is running (or loading)
     }
@@ -326,8 +331,7 @@ pub fn serve(paths: &ModelPaths, sock: &Path) -> Result<()> {
             )
         })?;
     let _ = fs::remove_file(sock); // stale socket of a dead daemon (we hold the lock)
-    let listener =
-        UnixListener::bind(sock).with_context(|| format!("bind {}", sock.display()))?;
+    let listener = UnixListener::bind(sock).with_context(|| format!("bind {}", sock.display()))?;
     eprintln!(
         "laya-serve pid {} ready in {:.1}s on {}",
         std::process::id(),

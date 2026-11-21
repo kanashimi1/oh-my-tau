@@ -1,0 +1,503 @@
+[
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 9130,
+  "secs": 12.1,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_reconcile",
+  "score": 1.0,
+  "calls": 9,
+  "errors": 0,
+  "tokens": 64570,
+  "secs": 73.1,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_reconcile",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 14104,
+  "secs": 18.5,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 15203,
+  "secs": 67.0,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 17839,
+  "secs": 19.5,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 15862,
+  "secs": 64.7,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "score": 0.333,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 10923,
+  "secs": 13.8,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_logs",
+  "score": 0.333,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 19887,
+  "secs": 22.1,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_logs",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 109046,
+  "secs": 45.0,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "score": 0.8,
+  "calls": 5,
+  "errors": 1,
+  "tokens": 15619,
+  "secs": 29.5,
+  "miss": [
+   "screen.LIGHTING"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 7,
+  "errors": 0,
+  "tokens": 24431,
+  "secs": 41.2,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 12306,
+  "secs": 18.1,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 13270,
+  "secs": 19.7,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_budget",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 21239,
+  "secs": 36.5,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_budget",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 18943,
+  "secs": 26.3,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 12,
+  "errors": 0,
+  "tokens": 17933,
+  "secs": 21.7,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 16681,
+  "secs": 21.2,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 8,
+  "errors": 3,
+  "tokens": 31180,
+  "secs": 34.0,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_sessions",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 14351,
+  "secs": 22.9,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_sessions",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 22175,
+  "secs": 19.4,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_sessions",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 40285,
+  "secs": 29.6,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_duration",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 12364,
+  "secs": 20.3,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_duration",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 1,
+  "tokens": 28432,
+  "secs": 39.1,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_duration",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 16570,
+  "secs": 18.9,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 18893,
+  "secs": 24.6,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_reconcile",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 13534,
+  "secs": 18.4,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_reconcile",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 12624,
+  "secs": 18.5,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 12180,
+  "secs": 17.9,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 17679,
+  "secs": 18.0,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 13000,
+  "secs": 18.3,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "score": 0.333,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 10884,
+  "secs": 17.8,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_logs",
+  "score": 0.333,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 79416,
+  "secs": 36.3,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_logs",
+  "score": 0.333,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 19165,
+  "secs": 21.2,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 11409,
+  "secs": 18.4,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 13563,
+  "secs": 24.0,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 12267,
+  "secs": 19.9,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "score": 0.4,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 15685,
+  "secs": 30.5,
+  "miss": [
+   "labor",
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_budget",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 15556,
+  "secs": 26.3,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_budget",
+  "score": 1.0,
+  "calls": 7,
+  "errors": 1,
+  "tokens": 34477,
+  "secs": 60.3,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 13876,
+  "secs": 17.4,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 16651,
+  "secs": 19.1,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 18839,
+  "secs": 21.8,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_sessions",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 10726,
+  "secs": 13.1,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_sessions",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 25701,
+  "secs": 20.9,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_sessions",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 16797,
+  "secs": 19.8,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_duration",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 15253,
+  "secs": 20.6,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_duration",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 14334,
+  "secs": 21.3,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_duration",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 18039,
+  "secs": 33.5,
+  "miss": []
+ }
+]

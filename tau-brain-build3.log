@@ -1,0 +1,17 @@
+   Compiling omp-cli v0.10.0 (/home/kaneki/fleet-split/omt/crates/omp-cli)
+warning: constant `LEGACY_MAX_GET_MESSAGES_PAGE_SIZE` is never used
+   --> crates/omp-cli/src/rpc.rs:468:11
+    |
+468 | pub const LEGACY_MAX_GET_MESSAGES_PAGE_SIZE: usize = 256;
+    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `legacy_capabilities_payload` is never used
+   --> crates/omp-cli/src/rpc.rs:494:8
+    |
+494 | pub fn legacy_capabilities_payload() -> Value {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `omp-cli` (bin "omt") generated 2 warnings
+    Finished `release` profile [optimized + debuginfo] target(s) in 2m 18s

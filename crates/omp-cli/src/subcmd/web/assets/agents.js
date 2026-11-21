@@ -386,6 +386,7 @@
     let worktree = false;
     try { worktree = localStorage.getItem(WORKTREE_KEY) === "true"; } catch { /* storage unavailable */ }
     let box = el("input", {
+      id: "agent-worktree",
       type: "checkbox",
       checked: worktree,
       onchange: () => {
@@ -411,7 +412,7 @@
   function renderLeft(host) {
     if (!host) return;
     if (app && app.S.agentId !== lastAgentId) resetSubs();
-    host.replaceChildren(renderRolePicker());
+    if (!host.firstElementChild && typeof host.append === "function") host.append(renderRolePicker());
   }
 
   function renderRight(host) {

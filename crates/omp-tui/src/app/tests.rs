@@ -1940,3 +1940,50 @@ fn hidden_custom_notices_never_render() {
         "{rebuilt:#?}"
     );
 }
+
+#[test]
+fn live_token_counter_estimates_partial_delta_then_reconciles_usage_on_message_end() {
+    let mut app = app();
+    start_streaming(&mut app);
+
+    // Partial text_delta: no provider usage yet -> chars/4 estimate, marked ≈.
+    app.apply_event(&crate::events::parse_frame(&json!({
+        "type": "message_update",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "a".repeat(100)}]
+        }
+    })));
+    let s = screen(&mut app, 80, 10);
+    assert!(s.contains("↓≈25 tok"), "estimate after first delta: {s}");
+
+    // A longer partial delta grows the estimate (still no reported usage).
+    app.apply_event(&crate::events::parse_frame(&json!({
+        "type": "message_update",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "a".repeat(300)}]
+        }
+    })));
+    let s = screen(&mut app, 80, 10);
+    assert!(s.contains("↓≈75 tok"), "estimate after longer delta: {s}");
+
+    // message_end carries the actual usage: the partial estimate is dropped
+    // and the run counter reconciles to the reported output tokens — exact
+    // value, no ≈ marker, and no double count of estimate + usage.
+    app.apply_event(&crate::events::parse_frame(&json!({
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "stopReason": "endTurn",
+            "usage": {"input": 1000, "output": 117}
+        }
+    })));
+    let s = screen(&mut app, 80, 10);
+    assert!(s.contains("↓117 tok"), "reconciled to actual usage: {s}");
+    assert!(
+        !s.contains("↓≈"),
+        "estimate marker gone after message_end: {s}"
+    );
+    assert!(!s.contains("↓192"), "estimate must not double count: {s}");
+}

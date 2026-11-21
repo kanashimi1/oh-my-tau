@@ -1,0 +1,130 @@
+[
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "score": 0.75,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 12268,
+  "secs": 18.9,
+  "miss": [
+   "mismatches"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 11877,
+  "secs": 47.3,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "score": 0.333,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 19842,
+  "secs": 32.3,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 17762,
+  "secs": 57.1,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 17776,
+  "secs": 36.1,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 14150,
+  "secs": 19.0,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 9167,
+  "secs": 16.2,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_pricing",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 15147,
+  "secs": 20.1,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "score": 0.333,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 13619,
+  "secs": 24.9,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 11379,
+  "secs": 22.4,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "score": 1.0,
+  "calls": 9,
+  "errors": 1,
+  "tokens": 42454,
+  "secs": 64.2,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_rename",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 11005,
+  "secs": 14.1,
+  "miss": []
+ }
+]

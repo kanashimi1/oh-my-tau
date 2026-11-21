@@ -1,0 +1,203 @@
+{
+"steps": [
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"frame\": \"1b510143\",\n  \"widgets\": [\n    {\n      \"ref\": \"Singleplayer\",\n      \"text\": \"Singleplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Multiplayer\",\n      \"text\": \"Multiplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Minecraft Realms\",\n      \"text\": \"Minecraft Realms\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Options...\",\n      \"text\": \"Options...\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Quit Game\",\n      \"text\": \"Quit Game\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"text\\\": \\\"Options\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    }\n  ],\n  \"stopped\": {\n    \"step\": 0,\n    \"reason\": \"wait_timeout\",\n    \"wait\": {\n      \"text\": \"Options\"\n    }\n  },\n  \"frame\": \"a22da764\",\n  \"diff\": {\n    \"screen_changed\": \"Minecraft -> Options\",\n    \"view\": {\n      \"screen\": \"OptionsScreen\",\n      \"titl …[524 cut]…    {\n          \"ref\": \"Resource Packs...\",\n          \"text\": \"Resource Packs...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Language...\",\n          \"text\": \"Language...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Video Settings...\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Graphics\\\"}}]\", \"frame\": \"a22da764\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Video Settings...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Graphics\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"9f2ac295\",\n  \"diff\": {\n    \"screen_changed\": \"Options -> Video Settings\",\n    \"view\": {\n      \"screen\": \"VideoSettingsScreen\",\n      \"title\": \"Video  …[327 cut]…       \"ref\": \"Clouds\",\n          \"text\": \"Clouds: Fancy\",\n          \"type\": \"CycleButton\"\n        },\n        {\n          \"ref\": \"Max Framerate\",\n          \"text\": \"Max Framerate: 120 fps\",\n          \"type\": \"OptionSlider\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Graphics\\\", \\\"wait\\\": {\\\"text\\\": \\\"Graphics: Fabulous!\\\"}}]\", \"frame\": \"9f2ac295\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Graphics\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"text\": \"Graphics: Fabulous!\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"cd4c39d0\",\n  \"diff\": {\n    \"changed\": {\n      \"Graphics\": \"Graphics: Fancy -> Graphics: Fabulous!\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Clouds\\\", \\\"wait\\\": {\\\"text\\\": \\\"Clouds: Fast\\\"}}]\", \"frame\": \"cd4c39d0\"}",
+"error": false,
+"out": "{\n  \"ok\": false,\n  \"completed\": [],\n  \"stopped\": {\n    \"step\": 0,\n    \"reason\": \"frame_stale\",\n    \"hint\": \"screen changed since that view; nothing was sent\"\n  },\n  \"frame\": \"5681395f\",\n  \"diff\": {\n    \"screen_changed\": \"Video Settings -> Graphics Warning\",\n    \"view\": {\n      \"screen\": \"PopupScreen\",\n      \"title\": \"Graphics Warning\",\n      \"frame\": \"5681395f\",\n      \"widgets\": [\n        {\n          \"ref\": \"Cancel\",\n          \"text\": \"Cancel\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"I Understand\",\n          \"text\": \"I Understand\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"I Understand\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Clouds\\\"}}]\", \"frame\": \"5681395f\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"I Understand\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Clouds\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"cd4c39d0\",\n  \"diff\": {\n    \"screen_changed\": \"Graphics Warning -> Video Settings\",\n    \"view\": {\n      \"screen\": \"VideoSettingsScreen\",\n      \"title\": \"Vide …[333 cut]…       \"ref\": \"Clouds\",\n          \"text\": \"Clouds: Fancy\",\n          \"type\": \"CycleButton\"\n        },\n        {\n          \"ref\": \"Max Framerate\",\n          \"text\": \"Max Framerate: 120 fps\",\n          \"type\": \"OptionSlider\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Clouds\\\", \\\"wait\\\": {\\\"text\\\": \\\"Clouds: Fast\\\"}}]\", \"frame\": \"cd4c39d0\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Clouds\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"text\": \"Clouds: Fast\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"ed4c7eba\",\n  \"diff\": {\n    \"changed\": {\n      \"Clouds\": \"Clouds: Fancy -> Clouds: Fast\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Clouds\\\", \\\"wait\\\": {\\\"text\\\": \\\"Clouds: OFF\\\"}}]\", \"frame\": \"ed4c7eba\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Clouds\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"text\": \"Clouds: OFF\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"e7e9611f\",\n  \"diff\": {\n    \"changed\": {\n      \"Clouds\": \"Clouds: Fast -> Clouds: OFF\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}]\", \"frame\": \"e7e9611f\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"9d95de60\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 8 chunks -> Render Distance: 12 chunks\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Render Distance\\\"}]\", \"frame\": \"9d95de60\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Render Distance\",\n      \"handled\": true\n    }\n  ],\n  \"frame\": \"088ee3d5\",\n  \"diff\": {\n    \"changed\": {\n      \"Render Distance\": \"Render Distance: 12 chunks -> Render Distance: 16 chunks\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Video Settings...\\\"}}]\", \"frame\": \"088ee3d5\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Video Settings...\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"a22da764\",\n  \"diff\": {\n    \"screen_changed\": \"Video Settings -> Options\",\n    \"view\": {\n      \"screen\": \"OptionsScreen\",\n      \"title\": \"Options\",\n       …[503 cut]…    {\n          \"ref\": \"Resource Packs...\",\n          \"text\": \"Resource Packs...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Language...\",\n          \"text\": \"Language...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Singleplayer\\\"}}]\", \"frame\": \"a22da764\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Singleplayer\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"1b510143\",\n  \"diff\": {\n    \"screen_changed\": \"Options -> Minecraft\",\n    \"view\": {\n      \"screen\": \"TitleScreen\",\n      \"title\": \"Minecraft\",\n      \"frame\": \" …[269 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Video Settings...\\\"}}, {\\\"click\\\": \\\"Video Settings...\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Graphics\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Video Settings...\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Video Settings...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Graphics\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"fram …[486 cut]…         \"ref\": \"Clouds\",\n          \"text\": \"Clouds: OFF\",\n          \"type\": \"CycleButton\"\n        },\n        {\n          \"ref\": \"Max Framerate\",\n          \"text\": \"Max Framerate: 120 fps\",\n          \"type\": \"OptionSlider\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Video Settings...\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Singleplayer\\\"}}]\", \"frame\": \"088ee3d5\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Video Settings...\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"ref\": \"Singleplayer\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"1b510143\", …[424 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+}
+],
+"final": "🎮 All done and back on the title screen.\n\n- **Graphics: Fabulous!** — cycled from Fancy; accepted the \"Graphics Warning\" popup (\"I Understand\")\n- **Clouds: OFF** — cycled Fancy → Fast → OFF\n- **Render Distance: 16 chunks** — slider moved 8 → 12 → 16\n\nVerified by reopening Options → Video Settings after returning: all three values read exactly `Graphics: Fabulous!`, `Clouds: OFF`, `Render Distance: 16 chunks`, then backed out with Done twice to the title screen.",
+"clicks": [
+{
+"t": 40.77,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 49.79,
+"screen": "Options",
+"x": 135.0,
+"y": 98.0,
+"hit": "Video Settings...",
+"handled": true
+},
+{
+"t": 54.35,
+"screen": "Video Settings",
+"x": 135.0,
+"y": 50.0,
+"hit": "Graphics: Fancy",
+"handled": true
+},
+{
+"t": 62.47,
+"screen": "Graphics Warning",
+"x": 292.0,
+"y": 74.0,
+"hit": "I Understand",
+"handled": true
+},
+{
+"t": 65.86,
+"screen": "Video Settings",
+"x": 135.0,
+"y": 74.0,
+"hit": "Clouds: Fancy",
+"handled": true
+},
+{
+"t": 70.32,
+"screen": "Video Settings",
+"x": 135.0,
+"y": 74.0,
+"hit": "Clouds: Fast",
+"handled": true
+},
+{
+"t": 76.17,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 8 chunks",
+"handled": true
+},
+{
+"t": 80.03,
+"screen": "Video Settings",
+"x": 292.0,
+"y": 50.0,
+"hit": "Render Distance: 12 chunks",
+"handled": true
+},
+{
+"t": 82.94,
+"screen": "Video Settings",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 87.14,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 92.11,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 92.12,
+"screen": "Options",
+"x": 135.0,
+"y": 98.0,
+"hit": "Video Settings...",
+"handled": true
+},
+{
+"t": 95.18,
+"screen": "Video Settings",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 95.19,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+}
+]
+}

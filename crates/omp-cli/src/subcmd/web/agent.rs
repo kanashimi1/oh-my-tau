@@ -265,7 +265,7 @@ impl Agent {
         // `omt/<slug>` of the requested role, else the id) via the `/wt new`
         // helpers. A git failure downgrades to plain `cwd` so the spawn
         // still succeeds.
-let (cwd, worktree) = if spec.worktree {
+        let (cwd, worktree) = if spec.worktree {
             let slug = spec
                 .role
                 .as_deref()
@@ -277,7 +277,10 @@ let (cwd, worktree) = if spec.worktree {
             match created {
                 Ok(path) => (path.clone(), Some(path)),
                 Err(e) => {
-                    eprintln!("omt web: worktree spawn fell back to {}: {e}", spec.cwd.display());
+                    eprintln!(
+                        "omt web: worktree spawn fell back to {}: {e}",
+                        spec.cwd.display()
+                    );
                     (spec.cwd.clone(), None)
                 }
             }

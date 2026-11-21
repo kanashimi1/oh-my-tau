@@ -1,0 +1,1 @@
+{"arm": "hcu", "task": "g_video", "rep": 0, "model": "zai/glm-5.3-flash", "status": "completed", "score": 1.0, "success": true, "checks": {"graphics": true, "clouds": true, "rd16": true, "title": true}, "calls": 11, "tools": {"mcp__sim_mc_ui": 1, "mcp__sim_mc_act": 10}, "errors": 0, "clicks": 14, "dead_clicks": 0, "popup_cancel": 0, "tokens": 44847}

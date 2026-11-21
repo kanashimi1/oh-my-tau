@@ -1,0 +1,1026 @@
+[
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 4,
+  "errors": 1,
+  "tokens": 18415,
+  "secs": 50.3,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 7,
+  "errors": 0,
+  "tokens": 28905,
+  "secs": 36.1,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 31822,
+  "secs": 23.8,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 12989,
+  "secs": 17.7,
+  "miss": [
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 4,
+  "errors": 1,
+  "tokens": 19709,
+  "secs": 25.8,
+  "miss": [
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 14611,
+  "secs": 86.7,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.75,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 18116,
+  "secs": 21.3,
+  "miss": [
+   "mismatches"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 13687,
+  "secs": 16.1,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.75,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 10328,
+  "secs": 15.2,
+  "miss": [
+   "mismatches"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 11066,
+  "secs": 13.2,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 16398,
+  "secs": 20.0,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 7,
+  "errors": 0,
+  "tokens": 15748,
+  "secs": 19.9,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 10,
+  "errors": 0,
+  "tokens": 37767,
+  "secs": 47.6,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 28015,
+  "secs": 27.3,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 41204,
+  "secs": 30.7,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 15734,
+  "secs": 19.4,
+  "miss": [
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 14179,
+  "secs": 15.8,
+  "miss": [
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 14376,
+  "secs": 24.7,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 11699,
+  "secs": 12.9,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 13470,
+  "secs": 15.5,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 10235,
+  "secs": 14.1,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 14808,
+  "secs": 17.9,
+  "miss": [
+   "crlf",
+   "lang"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 13271,
+  "secs": 14.3,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 12466,
+  "secs": 14.6,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 13558,
+  "secs": 16.1,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 30582,
+  "secs": 20.9,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 21818,
+  "secs": 21.8,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.4,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 15766,
+  "secs": 30.6,
+  "miss": [
+   "labor",
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 14747,
+  "secs": 23.1,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.4,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 13908,
+  "secs": 14.9,
+  "miss": [
+   "labor",
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 12043,
+  "secs": 15.6,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 15514,
+  "secs": 21.6,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 10116,
+  "secs": 13.5,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 11544,
+  "secs": 15.1,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 7,
+  "errors": 0,
+  "tokens": 13248,
+  "secs": 15.1,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 1,
+  "tokens": 15800,
+  "secs": 17.6,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 10537,
+  "secs": 11.4,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 79985,
+  "secs": 28.4,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 8,
+  "errors": 1,
+  "tokens": 31987,
+  "secs": 47.1,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 13605,
+  "secs": 28.4,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 23813,
+  "secs": 31.7,
+  "miss": [
+   "labor",
+   "grand"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 13917,
+  "secs": 23.7,
+  "miss": [
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 18038,
+  "secs": 26.6,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.75,
+  "calls": 6,
+  "errors": 2,
+  "tokens": 25373,
+  "secs": 37.1,
+  "miss": [
+   "mismatches"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.75,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 10321,
+  "secs": 19.7,
+  "miss": [
+   "mismatches"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 8,
+  "errors": 0,
+  "tokens": 18318,
+  "secs": 25.6,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 8,
+  "errors": 0,
+  "tokens": 18248,
+  "secs": 25.9,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 12303,
+  "secs": 15.3,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 7,
+  "errors": 1,
+  "tokens": 23624,
+  "secs": 26.2,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 20853,
+  "secs": 22.6,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.333,
+  "calls": 7,
+  "errors": 1,
+  "tokens": 25058,
+  "secs": 24.8,
+  "miss": [
+   "counts",
+   "order"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 19584,
+  "secs": 29.6,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 15855,
+  "secs": 24.4,
+  "miss": [
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "h2",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 16771,
+  "secs": 24.3,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.75,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 12030,
+  "secs": 13.9,
+  "miss": [
+   "mismatches"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 17951,
+  "secs": 21.9,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 9882,
+  "secs": 14.6,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 11886,
+  "secs": 16.7,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 13552,
+  "secs": 15.7,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 12343,
+  "secs": 14.8,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 0,
+  "tokens": 75991,
+  "secs": 26.5,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 20746,
+  "secs": 18.2,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_logs",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 4,
+  "errors": 0,
+  "tokens": 25358,
+  "secs": 17.5,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 0.6,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 12904,
+  "secs": 16.9,
+  "miss": [
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "naive",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 14986,
+  "secs": 19.1,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_budget",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 0.4,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 14114,
+  "secs": 18.4,
+  "miss": [
+   "labor",
+   "av",
+   "grand"
+  ]
+ },
+ {
+  "arm": "none",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 2,
+  "errors": 0,
+  "tokens": 11805,
+  "secs": 13.6,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 3,
+  "errors": 0,
+  "tokens": 17667,
+  "secs": 19.8,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "d_reconcile",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 2,
+  "tokens": 31759,
+  "secs": 42.3,
+  "miss": []
+ },
+ {
+  "arm": "none",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 0,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 5,
+  "errors": 1,
+  "tokens": 11531,
+  "secs": 13.5,
+  "miss": []
+ },
+ {
+  "arm": "naive",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 2274,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 13349,
+  "secs": 14.0,
+  "miss": []
+ },
+ {
+  "arm": "h2",
+  "task": "c_crlf",
+  "model": "zai/glm-5.3-flash",
+  "rep_lib_chars": 1013,
+  "status": "completed",
+  "score": 1.0,
+  "calls": 6,
+  "errors": 0,
+  "tokens": 12115,
+  "secs": 11.8,
+  "miss": []
+ }
+]

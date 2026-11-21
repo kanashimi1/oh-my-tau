@@ -1,0 +1,153 @@
+{
+"steps": [
+{
+"tool": "mcp__sim_mc_ui",
+"args": "{}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"screen\": \"TitleScreen\",\n  \"title\": \"Minecraft\",\n  \"frame\": \"1b510143\",\n  \"widgets\": [\n    {\n      \"ref\": \"Singleplayer\",\n      \"text\": \"Singleplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Multiplayer\",\n      \"text\": \"Multiplayer\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Minecraft Realms\",\n      \"text\": \"Minecraft Realms\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Options...\",\n      \"text\": \"Options...\",\n      \"type\": \"Button\"\n    },\n    {\n      \"ref\": \"Quit Game\",\n      \"text\": \"Quit Game\",\n      \"type\": \"Button\"\n    }\n  ]\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Controls...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Controls\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Controls...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Controls\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"21d165d …[185 cut]…        {\n          \"ref\": \"Key Binds...\",\n          \"text\": \"Key Binds...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Auto-Jump\",\n          \"text\": \"Auto-Jump: OFF\",\n          \"type\": \"CycleButton\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Key Binds...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Key Binds\\\"}}]\", \"frame\": \"21d165d0\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Key Binds...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Key Binds\"\n      },\n      \"ok\": true\n    }\n  ],\n  \"frame\": \"31168da5\",\n  \"diff\": {\n    \"screen_changed\": \"Controls -> Key Binds\",\n    \"view\": {\n      \"screen\": \"KeyBindsScreen\",\n      \"title\": \"Key Binds\",\n      …[247 cut]… d\"\n        },\n        {\n          \"ref\": \"Sprint\",\n          \"text\": \"Sprint: Left Control\",\n          \"type\": \"KeyBind\"\n        },\n        {\n          \"ref\": \"Reset\",\n          \"text\": \"Reset\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Jump\\\"}, {\\\"key\\\": \\\"b\\\", \\\"wait\\\": {\\\"text\\\": \\\"Jump: B\\\"}}]\", \"frame\": \"31168da5\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Jump\",\n      \"handled\": true\n    },\n    {\n      \"key\": \"b\"\n    }\n  ],\n  \"frame\": \"15e2f069\",\n  \"diff\": {\n    \"changed\": {\n      \"Jump\": \"Jump: Space -> Jump: B\"\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Controls\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"15e2f069\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Controls\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \" …[551 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Options...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Controls...\\\", \\\"wait\\\": {\\\"title\\\": \\\"Controls\\\"}}, {\\\"click\\\": \\\"Key Binds...\\\", \\\"wait\\\": {\\\"ref\\\": \\\"Jump\\\"}}]\", \"frame\": \"1b510143\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Options...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Controls...\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Controls\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"K …[531 cut]… d\"\n        },\n        {\n          \"ref\": \"Sprint\",\n          \"text\": \"Sprint: Left Control\",\n          \"type\": \"KeyBind\"\n        },\n        {\n          \"ref\": \"Reset\",\n          \"text\": \"Reset\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Done\",\n          \"text\": \"Done\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+},
+{
+"tool": "mcp__sim_mc_act",
+"args": "{\"actions\": \"[{\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Controls\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Options\\\"}}, {\\\"click\\\": \\\"Done\\\", \\\"wait\\\": {\\\"title\\\": \\\"Minecraft\\\"}}]\", \"frame\": \"15e2f069\"}",
+"error": false,
+"out": "{\n  \"ok\": true,\n  \"completed\": [\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Controls\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \"handled\": true\n    },\n    {\n      \"wait\": {\n        \"title\": \"Options\"\n      },\n      \"ok\": true\n    },\n    {\n      \"click\": \"Done\",\n      \" …[551 cut]…          \"ref\": \"Minecraft Realms\",\n          \"text\": \"Minecraft Realms\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Options...\",\n          \"text\": \"Options...\",\n          \"type\": \"Button\"\n        },\n        {\n          \"ref\": \"Quit Game\",\n          \"text\": \"Quit Game\",\n          \"type\": \"Button\"\n        }\n      ]\n    }\n  }\n}"
+}
+],
+"final": "✅ Done. Jump is now bound to **B**:\n\n1. Title → Options → Controls → Key Binds\n2. Clicked `Jump`, pressed `b` → button read `Jump: B`, clicked Done through all menus back to the title screen\n3. Re-entered Key Binds to verify persistence: widget shows `Jump: B` ✔\n4. Returned to the title screen (verified `TitleScreen`).",
+"clicks": [
+{
+"t": 7.02,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 7.03,
+"screen": "Options",
+"x": 292.0,
+"y": 98.0,
+"hit": "Controls...",
+"handled": true
+},
+{
+"t": 9.65,
+"screen": "Controls",
+"x": 135.0,
+"y": 50.0,
+"hit": "Key Binds...",
+"handled": true
+},
+{
+"t": 17.0,
+"screen": "Key Binds",
+"x": 140.0,
+"y": 74.0,
+"hit": "Jump: Space",
+"handled": true
+},
+{
+"t": 19.27,
+"screen": "Key Binds",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 19.28,
+"screen": "Controls",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 19.28,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 21.27,
+"screen": "Minecraft",
+"x": 162.0,
+"y": 178.0,
+"hit": "Options...",
+"handled": true
+},
+{
+"t": 21.28,
+"screen": "Options",
+"x": 292.0,
+"y": 98.0,
+"hit": "Controls...",
+"handled": true
+},
+{
+"t": 21.28,
+"screen": "Controls",
+"x": 135.0,
+"y": 50.0,
+"hit": "Key Binds...",
+"handled": true
+},
+{
+"t": 23.65,
+"screen": "Key Binds",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 23.65,
+"screen": "Controls",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+},
+{
+"t": 23.66,
+"screen": "Options",
+"x": 213.0,
+"y": 210.0,
+"hit": "Done",
+"handled": true
+}
+]
+}

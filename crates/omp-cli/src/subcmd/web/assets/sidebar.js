@@ -165,5 +165,112 @@
     || ((a.kind === "herdr") === (b.kind === "herdr") ? b.ms - a.ms : a.kind === "herdr" ? 1 : -1)
     || a.key.localeCompare(b.key);
 
-  OMP.sidebar = { agentBrand, agentStatus, herdrStatus, compareAgents, dateGroup, GROUP_LABELS, GROUP_ORDER, readPinned, togglePinned, readArchived, toggleArchived, debounce };
+  // ── Brand motion ──────────────────────────────────────────────────────────
+  // Анимации иконок брендов в сайдбаре (CSS-секция .brand-mark в sidebar.css).
+  // BRAND_CACHE: один раз при старте разбираем составные SVG (kimi, zai) на
+  // семантические части (.kimi-dot, .zai-top/.zai-slash/.zai-bottom) через
+  // одноразовый getBBox() и кешируем готовые строки SVG.
+  const BRAND_CACHE = new Map();
+
+  const brandSvgMarkup = (paths) =>
+    `<svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true">${paths}</svg>`;
+
+  /**
+   * Один раз разбирает составные SVG (kimi, zai) на отдельные части и вешает
+   * семантические классы без ручной правки путей. В окружениях без DOM
+   * (node-тесты) и при неудаче getBBox() возвращает исходную разметку:
+   * data-split не выставится и сработает CSS-фолбэк brand-breathe.
+   */
+  function prepareBrandSvg(brand, rawSvg) {
+    const key = String(brand).toLowerCase();
+    if (BRAND_CACHE.has(key)) return BRAND_CACHE.get(key);
+    if (typeof document === "undefined" || (key !== "kimi" && key !== "zai")) {
+      const simple = { html: rawSvg, split: false };
+      BRAND_CACHE.set(key, simple);
+      return simple;
+    }
+    // Временный невидимый контейнер для точного расчёта геометрии через getBBox().
+    const host = document.createElement("div");
+    host.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:24px;height:24px;visibility:hidden;pointer-events:none;";
+    host.innerHTML = rawSvg;
+    document.body.appendChild(host);
+    let split = false;
+    try {
+      const svg = host.querySelector("svg");
+      let shapes = svg ? Array.from(svg.querySelectorAll("path, rect, circle, polygon")) : [];
+      // Если все элементы склеены в один <path>, безопасно делим по абсолютным подпутям M…
+      if (shapes.length === 1 && shapes[0].tagName.toLowerCase() === "path") {
+        const orig = shapes[0];
+        const d = (orig.getAttribute("d") || "").trim();
+        const subpaths = d.split(/(?<=[Zz])\s*(?=M)/);
+        if (subpaths.length > 1) {
+          shapes = subpaths.map((sub) => {
+            const clone = orig.cloneNode(false);
+            clone.setAttribute("d", sub.trim());
+            orig.parentNode.insertBefore(clone, orig);
+            return clone;
+          });
+          orig.remove();
+        }
+      }
+      if (key === "kimi" && shapes.length >= 2) {
+        // Самый маленький по площади элемент — квадратный акцент в правом верхнем углу.
+        const withBox = shapes.map((node) => { const b = node.getBBox(); return { node, area: b.width * b.height }; });
+        withBox.sort((a, b) => a.area - b.area);
+        withBox[0].node.classList.add("brand-part", "kimi-dot");
+        for (let i = 1; i < withBox.length; i++) withBox[i].node.classList.add("brand-part", "kimi-k");
+        split = true;
+      }
+      if (key === "zai" && shapes.length === 3) {
+        // Самый высокий элемент — центральная диагональ; из оставшихся двух — верхняя и нижняя планки.
+        const withBox = shapes.map((node) => ({ node, b: node.getBBox() }));
+        withBox.sort((a, b) => b.b.height - a.b.height);
+        withBox[0].node.classList.add("brand-part", "zai-slash");
+        const bars = withBox.slice(1).sort((a, b) => a.b.y - b.b.y);
+        bars[0].node.classList.add("brand-part", "zai-top");
+        bars[1].node.classList.add("brand-part", "zai-bottom");
+        split = true;
+      }
+    } catch { /* getBBox недоступен: остаёмся на brand-breathe фолбэке */ }
+    const html = host.innerHTML;
+    host.remove();
+    const entry = { html, split };
+    BRAND_CACHE.set(key, entry);
+    return entry;
+  }
+
+  /**
+   * Рендер иконки модели в строке левого сайдбара.
+   * brand: ключ ('openai'|'claude'|'gemini'|'kimi'|'zai'|'deepseek'|…),
+   *        результат agentBrand() или 'glm' (алиас zai).
+   * state: 'idle' | 'working' | 'needs-input' | 'error' | …
+   */
+  function renderBrandMark(brand, state = "idle", agentBrandsMap) {
+    const raw = brand && typeof brand === "object" ? brand : { key: brand };
+    const norm = String(raw.key).toLowerCase();
+    const key = norm === "glm" ? "zai" : norm;
+    const entry = (agentBrandsMap || agentBrands)[key];
+    const paths = raw.paths || (Array.isArray(entry) ? entry[1] : entry);
+    if (!paths) return "";
+    const label = raw.label || (Array.isArray(entry) ? entry[0] : key);
+    const { html, split } = prepareBrandSvg(key, paths.startsWith("<svg") ? paths : brandSvgMarkup(paths));
+    return `<span class="brand-mark" data-brand="${key}" data-state="${state}"${split ? ' data-split="1"' : ""} role="img" aria-label="${label}">${html}</span>`;
+  }
+
+  /**
+   * Глобальная пауза анимаций, когда окно Tauri или вкладка не активны.
+   * Работает и в Tauri WebView, и в обычной веб-версии.
+   */
+  function initBrandMotionLifecycle() {
+    if (typeof document === "undefined" || typeof window === "undefined" || !window.addEventListener) return;
+    const sync = () => document.documentElement.classList.toggle("window-paused", document.hidden || !document.hasFocus());
+    window.addEventListener("blur", sync);
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", sync);
+    sync();
+  }
+
+  OMP.sidebar = { agentBrand, agentStatus, herdrStatus, compareAgents, dateGroup, GROUP_LABELS, GROUP_ORDER, readPinned, togglePinned, readArchived, toggleArchived, debounce, prepareBrandSvg, renderBrandMark, initBrandMotionLifecycle };
+  // Жизненный цикл паузы анимаций: один раз при загрузке сайдбара.
+  initBrandMotionLifecycle();
 })(window.OMP);

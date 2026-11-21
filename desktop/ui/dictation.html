@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  :root { --accent: #8aabff; --rule: #303034; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  body { font: 15px/1.45 "Segoe UI", sans-serif; color: #ececf1; }
+  body[data-variant="2"] { --accent: #b7a6e8; }
+  body[data-variant="3"] { --accent: #c8c8ce; }
+  #panel { height: 100%; padding: 14px 22px; border: 1px solid var(--rule); border-radius: 12px;
+    background: #111113f5; position: relative; overflow: hidden; }
+  [data-ui] #panel::after { content: ""; position: absolute; left: 22px; bottom: 0; width: 48px; height: 1px; background: var(--accent); }
+  body[data-variant="2"] #panel::after { width: 64px; }
+  body[data-variant="3"] #panel::after { width: auto; right: 22px; bottom: 9px; background: #2b2b2e; }
+  #status { display: flex; align-items: center; gap: 7px; height: 20px; color: #9a9ca3; font-size: 11px; letter-spacing: .02em; }
+  #dot { width: 5px; height: 5px; border-radius: 50%; background: #c7c7cc; flex: none; }
+  #controls { margin-left: auto; display: flex; align-items: center; gap: 13px; }
+  #hint { color: #8a8c92; font-size: 11px; }
+  kbd { font: inherit; border: 1px solid #3b3b40; border-radius: 3px; padding: 0 4px; }
+  #style { appearance: none; border: 1px solid #3b3b40; border-radius: 5px; background: #19191c;
+    color: #b9bac0; padding: 2px 7px; font: 11px/1.4 "Segoe UI", sans-serif; cursor: pointer; }
+  #style:hover { color: #f0f0f2; border-color: #55555c; }
+  #style:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  #composer { display: grid; align-items: center; gap: 18px; min-height: 82px; }
+  #wave { display: block; width: 128px; height: 56px; }
+  #text { min-width: 0; white-space: pre-wrap; overflow: hidden; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  #draft { color: #85858d; }
+  #stable:not(:empty)::after { content: " "; }
+  body[data-variant="1"] #composer, body[data-variant="3"] #composer { grid-template-columns: 1fr; gap: 3px; }
+  body[data-variant="1"] #wave, body[data-variant="3"] #wave { order: 1; width: 100%; height: 80px; }
+  body[data-variant="1"] #text, body[data-variant="3"] #text { order: 0; white-space: nowrap;
+    text-overflow: ellipsis; display: block; }
+  body:not([data-has-text="true"]) #text { display: none; }
+  body[data-has-text="true"][data-variant="1"] #wave,
+  body[data-has-text="true"][data-variant="3"] #wave { height: 54px; }
+  body[data-variant="2"] #composer { grid-template-columns: 1fr; gap: 3px; margin-top: 3px; }
+  body[data-variant="2"] #wave { order: 1; width: 100%; height: 48px; }
+  body[data-variant="2"] #text { order: 0; white-space: nowrap; text-overflow: ellipsis; display: block; }
+  body[data-mode="thinking"] #dot { background: #d7c9a6; }
+  body[data-mode="error"] #dot { background: #e5566f; }
+  body[data-mode="thinking"] #wave, body[data-mode="error"] #wave { opacity: .35; }
+</style>
+</head>
+<body data-ui data-mode="listening" data-variant="1" data-has-text="false">
+<div id="panel">
+  <div id="status"><span id="dot"></span><span id="statusText">Слушаю…</span><div id="controls">
+    <button id="style" type="button" title="Сменить вид волны" aria-label="Сменить вид волны">Стиль · 1/3</button>
+    <span id="hint"><kbd>Esc</kbd> отмена · отпустите кнопку</span>
+  </div></div>
+  <div id="composer">
+    <canvas id="wave" aria-hidden="true"></canvas>
+    <div id="text"><span id="stable"></span><span id="draft"></span></div>
+  </div>
+</div>
+<script>
+const canvas = document.getElementById('wave');
+const ctx = canvas.getContext('2d');
+const styleButton = document.getElementById('style');
+let variant = Number(localStorage.getItem('tau.dictation.variant')) || 1;
+let level = 0, smoothLevel = 0, lastFrame = 0;
+function selectVariant(next) {
+  variant = ((next - 1) % 3 + 3) % 3 + 1;
+  document.body.dataset.variant = String(variant);
+  styleButton.textContent = `Стиль · ${variant}/3`;
+  localStorage.setItem('tau.dictation.variant', String(variant));
+  resizeCanvas();
+}
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(rect.width * ratio));
+  canvas.height = Math.max(1, Math.round(rect.height * ratio));
+}
+styleButton.addEventListener('click', () => selectVariant(variant + 1));
+new ResizeObserver(resizeCanvas).observe(canvas);
+function drawWave(time) {
+  if (time - lastFrame < 24) { requestAnimationFrame(drawWave); return; }
+  lastFrame = time;
+  smoothLevel += (level - smoothLevel) * .32;
+  level *= .90;
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const accent = getComputedStyle(document.body).getPropertyValue('--accent').trim();
+  ctx.strokeStyle = accent; ctx.fillStyle = accent; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const energy = Math.min(1, Math.sqrt(Math.max(0, smoothLevel)) * 5.5);
+  if (variant === 2) {
+    const bars = 64;
+    for (let i = 0; i < bars; i++) {
+      const envelope = Math.sin(Math.PI * i / (bars - 1));
+      const motion = .28 + .72 * Math.abs(Math.sin(i * .38 + time * .003));
+      const amplitude = 3 + energy * (h - 10) * envelope * motion;
+      ctx.globalAlpha = i > 24 && i < 40 ? 1 : .35;
+      ctx.lineWidth = Math.max(2, w / 600);
+      const x = 4 + i * (w - 8) / (bars - 1);
+      ctx.beginPath(); ctx.moveTo(x, (h - amplitude) / 2); ctx.lineTo(x, (h + amplitude) / 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  } else {
+    const traces = variant === 3 ? [1, -1] : [1];
+    for (const direction of traces) {
+      ctx.globalAlpha = direction === 1 ? 1 : .28;
+      ctx.lineWidth = Math.max(2, h / 36);
+      ctx.beginPath();
+      for (let x = 2; x <= w - 2; x += 2) {
+        const envelope = Math.sin(Math.PI * x / w);
+        const amplitude = 5 + energy * (h * .44 - 5) * envelope;
+        const phase = x / w * Math.PI * 2 * (variant === 1 ? 3.2 : 4.4);
+        const harmonic = Math.sin(phase + time * .008) * .75 + Math.sin(phase * 2.1 - time * .005) * .25;
+        const y = h / 2 + direction * harmonic * amplitude;
+        if (x === 2) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  requestAnimationFrame(drawWave);
+}
+window.updateDictation = ({stable, draft, status, mode}) => {
+  document.getElementById('stable').textContent = stable || '';
+  document.getElementById('draft').textContent = draft || '';
+  document.body.dataset.hasText = String(Boolean(stable || draft));
+  document.getElementById('statusText').textContent = status || '';
+  document.body.dataset.mode = mode || 'listening';
+  document.getElementById('hint').style.visibility = mode === 'listening' || mode === 'thinking' ? 'visible' : 'hidden';
+};
+window.updateDictationLevel = value => { level = Math.max(level, Math.min(1, value)); };
+selectVariant(variant);
+requestAnimationFrame(drawWave);
+</script>
+</body>
+</html>

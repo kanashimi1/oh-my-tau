@@ -16,7 +16,14 @@
 /// Marker substrings that make a pattern-based killer (pkill/killpg/killall)
 /// fleet-directed. Matched against the whole command text: patterns may be
 /// quoted and split across tokens.
-const PATTERN_MARKERS: &[&str] = &["omt", "omp-rs", "hub serve", "mode rpc", "shard.ts", "ext-host"];
+const PATTERN_MARKERS: &[&str] = &[
+    "omt",
+    "omp-rs",
+    "hub serve",
+    "mode rpc",
+    "shard.ts",
+    "ext-host",
+];
 
 /// A /proc node: argv (empty for kernel threads), comm, parent pid.
 #[derive(Clone)]
@@ -49,9 +56,15 @@ struct Site {
 /// Split a command into shell words on whitespace and separators, so each
 /// signalling keyword and its arguments become separate tokens.
 fn tokens(cmd: &str) -> Vec<String> {
-    cmd.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '<' | '>' | '\n' | '`' | '\r'))
-        .map(str::to_string)
-        .collect()
+    cmd.split(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                ';' | '&' | '|' | '(' | ')' | '<' | '>' | '\n' | '`' | '\r'
+            )
+    })
+    .map(str::to_string)
+    .collect()
 }
 
 /// Basename of a token, so "/usr/bin/kill" and "kill" compare equal.
@@ -133,7 +146,11 @@ fn sites(cmd: &str) -> Vec<Site> {
 
 /// Is this /proc node part of the local omt fleet?
 fn node_is_fleet(info: &ProcInfo) -> bool {
-    let argv0 = info.argv.first().map(|a| base(a).to_string()).unwrap_or_default();
+    let argv0 = info
+        .argv
+        .first()
+        .map(|a| base(a).to_string())
+        .unwrap_or_default();
     if argv0 == "omt" || argv0 == "omp-rs" || info.comm == "omt" || info.comm == "omp-rs" {
         return true;
     }
@@ -144,7 +161,9 @@ fn node_is_fleet(info: &ProcInfo) -> bool {
         }
     }
     // desktop host children (bun ext-host/shard.ts)
-    info.argv.iter().any(|a| a.contains("shard.ts") || a.contains("ext-host"))
+    info.argv
+        .iter()
+        .any(|a| a.contains("shard.ts") || a.contains("ext-host"))
 }
 
 /// Walk "pid"'s ancestry: if this process appears anywhere in the chain the
@@ -174,7 +193,11 @@ fn protector(pid: u32, self_pid: u32, info_of: &dyn Fn(u32) -> Option<ProcInfo>)
 #[allow(clippy::similar_names)] // pid (arg) and ppid (/proc field): the two ids /proc itself names
 fn proc_info(pid: u32) -> Option<ProcInfo> {
     let raw = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).ok()?;
-    let argv: Vec<String> = raw.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect();
+    let argv: Vec<String> = raw
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm sits in parentheses and may contain spaces; ppid follows the state
     let close = stat.rfind(')')?;
@@ -199,14 +222,20 @@ pub fn check(command: &str) -> Option<String> {
 
 /// "check" over an injected /proc reader (tests).
 #[must_use]
-fn check_with(command: &str, self_pid: u32, info_of: &dyn Fn(u32) -> Option<ProcInfo>) -> Option<String> {
+fn check_with(
+    command: &str,
+    self_pid: u32,
+    info_of: &dyn Fn(u32) -> Option<ProcInfo>,
+) -> Option<String> {
     for site in sites(command) {
         if site.probe {
             continue;
         }
         if site.pattern {
             let lowered = command.to_lowercase();
-            let hit = PATTERN_MARKERS.iter().find(|m| lowered.contains(&m.to_lowercase()));
+            let hit = PATTERN_MARKERS
+                .iter()
+                .find(|m| lowered.contains(&m.to_lowercase()));
             if let Some(marker) = hit {
                 return Some(format!(
                     "kill-guard: refused - this command would signal processes matched as {marker:?}, \
@@ -224,13 +253,16 @@ fn check_with(command: &str, self_pid: u32, info_of: &dyn Fn(u32) -> Option<Proc
             }
             if t.abs() == 1 {
                 return Some(
-                    "kill-guard: refused - signalling pid/pgid 1 broadcasts to every process.".to_string(),
+                    "kill-guard: refused - signalling pid/pgid 1 broadcasts to every process."
+                        .to_string(),
                 );
             }
             #[allow(clippy::cast_sign_loss)]
             let pid = u32::try_from(t.abs()).unwrap_or(u32::MAX);
             if pid == self_pid {
-                return Some("kill-guard: refused to signal this session's own agent process.".to_string());
+                return Some(
+                    "kill-guard: refused to signal this session's own agent process.".to_string(),
+                );
             }
             if let Some(cmdline) = protector(pid, self_pid, info_of) {
                 return Some(format!(
@@ -249,14 +281,14 @@ mod tests {
 
     // pid, argv, comm, ppid
     const NODES: &[(u32, &str, &str, u32)] = &[
-        (100, "/x/omt web --port 7467", "omt", 99),        // this session agent
-        (200, "/x/omt --mode rpc", "omt", 300),            // sibling agent
-        (300, "/x/omt hub serve", "omt", 1),               // the hub
+        (100, "/x/omt web --port 7467", "omt", 99), // this session agent
+        (200, "/x/omt --mode rpc", "omt", 300),     // sibling agent
+        (300, "/x/omt hub serve", "omt", 1),        // the hub
         (310, "bun --smol ext-host/shard.ts", "bun", 300), // hub host child
-        (400, "/x/old/omp-rs --mode rpc", "omp-rs", 1),    // renamed zombie agent
-        (500, "python3 qa.py", "python3", 1),              // unrelated process
-        (150, "bash -c nohup x", "bash", 100),             // own shell child
-        (151, "/x/omt web --port 7469", "omt", 150),       // server this session spawned
+        (400, "/x/old/omp-rs --mode rpc", "omp-rs", 1), // renamed zombie agent
+        (500, "python3 qa.py", "python3", 1),       // unrelated process
+        (150, "bash -c nohup x", "bash", 100),      // own shell child
+        (151, "/x/omt web --port 7469", "omt", 150), // server this session spawned
     ];
 
     fn checker() -> impl Fn(&str) -> Option<String> {
