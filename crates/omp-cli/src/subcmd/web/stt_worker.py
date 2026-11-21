@@ -7,6 +7,7 @@ without a request (the hub respawns it on demand) to free the GPU.
 """
 import json
 import os
+import re
 import select
 import sys
 import time
@@ -16,6 +17,12 @@ BEAM_SIZE = int(os.environ.get("OMT_STT_BEAM_SIZE", "1"))
 IDLE = float(os.environ.get("OMT_STT_IDLE", "600"))
 PARTIAL_SECONDS = float(os.environ.get("OMT_STT_PARTIAL_SECONDS", "12"))
 INITIAL_PROMPT = os.environ.get("OMT_STT_PROMPT") or None
+STANDALONE_ELLIPSIS = re.compile(r"(?<!\S)(?:(?:\.\s*){3,}|…+)(?!\S)")
+
+
+def clean_transcript(text):
+    """Drop silence/hesitation placeholders, not punctuation inside real words."""
+    return " ".join(STANDALONE_ELLIPSIS.sub("", text).split())
 
 
 def load():
@@ -64,7 +71,7 @@ def main():
             segments, info = model.transcribe(
                 audio,
                 language=req.get("language") or None,
-                initial_prompt=INITIAL_PROMPT,
+                initial_prompt=req.get("prompt") or INITIAL_PROMPT,
                 beam_size=BEAM_SIZE,
                 best_of=1,
                 condition_on_previous_text=False,
@@ -74,7 +81,7 @@ def main():
                     "speech_pad_ms": 200,
                 },
             )
-            text = " ".join(s.text.strip() for s in segments).strip()
+            text = clean_transcript(" ".join(s.text.strip() for s in segments))
             print(f"stt: transcribed in {time.perf_counter() - started:.3f}s", file=sys.stderr, flush=True)
             reply({"id": req.get("id"), "text": text, "language": info.language})
         except Exception as e:

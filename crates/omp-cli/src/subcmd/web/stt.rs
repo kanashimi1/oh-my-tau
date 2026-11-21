@@ -8,12 +8,13 @@
 //! and `OMT_STT_MODEL` (default `large-v3-turbo`) pick the runtime.
 //! `OMT_STT_BEAM_SIZE` defaults to greedy decoding (`1`) for low latency.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{anyhow, bail, Context as _, Result};
-use serde_json::{json, Value};
+use anyhow::{Context as _, Result, anyhow, bail};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
@@ -30,6 +31,53 @@ struct Worker {
 
 static WORKER: Mutex<Option<Worker>> = Mutex::const_new(None);
 static SEQ: AtomicU64 = AtomicU64::new(1);
+static STT_PROMPT: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
+
+fn add_model_terms(
+    terms: &mut BTreeSet<String>,
+    provider: &str,
+    id: &str,
+    name: &str,
+    request_id: Option<&str>,
+) {
+    for value in [Some(provider), Some(id), Some(name), request_id]
+        .into_iter()
+        .flatten()
+    {
+        let value = value.trim();
+        if !value.is_empty() {
+            terms.insert(value.to_owned());
+        }
+    }
+}
+
+async fn stt_prompt() -> String {
+    STT_PROMPT
+        .get_or_init(|| async {
+            let mut terms = BTreeSet::new();
+            for model in crate::runtime::available_models(None).await {
+                add_model_terms(
+                    &mut terms,
+                    &model.provider,
+                    &model.id,
+                    &model.name,
+                    model.request_model_id.as_deref(),
+                );
+            }
+            let base = std::env::var("OMT_STT_PROMPT")
+                .unwrap_or_else(|_| "Minecraft, Forge, omt, Tau, субагент, коммит".into());
+            if terms.is_empty() {
+                base
+            } else {
+                format!(
+                    "{base}. Модели OMT: {}.",
+                    terms.into_iter().collect::<Vec<_>>().join(", ")
+                )
+            }
+        })
+        .await
+        .clone()
+}
 
 fn stt_dir() -> PathBuf {
     std::env::var_os("HOME")
@@ -158,6 +206,7 @@ pub async fn transcribe(
         "path": path.display().to_string(),
         "language": language,
         "partial": partial,
+        "prompt": stt_prompt().await,
     });
     let result = request_worker(&req).await;
     let _ = std::fs::remove_file(&path);
@@ -166,4 +215,25 @@ pub async fn transcribe(
         bail!("speech-to-text: {e}");
     }
     Ok(json!({"text": v["text"], "language": v["language"]}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vocabulary_includes_provider_id_name_and_wire_id() {
+        let mut terms = BTreeSet::new();
+        add_model_terms(
+            &mut terms,
+            "zai",
+            "glm-5.3-flash",
+            "GLM-5.3-Flash",
+            Some("glm-wire"),
+        );
+        assert!(terms.contains("zai"));
+        assert!(terms.contains("glm-5.3-flash"));
+        assert!(terms.contains("GLM-5.3-Flash"));
+        assert!(terms.contains("glm-wire"));
+    }
 }
