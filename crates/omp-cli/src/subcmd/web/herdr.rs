@@ -1,5 +1,5 @@
 //! Loopback Herdr integration: roster, journals, user prompts and activity.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -19,6 +19,10 @@ pub(super) struct Roster {
     cache: Mutex<Option<(Instant, Snapshot)>>,
     // Indexing journals uses blocking I/O. Limit it independently of roster polls.
     history: Mutex<Option<(PathBuf, u64, Option<std::time::SystemTime>, HistoryPage)>>,
+    // Restored Herdr processes initially omit tokens.model. Remember the
+    // journal-derived model until that journal changes instead of reindexing
+    // every restored session on each five-second sidebar refresh.
+    models: Mutex<HashMap<PathBuf, (u64, Option<std::time::SystemTime>, Option<String>)>>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -89,7 +93,8 @@ impl Roster {
         if let Some((_, value)) = cache.as_ref().filter(|(time, _)| time.elapsed() < TTL) {
             return value.clone();
         }
-        let value = collect().await;
+        let mut value = collect().await;
+        self.restore_models(&mut value).await;
         *cache = Some((Instant::now(), value.clone()));
         value
     }
@@ -116,6 +121,47 @@ pub(super) struct HistoryPage {
 }
 
 impl Roster {
+    async fn restore_models(&self, snapshot: &mut Snapshot) {
+        let live: HashSet<PathBuf> = snapshot
+            .agents
+            .iter()
+            .filter_map(|row| row.session_file.as_deref().map(PathBuf::from))
+            .collect();
+        let mut cache = self.models.lock().await;
+        cache.retain(|path, _| live.contains(path));
+        for row in &mut snapshot.agents {
+            if !matches!(row.model.as_str(), "" | "omp" | "omt") {
+                continue;
+            }
+            let Some(path) = row.session_file.as_deref().map(PathBuf::from) else {
+                continue;
+            };
+            let Ok(meta) = tokio::fs::metadata(&path).await else {
+                continue;
+            };
+            let stamp = (meta.len(), meta.modified().ok());
+            if let Some((_, _, model)) = cache
+                .get(&path)
+                .filter(|(len, mtime, _)| (*len, *mtime) == stamp)
+            {
+                if let Some(model) = model {
+                    row.model = model.clone();
+                }
+                continue;
+            }
+            let job_path = path.clone();
+            let model = tokio::task::spawn_blocking(move || read_history(&job_path, None))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|page| page.model);
+            if let Some(model) = &model {
+                row.model = model.clone();
+            }
+            cache.insert(path, (stamp.0, stamp.1, model));
+        }
+    }
+
     pub(super) async fn history(
         &self,
         pane: &str,
@@ -572,6 +618,55 @@ mod tests {
         );
         assert!(older.before.is_none());
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn restores_missing_roster_models_from_session_journals() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(file, "{}", json!({"type":"session","id":"session"})).unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"model_change","id":"model","model":"zai/glm-5.3"})
+        )
+        .unwrap();
+        drop(file);
+        let mut snapshot = Snapshot {
+            agents: vec![Row {
+                pane_id: "w5:p1".into(),
+                workspace: "w5".into(),
+                cwd: "/tmp".into(),
+                title: "agent".into(),
+                model: "omp".into(),
+                status: "idle".into(),
+                state_change_seq: 1,
+                address: None,
+                session_file: Some(path.to_string_lossy().into_owned()),
+            }],
+            names_available: false,
+        };
+        let roster = Roster::default();
+        roster.restore_models(&mut snapshot).await;
+        assert_eq!(snapshot.agents[0].model, "zai/glm-5.3");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"model_change","id":"model2","parentId":"model","model":"kimi-code/k3.1-pro"})
+        )
+        .unwrap();
+        drop(file);
+        // A fresh Herdr poll again lacks tokens.model; this is not a
+        // continuation of the previously enriched Snapshot.
+        snapshot.agents[0].model = "omp".into();
+        roster.restore_models(&mut snapshot).await;
+        assert_eq!(snapshot.agents[0].model, "kimi-code/k3.1-pro");
     }
 
     #[test]
