@@ -11,7 +11,9 @@ use omp_compact::messages::{
     render_handoff_summary_context,
 };
 use omp_compact::prompts;
-use omp_compact::settings::{resolve_threshold_tokens, should_compact, CompactionSettings};
+use omp_compact::settings::{
+    resolve_threshold_tokens, should_compact, CompactionSettings, DEFAULT_THRESHOLD_CAP_TOKENS,
+};
 use omp_compact::summary::{compact, SummaryKind, SummaryParams, SummaryRequest};
 use omp_compact::{plan_compaction, ByteEstimate, CompactionResult};
 use pa_types::ai::{AssistantMessage, Message, UserContent, UserContentBlock};
@@ -71,10 +73,11 @@ fn file_operations_block_matches_ts() {
 #[test]
 fn threshold_arithmetic() {
     let s = CompactionSettings::default();
-    // 200k window, defaulted reserve 16384 < 15% (30000) -> reserve 30000 -> threshold 170000
-    assert_eq!(resolve_threshold_tokens(200_000, &s), 170_000.0);
-    assert!(should_compact(170_001, 200_000, &s));
-    assert!(!should_compact(170_000, 200_000, &s));
+    // 200k window: TS would give 170000 (reserve 30000 = 15%); the port caps the defaulted
+    // threshold at 150000 (see `default_threshold_cap`).
+    assert_eq!(resolve_threshold_tokens(200_000, &s), 150_000.0);
+    assert!(should_compact(150_001, 200_000, &s));
+    assert!(!should_compact(150_000, 200_000, &s));
     let pct = CompactionSettings {
         threshold_percent: Some(50.0),
         ..s.clone()
@@ -95,6 +98,46 @@ fn threshold_arithmetic() {
             ..s
         }
     ));
+}
+
+#[test]
+fn default_threshold_cap() {
+    let s = CompactionSettings::default();
+    // Port extension: these windows used to wait for 85% of the window (891289 / 850000 /
+    // 222823 / 231200 / 170000).
+    for window in [1_048_576_u64, 1_000_000, 262_144, 272_000, 200_000] {
+        assert_eq!(
+            resolve_threshold_tokens(window, &s),
+            DEFAULT_THRESHOLD_CAP_TOKENS,
+            "window {window}"
+        );
+    }
+    assert_eq!(DEFAULT_THRESHOLD_CAP_TOKENS, 150_000.0);
+    assert!(should_compact(150_001, 1_048_576, &s));
+    assert!(!should_compact(150_000, 1_048_576, &s));
+    // A window that cannot hold the cap keeps its window-relative threshold.
+    assert_eq!(resolve_threshold_tokens(176_000, &s), 149_600.0);
+    assert_eq!(resolve_threshold_tokens(160_000, &s), 136_000.0);
+    // Explicit thresholds are honoured uncapped.
+    let pct = CompactionSettings {
+        threshold_percent: Some(50.0),
+        ..s.clone()
+    };
+    assert_eq!(resolve_threshold_tokens(1_000_000, &pct), 500_000.0);
+    let fixed = CompactionSettings {
+        threshold_tokens: Some(400_000.0),
+        ..s.clone()
+    };
+    assert_eq!(resolve_threshold_tokens(1_000_000, &fixed), 400_000.0);
+    // An explicit reserve alone still leaves the threshold defaulted, so capped.
+    let reserve = CompactionSettings {
+        reserve_tokens: Some(16_384),
+        ..s
+    };
+    assert_eq!(
+        resolve_threshold_tokens(1_000_000, &reserve),
+        DEFAULT_THRESHOLD_CAP_TOKENS
+    );
 }
 
 fn reply(text: &str) -> AssistantMessage {

@@ -6,6 +6,13 @@ use serde_json::Value;
 pub const DEFAULT_RESERVE_TOKENS: u64 = 16_384;
 /// Hard ceiling on a generated compaction summary.
 pub const MAX_SUMMARY_TOKENS: u64 = DEFAULT_RESERVE_TOKENS;
+/// Upper bound for a *defaulted* compaction threshold (port extension; TS has no cap and waits
+/// for the window-relative point). Past it a larger context window no longer moves the compaction
+/// point: every turn re-sends the whole history, so the cost of a turn grows linearly with the
+/// threshold while waiting longer saves nothing. An explicit `threshold_tokens` or
+/// `threshold_percent` is honoured uncapped; a window too small to hold the cap keeps its
+/// window-relative threshold.
+pub const DEFAULT_THRESHOLD_CAP_TOKENS: f64 = 150_000.0;
 
 /// The settings the local (`soft` / `context-full`) compaction path reads.
 #[derive(Debug, Clone, PartialEq)]
@@ -129,7 +136,8 @@ pub fn resolve_budget_reserve_tokens(context_window: u64, settings: &CompactionS
     }
 }
 
-/// `resolveThresholdTokens`: fixed token threshold, else percentage, else window minus reserve.
+/// `resolveThresholdTokens`: fixed token threshold, else percentage, else window minus reserve
+/// bounded by [`DEFAULT_THRESHOLD_CAP_TOKENS`].
 #[must_use]
 pub fn resolve_threshold_tokens(context_window: u64, settings: &CompactionSettings) -> f64 {
     let window = context_window as f64;
@@ -145,7 +153,8 @@ pub fn resolve_threshold_tokens(context_window: u64, settings: &CompactionSettin
     {
         None => {
             let budget = resolve_budget_reserve_tokens(context_window, settings) as f64;
-            (window - 1.0).min(window - budget).max(0.0)
+            let by_window = (window - 1.0).min(window - budget).max(0.0);
+            by_window.min(DEFAULT_THRESHOLD_CAP_TOKENS)
         }
         Some(p) => (window * (p.clamp(1.0, 99.0) / 100.0)).floor(),
     }
