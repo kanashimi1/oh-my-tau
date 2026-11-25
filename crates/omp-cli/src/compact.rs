@@ -277,7 +277,7 @@ pub fn compaction_model_ref() -> String {
 fn compaction_model_ref_from(env: Option<&str>) -> &str {
     match env {
         Some(m) if !m.trim().is_empty() => m.trim(),
-        _ => "zai/glm-5.3-flash:low",
+        _ => "kimi-code/kimi-for-coding:low",
     }
 }
 
@@ -1253,19 +1253,13 @@ mod tests {
     }
 
     #[test]
-    fn compaction_model_ref_defaults_to_fast_model_and_honors_override() {
-        assert_eq!(
-            super::compaction_model_ref_from(None),
-            "zai/glm-5.3-flash:low"
-        );
-        assert_eq!(
-            super::compaction_model_ref_from(Some("")),
-            "zai/glm-5.3-flash:low"
-        );
-        assert_eq!(
-            super::compaction_model_ref_from(Some("  ")),
-            "zai/glm-5.3-flash:low"
-        );
+    fn compaction_model_ref_defaults_to_kimi_for_coding_and_honors_override() {
+        for env in [None, Some(""), Some("  ")] {
+            assert_eq!(
+                super::compaction_model_ref_from(env),
+                "kimi-code/kimi-for-coding:low"
+            );
+        }
         assert_eq!(
             super::compaction_model_ref_from(Some("zai/glm-5.3-flash:low")),
             "zai/glm-5.3-flash:low"
