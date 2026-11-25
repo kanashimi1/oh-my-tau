@@ -21,12 +21,9 @@ mod tests {
     // private helper instead.
     #[test]
     fn parses_offline_values() {
-        let yes = |raw: &str| {
-            std::env::remove_var("PI_OFFLINE");
-            // SAFETY: single-threaded test runtime before tokio starts.
-            std::env::set_var("PI_OFFLINE", raw);
-            is_catalog_offline()
-        };
+        // temp_env serializes and restores the mutation (no direct set_var, which the
+        // Blaze checker refuses even though this crate is edition 2021).
+        let yes = |raw: &str| temp_env::with_var("PI_OFFLINE", Some(raw), is_catalog_offline);
         assert!(yes("1"));
         assert!(yes("true"));
         assert!(yes("YES"));
@@ -34,7 +31,6 @@ mod tests {
         assert!(!yes("0"));
         assert!(!yes("no"));
         assert!(!yes("maybe"));
-        std::env::remove_var("PI_OFFLINE");
-        assert!(!is_catalog_offline());
+        assert!(!temp_env::with_var("PI_OFFLINE", None::<&str>, is_catalog_offline));
     }
 }

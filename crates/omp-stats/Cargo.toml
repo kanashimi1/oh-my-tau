@@ -14,8 +14,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 regex = "1"
 fancy-regex = "0.14"
 walkdir = "2"
-pa-types.workspace = true
-pa-models = { path = "../../vendor/pa-models" }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"

@@ -67,35 +67,13 @@ fn expand_tilde(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Environment mutations are process-global: tests take this lock and
-    /// restore previous values on exit.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Run `body` with the named variables set (`None` removes them),
-    /// restoring the previous state afterwards.
+    /// restoring the previous state afterwards. `temp_env` serializes the
+    /// mutation globally (its own lock) and restores the saved values, so the
+    /// previous save/set/restore loop with its own lock is no longer needed.
     fn with_env(names: &[(&str, Option<&str>)], body: impl FnOnce()) {
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous: Vec<(&str, Option<std::ffi::OsString>)> = names
-            .iter()
-            .map(|(name, _)| (*name, std::env::var_os(name)))
-            .collect();
-        for (name, value) in names {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
-        body();
-        for (name, value) in previous {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
+        temp_env::with_vars(names, body);
     }
 
     #[test]

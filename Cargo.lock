@@ -2203,8 +2203,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "notify",
- "pa-models",
- "pa-types",
  "parking_lot",
  "regex",
  "rusqlite",
@@ -2432,6 +2430,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "temp-env",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2449,8 +2448,8 @@ dependencies = [
  "serde",
  "serde_json",
  "socket2",
+ "temp-env",
  "tempfile",
- "thiserror",
  "tokio",
 ]
 

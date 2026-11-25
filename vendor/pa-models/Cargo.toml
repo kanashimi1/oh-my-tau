@@ -21,6 +21,7 @@ sha2 = "0.10"
 hex = "0.4"
 
 [dev-dependencies]
+temp-env = { version = "0.3", features = ["async_closure"] }
 tempfile = "3"
 
 [lints]
