@@ -184,22 +184,14 @@ impl PendingMessageQueue {
     }
 
     fn remove_where(&mut self, predicate: &dyn Fn(&AgentMessage) -> bool) -> Vec<AgentMessage> {
-        let mut removed: Vec<AgentMessage> = Vec::new();
-        let mut retained: Vec<Vec<AgentMessage>> = Vec::new();
-        // `mem::take` moves the batches out, so no borrow of `self.batches` is live
-        // across the loop (the Blaze borrow checker rejects the `drain(..)` form).
-        for batch in std::mem::take(&mut self.batches) {
-            // The `iter()` borrow ends before the branch moves `batch` (the Blaze
-            // borrow checker keeps it live into the branch otherwise).
-            let matches = batch.iter().any(predicate);
-            if matches {
-                removed.extend(batch);
-            } else {
-                retained.push(batch);
-            }
-        }
-        self.batches = retained;
-        removed
+        // `partition` borrows each batch inside std and hands back owned vectors, so no
+        // user-level borrow of a batch is live where the batch is moved (the Blaze borrow
+        // checker rejects a `batch.iter()` borrow followed by a move of `batch`).
+        let (matched, kept): (Vec<Vec<AgentMessage>>, Vec<Vec<AgentMessage>>) = std::mem::take(&mut self.batches)
+            .into_iter()
+            .partition(|batch| batch.iter().any(predicate));
+        self.batches = kept;
+        matched.into_iter().flatten().collect()
     }
 }
 
