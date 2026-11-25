@@ -137,7 +137,10 @@ fn resolve_custom_base_url(base_url: &str) -> Option<String> {
 fn base_url_includes_api_version(base_url: &str) -> bool {
     let path = url::Url::parse(base_url)
         .map_or_else(|_| base_url.to_string(), |url| url.path().to_string());
-    path.split('/').any(|part| {
+    // Own the parts so no borrow of `path` is live at its drop (the Blaze
+    // borrow checker keeps the `split` borrow live to the item's end).
+    let parts: Vec<String> = path.split('/').map(str::to_owned).collect();
+    parts.iter().any(|part| {
         let stripped = part.strip_prefix('v').unwrap_or("");
         !stripped.is_empty()
             && stripped

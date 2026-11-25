@@ -247,11 +247,15 @@ data: {"type":"message_stop"}"#,
     while (reader.next_event().await).is_some() {}
 
     let captured = head_rx.await.unwrap();
-    captured
+    // Own the request head so no borrow of `captured` is live at its drop (the
+    // Blaze borrow checker extends the `split` borrow to the coroutine's end
+    // when the chain is the return value).
+    let head = captured
         .split("\r\n\r\n")
         .next()
         .unwrap_or(&captured)
-        .to_string()
+        .to_string();
+    head
 }
 
 /// The messages POST carries exactly one `content-type: application/json`

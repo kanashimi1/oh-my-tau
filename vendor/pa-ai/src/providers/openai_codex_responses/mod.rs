@@ -381,6 +381,45 @@ fn is_codex_visible_response_event(event: &Value) -> bool {
         || event_type.starts_with("response.function_")
 }
 
+/// One WebSocket attempt's event loop: events into the processor until a terminal or a done
+/// event, finished after; the caller settles partial tool calls on error.
+async fn stream_websocket_events(
+    events: &mut tokio::sync::mpsc::Receiver<websocket::WorkerEvent>,
+    start_emitted: &mut bool,
+    websocket_started: &mut bool,
+    writer: &AssistantMessageEventWriter,
+    start_partial: &AssistantMessage,
+    processor: &mut ResponsesStreamProcessor<'_>,
+) -> Result<(), CodexStreamError> {
+    while let Some(event) = events.recv().await {
+        match event {
+            websocket::WorkerEvent::Event(event) => {
+                // Codex can emit lifecycle, telemetry, or vendor metadata before rejecting
+                // a stale continuation; keep the attempt retryable until a visible event
+                // arrives.
+                if !*start_emitted && is_codex_visible_response_event(&event) {
+                    *start_emitted = true;
+                    *websocket_started = true;
+                    writer.push(AssistantMessageEvent::Start {
+                        partial: start_partial.clone(),
+                    });
+                }
+                let mapped = map_codex_event(event)?;
+                processor.handle_event(&mapped.event)?;
+                if mapped.done {
+                    break;
+                }
+            }
+            websocket::WorkerEvent::Terminal(result) => {
+                result?;
+                break;
+            }
+        }
+    }
+    processor.finish()?;
+    Ok(())
+}
+
 /// One WebSocket attempt.
 #[allow(clippy::too_many_arguments)]
 // Long by design: mirrors the provider's stream shape.
@@ -450,35 +489,18 @@ async fn run_websocket_attempt(
         let mut start_emitted = false;
         let mut processor = ResponsesStreamProcessor::new(model, output, writer, hooks);
         // The TS catch settles partial tool calls before the error event carries the message.
-        let streamed: Result<(), CodexStreamError> = async {
-            while let Some(event) = events.recv().await {
-                match event {
-                    websocket::WorkerEvent::Event(event) => {
-                        // Codex can emit lifecycle, telemetry, or vendor metadata before rejecting
-                        // a stale continuation; keep the attempt retryable until a visible event
-                        // arrives.
-                        if !start_emitted && is_codex_visible_response_event(&event) {
-                            start_emitted = true;
-                            *websocket_started = true;
-                            writer.push(AssistantMessageEvent::Start {
-                                partial: start_partial.clone(),
-                            });
-                        }
-                        let mapped = map_codex_event(event)?;
-                        processor.handle_event(&mapped.event)?;
-                        if mapped.done {
-                            break;
-                        }
-                    }
-                    websocket::WorkerEvent::Terminal(result) => {
-                        result?;
-                        break;
-                    }
-                }
-            }
-            processor.finish()?;
-            Ok(())
-        }
+        // The loop is an async fn's, not an async block's: the Blaze borrow checker keeps an
+        // awaited async block's mutable borrow live past it, so a settle after such a block is
+        // a second mutable borrow; an async fn's argument borrow ends at the call (both
+        // checkers agree on the same behaviour).
+        let streamed: Result<(), CodexStreamError> = stream_websocket_events(
+            &mut events,
+            &mut start_emitted,
+            websocket_started,
+            writer,
+            &start_partial,
+            &mut processor,
+        )
         .await;
         if streamed.is_err() {
             processor.settle_partial_tool_calls();
@@ -560,36 +582,45 @@ async fn run_sse_stream(
     };
     let mut processor = ResponsesStreamProcessor::new(model, output, writer, hooks);
     // The TS catch settles partial tool calls before the error event carries the message.
-    let stream_result: Result<(), ProviderError> = async {
-        let mut decoder = SseDecoder::new();
-        loop {
-            let Some(chunk) = response.next_text().await? else {
-                break;
-            };
-            process_sse_chunk(&chunk, &mut decoder, model, &mut processor)?;
-        }
-        for sse in decoder.finish() {
-            if sse.data.trim().is_empty() || sse.data.trim() == "[DONE]" {
-                continue;
-            }
-            let event = parse_json_with_repair(&sse.data).map_err(|error| {
-                CodexStreamError::Protocol(CodexProtocolError {
-                    message: format!("Invalid Codex SSE JSON: {error}"),
-                    payload: Some(Value::String(sse.data.clone())),
-                })
-                .into_provider_error()
-            })?;
-            let mapped = map_codex_event(event).map_err(CodexStreamError::into_provider_error)?;
-            processor.handle_event(&mapped.event)?;
-        }
-        processor.finish()?;
-        Ok(())
-    }
-    .await;
+    // The loop is an async fn's for the reason given at `stream_websocket_events`.
+    let stream_result: Result<(), ProviderError> =
+        stream_sse_events(response, model, &mut processor).await;
     if stream_result.is_err() {
         processor.settle_partial_tool_calls();
     }
     stream_result
+}
+
+/// One SSE attempt's decode loop: chunks and the decoder's tail into the processor, finished
+/// after; the caller settles partial tool calls on error.
+async fn stream_sse_events(
+    response: &mut HttpResponse,
+    model: &Model,
+    processor: &mut ResponsesStreamProcessor<'_>,
+) -> Result<(), ProviderError> {
+    let mut decoder = SseDecoder::new();
+    loop {
+        let Some(chunk) = response.next_text().await? else {
+            break;
+        };
+        process_sse_chunk(&chunk, &mut decoder, model, processor)?;
+    }
+    for sse in decoder.finish() {
+        if sse.data.trim().is_empty() || sse.data.trim() == "[DONE]" {
+            continue;
+        }
+        let event = parse_json_with_repair(&sse.data).map_err(|error| {
+            CodexStreamError::Protocol(CodexProtocolError {
+                message: format!("Invalid Codex SSE JSON: {error}"),
+                payload: Some(Value::String(sse.data.clone())),
+            })
+            .into_provider_error()
+        })?;
+        let mapped = map_codex_event(event).map_err(CodexStreamError::into_provider_error)?;
+        processor.handle_event(&mapped.event)?;
+    }
+    processor.finish()?;
+    Ok(())
 }
 
 fn process_sse_chunk(
