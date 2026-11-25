@@ -526,10 +526,14 @@ fn rss_of_pid(pid: u32) -> u64 {
     let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
         return 0;
     };
-    status
+    // The `VmRSS:` line is owned here, so no borrow of `status` flows through the
+    // parse chain (the Blaze borrow checker keeps the `lines()` borrow live across it).
+    let kb_line: Option<String> = status
         .lines()
         .find_map(|l| l.strip_prefix("VmRSS:"))
-        .and_then(|l| l.trim().strip_suffix(" kB"))
+        .map(str::to_owned);
+    kb_line
+        .and_then(|l| l.trim().strip_suffix(" kB").map(str::to_owned))
         .and_then(|l| l.trim().parse::<u64>().ok())
         .unwrap_or(0)
 }

@@ -186,8 +186,13 @@ impl PendingMessageQueue {
     fn remove_where(&mut self, predicate: &dyn Fn(&AgentMessage) -> bool) -> Vec<AgentMessage> {
         let mut removed: Vec<AgentMessage> = Vec::new();
         let mut retained: Vec<Vec<AgentMessage>> = Vec::new();
-        for batch in self.batches.drain(..) {
-            if batch.iter().any(predicate) {
+        // `mem::take` moves the batches out, so no borrow of `self.batches` is live
+        // across the loop (the Blaze borrow checker rejects the `drain(..)` form).
+        for batch in std::mem::take(&mut self.batches) {
+            // The `iter()` borrow ends before the branch moves `batch` (the Blaze
+            // borrow checker keeps it live into the branch otherwise).
+            let matches = batch.iter().any(predicate);
+            if matches {
                 removed.extend(batch);
             } else {
                 retained.push(batch);
