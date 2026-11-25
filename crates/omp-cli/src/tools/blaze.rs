@@ -138,13 +138,7 @@ impl Finding {
             });
         }
         let lower = self.message.to_ascii_lowercase();
-        let names_toolchain = ["toolchain", "shelf", "pinned source", "source pin"]
-            .iter()
-            .any(|word| lower.contains(word));
-        let reads_as_refusal = ["refus", "missing", "not available", "no such", "absent"]
-            .iter()
-            .any(|word| lower.contains(word));
-        if names_toolchain && reads_as_refusal {
+        if toolchain_refusal_wording(&lower) {
             return Some(Cause::ToolchainOrSourceRefused);
         }
         None
@@ -215,8 +209,30 @@ pub(crate) enum Cause {
     /// `not checked` (e.g. `icu_properties_data`, `rustversion`).
     CrateScope { crate_name: String },
     /// The toolchain or pinned source refused the command (toolchain/shelf
-    /// absence, source pin mismatch, explicit refusal wording).
+    /// absence, source pin mismatch, explicit refusal wording such as
+    /// `the toolchain manifest ...: not there; this blaze needs its own
+    /// toolchain installed`).
     ToolchainOrSourceRefused,
+}
+
+/// Documented refusal wording: a toolchain/shelf/pinned-source word plus an
+/// explicit absence/refusal word. Used for finding messages and raw stderr
+/// evidence alike; anything short of both stays unclassified.
+fn toolchain_refusal_wording(lower: &str) -> bool {
+    let names_toolchain = ["toolchain", "shelf", "pinned source", "source pin"]
+        .iter()
+        .any(|word| lower.contains(word));
+    let reads_as_refusal = [
+        "refus",
+        "missing",
+        "not available",
+        "no such",
+        "absent",
+        "not there",
+    ]
+    .iter()
+    .any(|word| lower.contains(word));
+    names_toolchain && reads_as_refusal
 }
 
 impl Cause {
@@ -350,6 +366,22 @@ impl Check {
             self.notes.len()
         );
         if self.findings.is_empty() && self.notes.is_empty() {
+            // No structured findings at all: raw stderr evidence can still
+            // carry the blocking root (a toolchain/shelf refusal is the
+            // common real case). Surface it above the verbatim error.
+            let mut evidence_roots = RootCauses::default();
+            for line in &self.evidence {
+                if toolchain_refusal_wording(&line.to_ascii_lowercase()) {
+                    evidence_roots.record_finding(&Cause::ToolchainOrSourceRefused);
+                }
+            }
+            for root in evidence_roots.ordered() {
+                let line = root.headline();
+                if out.len() + line.len() + 1 > budget {
+                    break;
+                }
+                let _ = writeln!(out, "{line}");
+            }
             if let Some(error) = &self.process_error {
                 let remaining = budget.saturating_sub(out.len());
                 if error.len() <= remaining {
@@ -395,14 +427,7 @@ impl Check {
             }
         }
         for line in &self.evidence {
-            let lower = line.to_ascii_lowercase();
-            let names_toolchain = ["toolchain", "shelf", "pinned source", "source pin"]
-                .iter()
-                .any(|word| lower.contains(word));
-            let reads_as_refusal = ["refus", "missing", "not available", "no such", "absent"]
-                .iter()
-                .any(|word| lower.contains(word));
-            if names_toolchain && reads_as_refusal {
+            if toolchain_refusal_wording(&line.to_ascii_lowercase()) {
                 roots.record_finding(&Cause::ToolchainOrSourceRefused);
             }
         }
@@ -934,5 +959,89 @@ mod tests {
         assert!(compact.starts_with("blaze check: failed"));
         assert!(compact.contains("omitted by max_tokens"));
         assert!(compact.len() < 800);
+    }
+
+    /// Real Blaze v2 wording (runs/omt-blaze-v2/quality/cases/toolchain-refusal):
+    /// a missing shelf manifest is reported on stderr as `the toolchain
+    /// manifest ...: not there; this blaze needs its own toolchain installed`.
+    /// That wording must classify as a toolchain/source refusal root, not
+    /// vanish into unclassified evidence.
+    #[test]
+    #[cfg(unix)]
+    fn toolchain_manifest_not_there_wording_is_a_refusal_root() {
+        let output = std::process::Output {
+            status: status(1),
+            stdout: vec![],
+            stderr: b"error: the pinned toolchain: toolchain 099e991f: the toolchain manifest (file 099e991f in /home/u/.blaze/v2/toolchain): not there; this blaze needs its own toolchain installed, run `blaze-toolchain` from its tree or reinstall\n".to_vec(),
+        };
+        let parsed = parse_check(&output);
+        // No JSON findings at all: the refusal arrives as raw stderr evidence.
+        assert!(parsed.findings.is_empty());
+        assert_eq!(parsed.evidence.len(), 1);
+        let compact = parsed.compact(2000);
+        assert!(
+            compact.contains("root: toolchain/source refused the command"),
+            "stderr refusal was not classified: {compact}"
+        );
+    }
+
+    /// BLAZE-V2 tail-4 quality A/B harness (runs/omt-blaze-v2/quality/):
+    /// replays each case's captured `blaze check` stdout/stderr/status through
+    /// the real parse + causal-compaction path and writes the exact artifacts
+    /// the two A/B arms see, plus the token-accounting details:
+    ///   raw.txt      - the archived raw report (`Check::log`)
+    ///   compact.txt  - the model-facing Root-Cause Frontier (max_tokens=2000)
+    ///   details.json - TokenMeter counts (`tokenizer.json` or labelled estimate)
+    /// Opt-in via OMT_BLAZE_QUALITY_CASES=<cases dir>; `#[ignore]` keeps the
+    /// default suite hermetic.
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn quality_dump_ab_artifacts() {
+        let Ok(cases) = std::env::var("OMT_BLAZE_QUALITY_CASES") else {
+            return;
+        };
+        let meter = crate::tools::blaze_tokens::TokenMeter::from_env().unwrap();
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(&cases)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_dir())
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let stdout = std::fs::read(dir.join("check.stdout.jsonl")).unwrap();
+            let stderr = std::fs::read(dir.join("check.stderr.txt")).unwrap_or_default();
+            let code: i32 = std::fs::read_to_string(dir.join("check.status"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let output = std::process::Output {
+                status: status(code),
+                stdout,
+                stderr,
+            };
+            let parsed = parse_check(&output);
+            let compact = parsed.compact(2000);
+            let mut details = json!({
+                "case": dir.file_name().unwrap().to_string_lossy(),
+                "status": parsed.status,
+                "success": parsed.success,
+                "errors": parsed.errors,
+                "warnings": parsed.warnings,
+                "findings": parsed.findings.len(),
+                "notes": parsed.notes.len(),
+                "evidence": parsed.evidence.len(),
+                "maxTokens": 2000,
+            });
+            meter.add_counts(&mut details, &parsed.log, &compact).unwrap();
+            std::fs::write(dir.join("raw.txt"), &parsed.log).unwrap();
+            std::fs::write(dir.join("compact.txt"), &compact).unwrap();
+            std::fs::write(
+                dir.join("details.json"),
+                format!("{}\n", serde_json::to_string_pretty(&details).unwrap()),
+            )
+            .unwrap();
+        }
     }
 }
