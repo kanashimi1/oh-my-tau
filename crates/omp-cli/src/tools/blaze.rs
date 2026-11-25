@@ -586,7 +586,8 @@ fn result(
     output: &std::process::Output,
     text: String,
     max_tokens: usize,
-) -> AgentToolResult {
+    meter: &super::blaze_tokens::TokenMeter,
+) -> Result<AgentToolResult> {
     let mut details = json!({
         "workflow": "blaze",
         "action": action,
@@ -595,17 +596,18 @@ fn result(
         "success": output.status.success(),
         "maxTokens": max_tokens,
     });
+    let raw = compact_output(action, output, usize::MAX / 4);
+    meter.add_counts(&mut details, &raw, &text)?;
     let failed = !output.status.success();
     if failed {
-        let log = compact_output(action, output, usize::MAX / 4);
-        if let Some(url) = super::util::save_artifact(&log) {
+        if let Some(url) = super::util::save_artifact(&raw) {
             details["log"] = json!(url);
         }
     }
     let mut result = AgentToolResult::text(text);
     result.details = details;
     result.is_error = failed.then_some(true);
-    result
+    Ok(result)
 }
 
 fn resolve_project(env: &Env, raw: &str) -> Result<PathBuf> {
@@ -646,6 +648,7 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
         .and_then(Value::as_u64)
         .unwrap_or(2000)
         .clamp(128, 16000) as usize;
+    let meter = super::blaze_tokens::TokenMeter::from_env()?;
     let call_id = super::macro_step::next_call_id("blaze");
     let command_text = match action {
         "why" => format!(
@@ -667,13 +670,16 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
     match action {
         "check" => {
             let checked = check(&project, timeout).await?;
-            let mut result = AgentToolResult::text(checked.compact(max_tokens));
-            result.details = json!({
+            let text = checked.compact(max_tokens);
+            let mut details = json!({
                 "workflow": "blaze", "action": "check", "status": checked.status,
                 "success": checked.success, "errors": checked.errors,
                 "warnings": checked.warnings, "findings": checked.findings.len(),
                 "maxTokens": max_tokens,
             });
+            meter.add_counts(&mut details, &checked.log, &text)?;
+            let mut result = AgentToolResult::text(text);
+            result.details = details;
             result.is_error = (!checked.success).then_some(true);
             if !checked.success {
                 if let Some(url) = super::util::save_artifact(&checked.log) {
@@ -686,8 +692,11 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
             if action == "verify" {
                 let checked = check(&project, timeout).await?;
                 if !checked.success {
-                    let mut result = AgentToolResult::text(checked.compact(max_tokens));
-                    result.details = json!({"workflow":"blaze","action":"verify","stage":"check","success":false,"status":checked.status});
+                    let text = checked.compact(max_tokens);
+                    let mut details = json!({"workflow":"blaze","action":"verify","stage":"check","success":false,"status":checked.status});
+                    meter.add_counts(&mut details, &checked.log, &text)?;
+                    let mut result = AgentToolResult::text(text);
+                    result.details = details;
                     result.is_error = Some(true);
                     if let Some(url) = super::util::save_artifact(&checked.log) {
                         result.details["log"] = json!(url);
@@ -698,7 +707,7 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
             let command = args_with_path("test", &project, &[]);
             let output = run(&project, &command, timeout).await?;
             let text = compact_output(action, &output, max_tokens);
-            Ok(result(action, &project, &output, text, max_tokens))
+            Ok(result(action, &project, &output, text, max_tokens, &meter)?)
         }
         "why" => {
             let item = args
@@ -708,7 +717,7 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
                 .ok_or_else(|| anyhow!("blaze why requires item"))?;
             let output = run(&project, &["why".to_owned(), item.to_owned()], timeout).await?;
             let text = compact_output("why", &output, max_tokens);
-            Ok(result("why", &project, &output, text, max_tokens))
+            Ok(result("why", &project, &output, text, max_tokens, &meter)?)
         }
         _ => unreachable!(),
     }

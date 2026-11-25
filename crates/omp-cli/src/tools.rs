@@ -10,6 +10,7 @@ pub mod ask;
 mod ast;
 pub mod bash;
 mod blaze;
+mod blaze_tokens;
 pub mod checkpoint;
 mod edit;
 mod edit_diagnostics;

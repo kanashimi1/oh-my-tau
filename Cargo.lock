@@ -1999,6 +1999,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2",
  "tempfile",
+ "tokenizers",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
