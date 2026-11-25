@@ -518,27 +518,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
         let log = dir.join("r.jsonl");
-        std::env::set_var(LOG_ENV, &log);
-        let rec = score_output(
-            &rb(),
-            &Fixed("{\"success\":true,\"scores\":[1,0]}"),
-            "t",
-            &out(RunStatus::Completed, "ans"),
-        )
-        .await
-        .unwrap();
-        std::env::remove_var(LOG_ENV);
-        assert!((rec.score - 0.75).abs() < 1e-12);
-        // LOG_ENV is process-wide: another rubric test may log concurrently
-        // into the same pid-keyed file. Find THIS scoring's record by id.
-        let content = std::fs::read_to_string(&log).unwrap();
-        let line = content
-            .lines()
-            .find(|l| l.contains(&format!("\"rubric_id\":\"{}\"", rec.rubric_id)))
-            .unwrap_or_else(|| panic!("own record missing from log:\n{content}"));
-        let v: Value = serde_json::from_str(line).unwrap();
-        assert_eq!(v["rubric_id"], rec.rubric_id);
-        assert_eq!(v["verified"], 1.0);
-        let _ = std::fs::remove_dir_all(dir);
+        temp_env::async_with_vars([(LOG_ENV, Some(log.clone()))], async {
+            let rec = score_output(
+                &rb(),
+                &Fixed("{\"success\":true,\"scores\":[1,0]}"),
+                "t",
+                &out(RunStatus::Completed, "ans"),
+            )
+            .await
+            .unwrap();
+            assert!((rec.score - 0.75).abs() < 1e-12);
+            // LOG_ENV is process-wide: another rubric test may log concurrently
+            // into the same pid-keyed file. Find THIS scoring's record by id.
+            let content = std::fs::read_to_string(&log).unwrap();
+            let line = content
+                .lines()
+                .find(|l| l.contains(&format!("\"rubric_id\":\"{}\"", rec.rubric_id)))
+                .unwrap_or_else(|| panic!("own record missing from log:\n{content}"));
+            let v: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(v["rubric_id"], rec.rubric_id);
+            assert_eq!(v["verified"], 1.0);
+            let _ = std::fs::remove_dir_all(dir);
+        })
+        .await;
     }
 }

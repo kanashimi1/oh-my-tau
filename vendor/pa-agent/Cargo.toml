@@ -15,6 +15,7 @@ tokio.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 [dev-dependencies]
+temp-env = { version = "0.3", features = ["async_closure"] }
 
 [lints]
 workspace = true

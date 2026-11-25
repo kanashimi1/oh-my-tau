@@ -15,10 +15,6 @@ use omp_task::{ChildMode, RunPhase, RunStatus, TaskRunner, TaskSpec};
 /// file takes the lock and sets an explicit value so they cannot interfere.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn set_finishing_deadline(ms: &str) {
-    std::env::set_var("OMP_TASK_TEST_FINISHING_DEADLINE_MS", ms);
-}
-
 fn fake_binary(dir: &Path, body: &str) -> PathBuf {
     let path = dir.join("fake-omp-rs");
     let mut f = std::fs::File::create(&path).unwrap();
@@ -64,7 +60,7 @@ async fn wait_phase(control: &omp_task::RunControl, phase: RunPhase) {
 #[tokio::test]
 async fn cancel_in_the_post_loop_window_is_consistent() {
     let _env = ENV_LOCK.lock().await;
-    set_finishing_deadline("15000");
+    temp_env::async_with_vars([("OMP_TASK_TEST_FINISHING_DEADLINE_MS", Some("15000"))], async {
     let dir = tempfile::tempdir().unwrap();
     // Answers everything and exits, but a detached grandchild holds stderr
     // open ~4s: the drive loop spends that window in the stderr join, which
@@ -114,6 +110,8 @@ exit 0"#,
     }
     assert_eq!(runner.available_permits(), 1, "permit released");
     assert!(!control.cancel(), "cancel after settle is a no-op");
+
+    }).await;
 }
 
 /// The other side of finding 1: no cancel at all — the run settles
@@ -121,7 +119,7 @@ exit 0"#,
 #[tokio::test]
 async fn completed_run_with_detached_stderr_holder_settles() {
     let _env = ENV_LOCK.lock().await;
-    set_finishing_deadline("15000");
+    temp_env::async_with_vars([("OMP_TASK_TEST_FINISHING_DEADLINE_MS", Some("15000"))], async {
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
         dir.path(),
@@ -149,6 +147,8 @@ exit 0"#,
         started.elapsed()
     );
     assert!(!control.cancel());
+
+    }).await;
 }
 
 /// Finding 2 (Finishing-phase deadline): a child whose prompt settles but
@@ -157,30 +157,35 @@ exit 0"#,
 #[tokio::test]
 async fn finishing_phase_deadline_kills_hanging_child() {
     let _env = ENV_LOCK.lock().await;
-    set_finishing_deadline("400");
-    let dir = tempfile::tempdir().unwrap();
-    let bin = fake_binary(
-        dir.path(),
-        r#"read -r prompt
+    temp_env::async_with_vars(
+        [("OMP_TASK_TEST_FINISHING_DEADLINE_MS", Some("400"))],
+        async {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = fake_binary(
+                dir.path(),
+                r#"read -r prompt
 echo '{"type":"response","command":"prompt","success":true,"id":"omp-task-prompt"}'
 echo '{"type":"prompt_result","status":"completed","sessionSettled":true}'
 sleep 30"#,
-    );
-    let runner = TaskRunner::new(&bin, 1);
-    let (control, join) = runner.start(spec("go", dir.path()), ChildMode::Rpc);
-    let started = Instant::now();
-    let out = tokio::time::timeout(Duration::from_secs(15), join)
-        .await
-        .expect("run must not hang when the stats reply never comes");
-    assert_eq!(out.status, RunStatus::Failed, "{out:?}");
-    assert!(
-        out.stderr.contains("timed out in the Finishing phase"),
-        "stderr: {}",
-        out.stderr
-    );
-    assert!(started.elapsed() < Duration::from_secs(10));
-    assert_eq!(runner.available_permits(), 1, "permit released");
-    assert_eq!(control.phase(), RunPhase::Settled);
+            );
+            let runner = TaskRunner::new(&bin, 1);
+            let (control, join) = runner.start(spec("go", dir.path()), ChildMode::Rpc);
+            let started = Instant::now();
+            let out = tokio::time::timeout(Duration::from_secs(15), join)
+                .await
+                .expect("run must not hang when the stats reply never comes");
+            assert_eq!(out.status, RunStatus::Failed, "{out:?}");
+            assert!(
+                out.stderr.contains("timed out in the Finishing phase"),
+                "stderr: {}",
+                out.stderr
+            );
+            assert!(started.elapsed() < Duration::from_secs(10));
+            assert_eq!(runner.available_permits(), 1, "permit released");
+            assert_eq!(control.phase(), RunPhase::Settled);
+        },
+    )
+    .await;
 }
 
 /// Finding 4 (steer receipt): a steer sent while the prompt is still running
@@ -189,7 +194,7 @@ sleep 30"#,
 #[tokio::test]
 async fn steer_receipt_reports_finishing_failure() {
     let _env = ENV_LOCK.lock().await;
-    set_finishing_deadline("15000");
+    temp_env::async_with_vars([("OMP_TASK_TEST_FINISHING_DEADLINE_MS", Some("15000"))], async {
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
         dir.path(),
@@ -221,6 +226,8 @@ read -r eof || exit 0"#,
     let out = join.await;
     assert_eq!(out.status, RunStatus::Completed, "{out:?}");
     assert_eq!(out.output, "done");
+
+    }).await;
 }
 
 /// Finding 3 (process groups): after a *normal* exit, surviving group
@@ -287,29 +294,33 @@ async fn child_gets_spec_env_and_never_inherits_a_stale_bus() {
         r#"echo "sock=${OMP_A2A_SOCK:-none} self=${OMP_A2A_SELF:-none} extra=${MY_EXTRA:-none}""#,
     );
     let runner = TaskRunner::new(&bin, 2);
-    std::env::set_var("OMP_A2A_SOCK", "/stale/grandparent.sock");
-    std::env::set_var("OMP_A2A_SELF", "stale-self");
+    temp_env::async_with_vars(
+        [
+            ("OMP_A2A_SOCK", Some("/stale/grandparent.sock")),
+            ("OMP_A2A_SELF", Some("stale-self")),
+        ],
+        async {
+            let plain = runner
+                .start(spec("p", dir.path()), ChildMode::Print)
+                .1
+                .await;
+            assert_eq!(plain.output.trim(), "sock=none self=none extra=none");
 
-    let plain = runner
-        .start(spec("p", dir.path()), ChildMode::Print)
-        .1
-        .await;
-    assert_eq!(plain.output.trim(), "sock=none self=none extra=none");
-
-    let mut wired = spec("w", dir.path());
-    wired.env = vec![
-        (
-            omp_task::runner::A2A_SOCK_ENV.to_string(),
-            "/run/bus.sock".to_string(),
-        ),
-        (
-            omp_task::runner::A2A_SELF_ENV.to_string(),
-            "kid-1".to_string(),
-        ),
-        ("MY_EXTRA".to_string(), "1".to_string()),
-    ];
-    let out = runner.start(wired, ChildMode::Print).1.await;
-    std::env::remove_var("OMP_A2A_SOCK");
-    std::env::remove_var("OMP_A2A_SELF");
-    assert_eq!(out.output.trim(), "sock=/run/bus.sock self=kid-1 extra=1");
+            let mut wired = spec("w", dir.path());
+            wired.env = vec![
+                (
+                    omp_task::runner::A2A_SOCK_ENV.to_string(),
+                    "/run/bus.sock".to_string(),
+                ),
+                (
+                    omp_task::runner::A2A_SELF_ENV.to_string(),
+                    "kid-1".to_string(),
+                ),
+                ("MY_EXTRA".to_string(), "1".to_string()),
+            ];
+            let out = runner.start(wired, ChildMode::Print).1.await;
+            assert_eq!(out.output.trim(), "sock=/run/bus.sock self=kid-1 extra=1");
+        },
+    )
+    .await;
 }

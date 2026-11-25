@@ -552,33 +552,35 @@ mod tests {
     #[tokio::test]
     async fn start_and_stop_host_with_local_relay() {
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("PI_CONFIG_DIR", tmp.path().join(".omp"));
-        let relay = crate::relay_server::start_local_relay(0).unwrap();
+        temp_env::async_with_vars([("PI_CONFIG_DIR", Some(tmp.path().join(".omp")))], async {
+            let relay = crate::relay_server::start_local_relay(0).unwrap();
 
-        let ctl = CollabController::new(Arc::new(FakeBackend), getter(&[]));
-        assert!(ctl.current_host().is_none());
+            let ctl = CollabController::new(Arc::new(FakeBackend), getter(&[]));
+            assert!(ctl.current_host().is_none());
 
-        let host = ctl
-            .start_host(CollabStartOptions {
-                access: CollabAccess::Control,
-                relay: Some(relay.url.clone()),
-            })
-            .await
-            .expect("host starts against local relay");
-        assert_eq!(host.session_id(), "sess-123");
-        assert_eq!(
-            ctl.current_host().map(|h| h.instance_id().to_string()),
-            Some(ctl.instance_id().to_string())
-        );
-        let links = ctl.links().expect("links stored after start");
-        assert!(!links.full_link.is_empty());
-        assert!(!links.web_link.is_empty());
-        let web = ctl.web_link().unwrap();
-        assert!(web.contains("/r/"));
-        assert_eq!(ctl.generation(), 1);
+            let host = ctl
+                .start_host(CollabStartOptions {
+                    access: CollabAccess::Control,
+                    relay: Some(relay.url.clone()),
+                })
+                .await
+                .expect("host starts against local relay");
+            assert_eq!(host.session_id(), "sess-123");
+            assert_eq!(
+                ctl.current_host().map(|h| h.instance_id().to_string()),
+                Some(ctl.instance_id().to_string())
+            );
+            let links = ctl.links().expect("links stored after start");
+            assert!(!links.full_link.is_empty());
+            assert!(!links.web_link.is_empty());
+            let web = ctl.web_link().unwrap();
+            assert!(web.contains("/r/"));
+            assert_eq!(ctl.generation(), 1);
 
-        ctl.stop_host("test").await;
-        ctl.stop_host("test").await;
-        let _ = relay;
+            ctl.stop_host("test").await;
+            ctl.stop_host("test").await;
+            let _ = relay;
+        })
+        .await;
     }
 }

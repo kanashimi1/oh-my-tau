@@ -732,8 +732,6 @@ mod tests {
             let base =
                 std::env::temp_dir().join(format!("omp-settings-test-{}", std::process::id()));
             std::fs::create_dir_all(&base).unwrap();
-            std::env::set_var("HOME", &base);
-            std::env::remove_var("OMP_PROFILE");
             Self(base)
         }
     }
@@ -746,25 +744,24 @@ mod tests {
     #[test]
     fn write_global_round_trips_through_load() {
         let _guard = HOME_LOCK.lock();
-        let old_home = std::env::var_os("HOME");
-        let old_profile = std::env::var_os("OMP_PROFILE");
-        {
-            let _home = TempHome::new();
-            let path = write_global("colorBlindMode", &Value::Bool(true)).unwrap();
-            assert!(path.ends_with(".omp/agent/config.yml"), "{path:?}");
-            // Unknown pre-existing keys survive the write.
-            let text = std::fs::read_to_string(&path).unwrap();
-            assert!(text.contains("colorBlindMode: true"), "{text}");
+        let home = TempHome::new();
+        temp_env::with_vars(
+            [
+                ("HOME", Some(home.0.as_os_str())),
+                ("OMP_PROFILE", None::<&std::ffi::OsStr>),
+            ],
+            || {
+                let _home = &home;
+                let path = write_global("colorBlindMode", &Value::Bool(true)).unwrap();
+                assert!(path.ends_with(".omp/agent/config.yml"), "{path:?}");
+                // Unknown pre-existing keys survive the write.
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(text.contains("colorBlindMode: true"), "{text}");
 
-            let loaded = Settings::load(Path::new("/nonexistent-project"));
-            assert_eq!(loaded.get_bool("colorBlindMode"), Some(true));
-        }
-        if let Some(h) = old_home {
-            std::env::set_var("HOME", h);
-        }
-        if let Some(p) = old_profile {
-            std::env::set_var("OMP_PROFILE", p);
-        }
+                let loaded = Settings::load(Path::new("/nonexistent-project"));
+                assert_eq!(loaded.get_bool("colorBlindMode"), Some(true));
+            },
+        );
     }
 
     #[test]

@@ -47,12 +47,13 @@ mod tests {
 
     #[test]
     fn defaults_and_config() {
-        std::env::remove_var(TIMEOUT_ENV);
-        assert_eq!(resolve_timeout_ms(None), DEFAULT_TIMEOUT_MS);
-        assert_eq!(resolve_timeout_ms(Some(5)), 5);
-        assert!(is_timeout_enabled(DEFAULT_TIMEOUT_MS));
-        assert!(!is_timeout_enabled(0));
-        assert_eq!(describe_timeout(0), "disabled");
-        assert_eq!(describe_timeout(12), "12ms");
+        temp_env::with_var_unset(TIMEOUT_ENV, || {
+            assert_eq!(resolve_timeout_ms(None), DEFAULT_TIMEOUT_MS);
+            assert_eq!(resolve_timeout_ms(Some(5)), 5);
+            assert!(is_timeout_enabled(DEFAULT_TIMEOUT_MS));
+            assert!(!is_timeout_enabled(0));
+            assert_eq!(describe_timeout(0), "disabled");
+            assert_eq!(describe_timeout(12), "12ms");
+        });
     }
 }

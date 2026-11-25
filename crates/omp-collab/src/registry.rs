@@ -2554,33 +2554,30 @@ mod tests {
         static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
         let _guard = ENV_LOCK.lock();
         let tmp = tempfile::tempdir().expect("tempdir");
-        let saved_home = std::env::var_os("HOME");
-        let saved_config = std::env::var_os("PI_CONFIG_DIR");
-        std::env::set_var("HOME", tmp.path());
-        std::env::set_var("PI_CONFIG_DIR", "custom-root");
-        assert_eq!(
-            collab_hosts_runtime_dir(),
-            tmp.path().join("custom-root/run/collab-hosts")
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path().as_os_str())),
+                ("PI_CONFIG_DIR", Some(std::ffi::OsStr::new("custom-root"))),
+            ],
+            || {
+                assert_eq!(
+                    collab_hosts_runtime_dir(),
+                    tmp.path().join("custom-root/run/collab-hosts")
+                );
+                temp_env::with_var_unset("PI_CONFIG_DIR", || {
+                    assert_eq!(
+                        collab_hosts_runtime_dir(),
+                        tmp.path().join(".omp/run/collab-hosts")
+                    );
+                });
+                temp_env::with_var("PI_CONFIG_DIR", Some(""), || {
+                    assert_eq!(
+                        collab_hosts_runtime_dir(),
+                        tmp.path().join(".omp/run/collab-hosts")
+                    );
+                });
+            },
         );
-        std::env::remove_var("PI_CONFIG_DIR");
-        assert_eq!(
-            collab_hosts_runtime_dir(),
-            tmp.path().join(".omp/run/collab-hosts")
-        );
-        // An EMPTY PI_CONFIG_DIR falls back to .omp, like TS `env || ".omp"`
-        // (dirs.ts:306-308).
-        std::env::set_var("PI_CONFIG_DIR", "");
-        assert_eq!(
-            collab_hosts_runtime_dir(),
-            tmp.path().join(".omp/run/collab-hosts")
-        );
-        if let Some(home) = saved_home {
-            std::env::set_var("HOME", home);
-        }
-        match saved_config {
-            Some(config) => std::env::set_var("PI_CONFIG_DIR", config),
-            None => std::env::remove_var("PI_CONFIG_DIR"),
-        }
     }
 
     #[test]

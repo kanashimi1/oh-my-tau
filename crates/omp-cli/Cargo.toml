@@ -67,6 +67,7 @@ tokio-tungstenite = "0.28"
 futures.workspace = true
 
 [dev-dependencies]
+temp-env = { version = "0.3", features = ["async_closure"] }
 tempfile = "3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 

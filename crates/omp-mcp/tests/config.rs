@@ -43,26 +43,26 @@ fn config_loading_matches_omp_rules() {
         "mcp.json",
         r#"{"mcpServers": {"proj2": {"command": "p2"}}}"#,
     );
-    std::env::set_var("OMP_CONFIG_DIR", &user_dir);
-    let configs = load_configs(&project);
+    temp_env::with_var("OMP_CONFIG_DIR", Some(&user_dir), || {
+        let configs = load_configs(&project);
 
-    assert!(configs.contains_key("user-b"));
-    assert!(configs.contains_key("proj"));
-    assert!(configs.contains_key("proj2"));
-    assert!(!configs.contains_key("user-a"));
-    assert_eq!(configs["user-b"].command.as_deref(), Some("b-override"));
-    assert_eq!(configs["proj"].kind, ServerKind::Http);
-    assert_eq!(
-        configs["proj"].url.as_deref(),
-        Some("http://127.0.0.1:9/mcp")
-    );
+        assert!(configs.contains_key("user-b"));
+        assert!(configs.contains_key("proj"));
+        assert!(configs.contains_key("proj2"));
+        assert!(!configs.contains_key("user-a"));
+        assert_eq!(configs["user-b"].command.as_deref(), Some("b-override"));
+        assert_eq!(configs["proj"].kind, ServerKind::Http);
+        assert_eq!(
+            configs["proj"].url.as_deref(),
+            Some("http://127.0.0.1:9/mcp")
+        );
 
-    // Case 2: disabledServers hide; enabledServers force-enable.
-    let user2 = root.path().join("user2");
-    write(
-        &user2.join(".omp").join("agent"),
-        "mcp.json",
-        r#"{
+        // Case 2: disabledServers hide; enabledServers force-enable.
+        let user2 = root.path().join("user2");
+        write(
+            &user2.join(".omp").join("agent"),
+            "mcp.json",
+            r#"{
             "disabledServers": ["off"],
             "enabledServers": ["forced"],
             "mcpServers": {
@@ -71,19 +71,19 @@ fn config_loading_matches_omp_rules() {
                 "on": {"command": "z"}
             }
         }"#,
-    );
-    std::env::set_var("OMP_CONFIG_DIR", &user2);
-    let configs = load_configs(&project);
-    assert!(!configs.contains_key("off"));
-    assert!(configs.contains_key("forced"));
-    assert!(configs.contains_key("on"));
+        );
+        temp_env::with_var("OMP_CONFIG_DIR", Some(&user2), || {
+            let configs = load_configs(&project);
+            assert!(!configs.contains_key("off"));
+            assert!(configs.contains_key("forced"));
+            assert!(configs.contains_key("on"));
 
-    // Case 2b: an `enabled: false` server loads for a run that names one of its
-    // tools (an agent's `tools:` list); other runs and `disabledServers` stay off.
-    write(
-        &user2.join(".omp").join("agent"),
-        "mcp.json",
-        r#"{
+            // Case 2b: an `enabled: false` server loads for a run that names one of its
+            // tools (an agent's `tools:` list); other runs and `disabledServers` stay off.
+            write(
+                &user2.join(".omp").join("agent"),
+                "mcp.json",
+                r#"{
             "disabledServers": ["off"],
             "mcpServers": {
                 "off": {"command": "x"},
@@ -91,35 +91,37 @@ fn config_loading_matches_omp_rules() {
                 "on": {"command": "z"}
             }
         }"#,
-    );
-    let agent_tools = vec![
-        "read".to_string(),
-        "mcp__block_bench_bb_inspect".to_string(),
-        "mcp__off_tool".to_string(),
-    ];
-    let configs = load_configs_for(&project, &agent_tools);
-    assert!(configs.contains_key("Block-Bench"));
-    assert!(configs.contains_key("on"));
-    assert!(!configs.contains_key("off"));
-    assert!(!load_configs(&project).contains_key("Block-Bench"));
-    let other = vec!["read".to_string(), "mcp__block_benchmark_x".to_string()];
-    assert!(!load_configs_for(&project, &other).contains_key("Block-Bench"));
+            );
+            let agent_tools = vec![
+                "read".to_string(),
+                "mcp__block_bench_bb_inspect".to_string(),
+                "mcp__off_tool".to_string(),
+            ];
+            let configs = load_configs_for(&project, &agent_tools);
+            assert!(configs.contains_key("Block-Bench"));
+            assert!(configs.contains_key("on"));
+            assert!(!configs.contains_key("off"));
+            assert!(!load_configs(&project).contains_key("Block-Bench"));
+            let other = vec!["read".to_string(), "mcp__block_benchmark_x".to_string()];
+            assert!(!load_configs_for(&project, &other).contains_key("Block-Bench"));
 
-    // Case 3: malformed user config is ignored, not fatal.
-    let user3 = root.path().join("user3");
-    write(&user3.join(".omp").join("agent"), "mcp.json", "{ not json");
-    let project3 = root.path().join("project3");
-    std::fs::create_dir_all(&project3).unwrap();
-    write(
-        &project3,
-        "mcp.json",
-        r#"{"mcpServers": {"ok": {"command": "ok"}}}"#,
-    );
-    std::env::set_var("OMP_CONFIG_DIR", &user3);
-    let configs: BTreeMap<String, McpServerConfig> = load_configs(&project3);
-    std::env::remove_var("OMP_CONFIG_DIR");
-    assert_eq!(configs.len(), 1);
-    assert!(configs.contains_key("ok"));
+            // Case 3: malformed user config is ignored, not fatal.
+            let user3 = root.path().join("user3");
+            write(&user3.join(".omp").join("agent"), "mcp.json", "{ not json");
+            let project3 = root.path().join("project3");
+            std::fs::create_dir_all(&project3).unwrap();
+            write(
+                &project3,
+                "mcp.json",
+                r#"{"mcpServers": {"ok": {"command": "ok"}}}"#,
+            );
+            temp_env::with_var("OMP_CONFIG_DIR", Some(&user3), || {
+                let configs: BTreeMap<String, McpServerConfig> = load_configs(&project3);
+                assert_eq!(configs.len(), 1);
+                assert!(configs.contains_key("ok"));
+            });
+        });
+    });
 }
 
 #[test]

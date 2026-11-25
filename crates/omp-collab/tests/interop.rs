@@ -327,141 +327,143 @@ async fn ts_guest_interops_with_rust_host() {
     // Registry publication needs a config dir (same pattern as the
     // controller tests).
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::env::set_var("PI_CONFIG_DIR", tmp.path().join(".omp"));
+    temp_env::async_with_vars([("PI_CONFIG_DIR", Some(tmp.path().join(".omp")))], async {
+        let relay = start_local_relay(0).expect("local relay starts");
+        let port = relay
+            .url
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            .expect("relay url carries a port");
+        let web_url = format!("http://127.0.0.1:{port}");
 
-    let relay = start_local_relay(0).expect("local relay starts");
-    let port = relay
-        .url
-        .rsplit(':')
-        .next()
-        .and_then(|p| p.parse::<u16>().ok())
-        .expect("relay url carries a port");
-    let web_url = format!("http://127.0.0.1:{port}");
+        let backend = Arc::new(InteropBackend::new());
+        let host = Arc::new(CollabHost::new(
+            Arc::clone(&backend) as Arc<dyn CollabHostBackend>,
+            CollabHostOptions {
+                instance_id: "interop-host".to_string(),
+                access: CollabAccess::Control,
+                ..Default::default()
+            },
+        ));
 
-    let backend = Arc::new(InteropBackend::new());
-    let host = Arc::new(CollabHost::new(
-        Arc::clone(&backend) as Arc<dyn CollabHostBackend>,
-        CollabHostOptions {
-            instance_id: "interop-host".to_string(),
-            access: CollabAccess::Control,
-            ..Default::default()
-        },
-    ));
-
-    // `CollabHost::start` owns the event loop until the room ends and its
-    // future is !Send — drive it on a dedicated thread like
-    // controller.start_host does, and signal stop through a channel.
-    let (stop_tx, mut stop_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let host_for_thread = Arc::clone(&host);
-    let relay_url = relay.url.clone();
-    let web_for_start = web_url.clone();
-    let host_thread = std::thread::Builder::new()
-        .name("collab-host".to_string())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("host runtime");
-            rt.block_on(async move {
-                tokio::select! {
-                    res = host_for_thread.start(&relay_url, &web_for_start) => {
-                        if let Err(err) = res {
-                            eprintln!("[interop] host ended with error: {err:#}");
+        // `CollabHost::start` owns the event loop until the room ends and its
+        // future is !Send — drive it on a dedicated thread like
+        // controller.start_host does, and signal stop through a channel.
+        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let host_for_thread = Arc::clone(&host);
+        let relay_url = relay.url.clone();
+        let web_for_start = web_url.clone();
+        let host_thread = std::thread::Builder::new()
+            .name("collab-host".to_string())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("host runtime");
+                rt.block_on(async move {
+                    tokio::select! {
+                        res = host_for_thread.start(&relay_url, &web_for_start) => {
+                            if let Err(err) = res {
+                                eprintln!("[interop] host ended with error: {err:#}");
+                            }
+                        }
+                        reason = stop_rx.recv() => {
+                            host_for_thread
+                                .stop(&reason.unwrap_or_else(|| "host stopped".to_string()))
+                                .await;
                         }
                     }
-                    reason = stop_rx.recv() => {
-                        host_for_thread
-                            .stop(&reason.unwrap_or_else(|| "host stopped".to_string()))
-                            .await;
-                    }
-                }
-            });
+                });
+            })
+            .expect("spawn collab-host thread");
+
+        // The room exists (and the links are live) once the relay connection is open.
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while !host.relay_connected() || host.full_link().is_none() {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
         })
-        .expect("spawn collab-host thread");
+        .await
+        .expect("rust host connects to the rust relay");
+        let full_link = host.full_link().expect("full link published");
+        let view_link = host.view_link().expect("view link published");
 
-    // The room exists (and the links are live) once the relay connection is open.
-    tokio::time::timeout(Duration::from_secs(15), async {
-        while !host.relay_connected() || host.full_link().is_none() {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        let broadcast_host = Arc::clone(&host);
+        let stop_for_hooks = stop_tx.clone();
+        let markers = drive_ts_guest(
+            &script,
+            &full_link,
+            &view_link,
+            GuestHooks {
+                on_full_live: Box::new(move || {
+                    assert_eq!(
+                        broadcast_host.participant_count(),
+                        1,
+                        "rust host registered the TS guest"
+                    );
+                    // Mirror a live entry: host→guest broadcast through the relay.
+                    let entry_json =
+                        serde_json::to_string(&sample_entry(3, "live broadcast entry"))
+                            .expect("entry json");
+                    broadcast_host.broadcast_entry(&entry_json);
+                }),
+                on_view_notice: Box::new(move || {
+                    let _ = stop_for_hooks.send(BYE_REASON.to_string());
+                }),
+            },
+        )
+        .await;
+
+        // ── assertions: every phase of the round trip happened ────────────────
+        assert!(
+            markers.full_live_snapshot,
+            "TS guest reached live on the rust host snapshot"
+        );
+        assert!(markers.prompt_sent, "TS guest sent the prompt");
+        assert!(
+            markers.transcript_reply,
+            "TS guest got the rust host's transcript reply"
+        );
+        assert!(
+            markers.live_entry_broadcast,
+            "live entry broadcast reached the TS guest"
+        );
+        assert!(
+            markers.view_live_readonly,
+            "view-link guest reached live read-only"
+        );
+        assert!(
+            markers.view_prompt_rejected,
+            "read-only prompt was rejected by the rust host"
+        );
+        assert!(
+            markers.full_ended && markers.view_ended,
+            "both guests observed the room close"
+        );
+
+        // The rust host received exactly the guest's prompt as a user-turn injection.
+        let prompts = backend.prompts.lock().clone();
+        assert_eq!(
+            prompts,
+            vec![(PROMPT_TEXT.to_string(), Vec::<Value>::new())],
+            "rust host backend must record exactly the TS guest's prompt"
+        );
+        assert_eq!(
+            backend.aborts.load(Ordering::SeqCst),
+            0,
+            "no aborts were sent"
+        );
+        // `stop()` sends the goodbye first and finishes teardown afterwards (the guests
+        // observe the room close before the host reports `stopped`), so wait for the
+        // host thread — which returns once `stop()` resolves — before asserting on it.
+        host_thread.join().expect("collab-host thread joins");
+        assert!(host.stopped(), "rust host is stopped after the room closed");
+
+        relay.stop();
+        println!("[interop] PASS: TS collab-web guest interops with the rust CollabHost");
     })
-    .await
-    .expect("rust host connects to the rust relay");
-    let full_link = host.full_link().expect("full link published");
-    let view_link = host.view_link().expect("view link published");
-
-    let broadcast_host = Arc::clone(&host);
-    let stop_for_hooks = stop_tx.clone();
-    let markers = drive_ts_guest(
-        &script,
-        &full_link,
-        &view_link,
-        GuestHooks {
-            on_full_live: Box::new(move || {
-                assert_eq!(
-                    broadcast_host.participant_count(),
-                    1,
-                    "rust host registered the TS guest"
-                );
-                // Mirror a live entry: host→guest broadcast through the relay.
-                let entry_json = serde_json::to_string(&sample_entry(3, "live broadcast entry"))
-                    .expect("entry json");
-                broadcast_host.broadcast_entry(&entry_json);
-            }),
-            on_view_notice: Box::new(move || {
-                let _ = stop_for_hooks.send(BYE_REASON.to_string());
-            }),
-        },
-    )
     .await;
-
-    // ── assertions: every phase of the round trip happened ────────────────
-    assert!(
-        markers.full_live_snapshot,
-        "TS guest reached live on the rust host snapshot"
-    );
-    assert!(markers.prompt_sent, "TS guest sent the prompt");
-    assert!(
-        markers.transcript_reply,
-        "TS guest got the rust host's transcript reply"
-    );
-    assert!(
-        markers.live_entry_broadcast,
-        "live entry broadcast reached the TS guest"
-    );
-    assert!(
-        markers.view_live_readonly,
-        "view-link guest reached live read-only"
-    );
-    assert!(
-        markers.view_prompt_rejected,
-        "read-only prompt was rejected by the rust host"
-    );
-    assert!(
-        markers.full_ended && markers.view_ended,
-        "both guests observed the room close"
-    );
-
-    // The rust host received exactly the guest's prompt as a user-turn injection.
-    let prompts = backend.prompts.lock().clone();
-    assert_eq!(
-        prompts,
-        vec![(PROMPT_TEXT.to_string(), Vec::<Value>::new())],
-        "rust host backend must record exactly the TS guest's prompt"
-    );
-    assert_eq!(
-        backend.aborts.load(Ordering::SeqCst),
-        0,
-        "no aborts were sent"
-    );
-    // `stop()` sends the goodbye first and finishes teardown afterwards (the guests
-    // observe the room close before the host reports `stopped`), so wait for the
-    // host thread — which returns once `stop()` resolves — before asserting on it.
-    host_thread.join().expect("collab-host thread joins");
-    assert!(host.stopped(), "rust host is stopped after the room closed");
-
-    relay.stop();
-    println!("[interop] PASS: TS collab-web guest interops with the rust CollabHost");
 }
 
 // ═══════════════ Test B: wire-level rust host vs the same TS guest ═══════════════

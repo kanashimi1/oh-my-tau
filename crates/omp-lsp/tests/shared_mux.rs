@@ -267,9 +267,11 @@ fn kill_stale_mux_processes() {
 async fn shared_mux_sessions_isolation_and_exit() {
     kill_stale_mux_processes();
     // Deterministic short timers for the daemon spawned by this test.
-    std::env::set_var("OMP_LSP_MUX_BIN", mux_bin());
-    std::env::set_var("OMP_LSP_MUX_SERVER_LINGER_MS", "400");
-    std::env::set_var("OMP_LSP_MUX_IDLE_MS", "600");
+    temp_env::async_with_vars([
+        ("OMP_LSP_MUX_BIN", Some(mux_bin().into_os_string())),
+        ("OMP_LSP_MUX_SERVER_LINGER_MS", Some(std::ffi::OsString::from("400"))),
+        ("OMP_LSP_MUX_IDLE_MS", Some(std::ffi::OsString::from("600"))),
+    ], async {
     let server_bin = env!("CARGO_BIN_EXE_fake_lsp");
     let cwd = unique_temp_dir("project");
     let file_a = cwd.join("a.fake");
@@ -490,9 +492,9 @@ async fn shared_mux_sessions_isolation_and_exit() {
     }
     println!("MUX_MEASUREMENT\n{report}MUX_MEASUREMENT_END");
     std::fs::write(cwd.join("mux-measurement.txt"), &report).ok();
-    std::env::remove_var("OMP_LSP_MUX_BIN");
-    std::env::remove_var("OMP_LSP_MUX_SERVER_LINGER_MS");
-    std::env::remove_var("OMP_LSP_MUX_IDLE_MS");
+
+
+}).await;
 }
 
 fn invalidate_and_configure(cwd: &Path, server_bin: &str) {
@@ -551,9 +553,11 @@ async fn shared_mux_rust_analyzer_measurement() {
         eprintln!("rust-analyzer not installed; skipping");
         return;
     }
-    std::env::set_var("OMP_LSP_MUX_BIN", mux_bin());
-    std::env::set_var("OMP_LSP_MUX_SERVER_LINGER_MS", "1000");
-    std::env::set_var("OMP_LSP_MUX_IDLE_MS", "1500");
+    temp_env::async_with_vars([
+        ("OMP_LSP_MUX_BIN", Some(mux_bin().into_os_string())),
+        ("OMP_LSP_MUX_SERVER_LINGER_MS", Some(std::ffi::OsString::from("1000"))),
+        ("OMP_LSP_MUX_IDLE_MS", Some(std::ffi::OsString::from("1500"))),
+    ], async {
 
     // A tiny cargo project for rust-analyzer to load.
     let cwd = unique_temp_dir("ra-crate");
@@ -731,7 +735,5 @@ async fn shared_mux_rust_analyzer_measurement() {
     );
     let _ = child.kill();
     let _ = child.wait();
-    std::env::remove_var("OMP_LSP_MUX_BIN");
-    std::env::remove_var("OMP_LSP_MUX_SERVER_LINGER_MS");
-    std::env::remove_var("OMP_LSP_MUX_IDLE_MS");
+    }).await;
 }

@@ -37,6 +37,7 @@ parking_lot = "0.12"
 nix = { version = "0.29", default-features = false, features = ["user", "signal"] }
 
 [dev-dependencies]
+temp-env = { version = "0.3", features = ["async_closure"] }
 tempfile = "3"
 
 [lints]

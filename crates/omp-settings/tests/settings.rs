@@ -124,18 +124,22 @@ fn env_overrides_every_layer() {
     let dir = tempdir("env");
     // skillshare/client.ts documents OMP_AUTH_BROKER_TOKEN etc.; use a string env
     // setting and a boolean one with parseFlag semantics.
-    std::env::set_var("OMP_AUTH_BROKER_URL", "https://broker.example");
-    std::env::set_var("PI_AUTO_QA", "yes");
-    let settings = Settings::load_from(None, &dir);
-    assert_eq!(
-        settings.get_string("auth.broker.url").as_deref(),
-        Some("https://broker.example")
+    temp_env::with_vars(
+        [
+            ("OMP_AUTH_BROKER_URL", Some("https://broker.example")),
+            ("PI_AUTO_QA", Some("yes")),
+        ],
+        || {
+            let settings = Settings::load_from(None, &dir);
+            assert_eq!(
+                settings.get_string("auth.broker.url").as_deref(),
+                Some("https://broker.example")
+            );
+            assert_eq!(settings.get_bool("dev.autoqa"), Some(true));
+            let _ = Provenance::Default; // provenance API smoke
+            assert!(settings.global_path().is_none());
+        },
     );
-    assert_eq!(settings.get_bool("dev.autoqa"), Some(true));
-    std::env::remove_var("OMP_AUTH_BROKER_URL");
-    std::env::remove_var("PI_AUTO_QA");
-    let _ = Provenance::Default; // provenance API smoke
-    assert!(settings.global_path().is_none());
 }
 
 #[test]

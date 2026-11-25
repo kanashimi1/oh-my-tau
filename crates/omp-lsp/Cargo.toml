@@ -15,6 +15,10 @@ serde_yaml = "0.9.34"
 thiserror = "2"
 sha2 = "0.10"
 parking_lot = "0.12"
+temp-env = { version = "0.3", features = ["async_closure"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+temp-env = { version = "0.3", features = ["async_closure"] }

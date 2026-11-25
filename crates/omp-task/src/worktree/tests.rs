@@ -106,11 +106,11 @@ fn env_overrides_the_worktree_dir() {
     let _g = lock();
     let repo = Repo::new();
     let custom = repo.root.parent().unwrap().join("custom-wt");
-    std::env::set_var(WORKTREE_DIR_ENV, &custom);
-    let wt = Worktree::create(&repo.root, "beta").unwrap();
-    std::env::remove_var(WORKTREE_DIR_ENV);
-    assert_eq!(wt.path, custom.join("beta"));
-    wt.remove().unwrap();
+    temp_env::with_var(WORKTREE_DIR_ENV, Some(&custom), || {
+        let wt = Worktree::create(&repo.root, "beta").unwrap();
+        assert_eq!(wt.path, custom.join("beta"));
+        wt.remove().unwrap();
+    });
 }
 
 #[test]
