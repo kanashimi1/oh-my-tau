@@ -4,7 +4,7 @@
 //! returned verbatim as a bounded tool error. Full process output is archived;
 //! only the structured diagnostic frontier enters the model's context.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -116,6 +116,40 @@ impl Finding {
         matches!(self.code.as_str(), "unused-import" | "unused_imports")
     }
 
+    /// The blocking root behind this finding, when its documented message
+    /// carries one. `macro-call-failed` quotes the proc-macro failure
+    /// (`… the proc macro cannot run: `name`: <tool> …; build it with
+    /// scripts/src/bin/proc_macro_modules.rs`); toolchain/source refusals
+    /// name the toolchain, shelf or pinned source explicitly. Anything else
+    /// returns None and stays an unclassified finding.
+    fn cause(&self) -> Option<Cause> {
+        if let Some(rest) = self.message.split("the proc macro cannot run:").nth(1) {
+            let tool = rest
+                .split(": ")
+                .nth(1)
+                .and_then(|tail| tail.split_whitespace().next())
+                .map(|word| word.trim_matches('`').to_owned())
+                .unwrap_or_else(|| String::from("proc-macro"));
+            return Some(Cause::ProcMacroModule { tool });
+        }
+        if self.message.contains("cannot run") && self.message.contains("build script") {
+            return Some(Cause::ProcMacroModule {
+                tool: String::from("build-script"),
+            });
+        }
+        let lower = self.message.to_ascii_lowercase();
+        let names_toolchain = ["toolchain", "shelf", "pinned source", "source pin"]
+            .iter()
+            .any(|word| lower.contains(word));
+        let reads_as_refusal = ["refus", "missing", "not available", "no such", "absent"]
+            .iter()
+            .any(|word| lower.contains(word));
+        if names_toolchain && reads_as_refusal {
+            return Some(Cause::ToolchainOrSourceRefused);
+        }
+        None
+    }
+
     fn compact(&self) -> String {
         let mut out = format!("{} {}[{}] {}", self.id, self.severity, self.code, self.path);
         if let (Some(line), Some(col)) = (self.line, self.col) {
@@ -134,6 +168,147 @@ impl Finding {
     }
 }
 
+/// A `not checked` note: a dependent item Blaze could not verify because a
+/// root failure (missing crate scope, failed CrateScope, …) blocks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Note {
+    pub text: String,
+}
+
+impl Note {
+    fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            text: value.get("note")?.as_str()?.to_owned(),
+        })
+    }
+
+    /// The blocking root this note depends on, strictly from the documented
+    /// note wording (`… not checked because its crate has no names record …`
+    /// / `… its member's check scope holds `crate`, which has no names
+    /// record …`). Everything else stays residual.
+    fn cause(&self) -> Option<Cause> {
+        let rest = self.text.split("not checked because ").nth(1)?;
+        if let Some(inner) = rest.split("holds `").nth(1) {
+            if let Some(crate_name) = inner.split("`, which has no names record").next() {
+                return Some(Cause::CrateScope {
+                    crate_name: crate_name.to_owned(),
+                });
+            }
+        }
+        rest.contains("its crate has no names record")
+            .then(|| Cause::CrateScope {
+                crate_name: String::from("<self>"),
+            })
+    }
+}
+
+/// A root/blocking cause. Strictly derived from documented finding/note
+/// wording; anything else stays residual instead of being mapped onto a
+/// hypothetical Blaze-internal graph (there is no public DBSP graph API).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Cause {
+    /// A proc-macro or build-script module is absent from the store/cache
+    /// (`… no compiled module in the store or the cache …; build it with
+    /// scripts/src/bin/proc_macro_modules.rs`).
+    ProcMacroModule { tool: String },
+    /// A crate's check scope failed, so every item depending on it is
+    /// `not checked` (e.g. `icu_properties_data`, `rustversion`).
+    CrateScope { crate_name: String },
+    /// The toolchain or pinned source refused the command (toolchain/shelf
+    /// absence, source pin mismatch, explicit refusal wording).
+    ToolchainOrSourceRefused,
+}
+
+impl Cause {
+    fn rank(&self) -> u8 {
+        match self {
+            // A missing proc-macro/build-script module blocks whole crates and
+            // therefore every downstream check: most blocking first.
+            Cause::ProcMacroModule { .. } => 0,
+            Cause::CrateScope { .. } => 1,
+            Cause::ToolchainOrSourceRefused => 2,
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Cause::ProcMacroModule { tool } => {
+                format!("proc-macro/build-script module missing ({tool})")
+            }
+            Cause::CrateScope { crate_name } => format!("crate scope failed ({crate_name})"),
+            Cause::ToolchainOrSourceRefused => {
+                String::from("toolchain/source refused the command")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RootCause {
+    pub cause: Cause,
+    pub findings: usize,
+    pub notes: usize,
+}
+
+impl RootCause {
+    fn headline(&self) -> String {
+        let counted = match (self.findings, self.notes) {
+            (f, 0) => format!("{f} finding(s)"),
+            (0, n) => format!("{n} `not checked` item(s)"),
+            (f, n) => format!("{f} finding(s), {n} `not checked` item(s)"),
+        };
+        let mut out = format!("root: {} — {counted}", self.cause.label());
+        if matches!(self.cause, Cause::ProcMacroModule { .. }) {
+            let _ = write!(
+                out,
+                "
+  fix: build the missing modules with scripts/src/bin/proc_macro_modules.rs (D52)"
+            );
+        }
+        out
+    }
+}
+
+/// Root causes of one check, ranked most-blocking first and carrying their
+/// dependent `not checked` note counts.
+#[derive(Debug, Default)]
+pub(crate) struct RootCauses {
+    roots: BTreeMap<Cause, RootCause>,
+    pub residual_notes: usize,
+}
+
+impl RootCauses {
+    fn entry(&mut self, cause: &Cause) -> &mut RootCause {
+        self.roots.entry(cause.clone()).or_insert_with(|| RootCause {
+            cause: cause.clone(),
+            findings: 0,
+            notes: 0,
+        })
+    }
+
+    fn record_finding(&mut self, cause: &Cause) {
+        self.entry(cause).findings += 1;
+    }
+
+    fn record_note(&mut self, cause: &Cause) {
+        self.entry(cause).notes += 1;
+    }
+
+    fn record_residual_note(&mut self) {
+        self.residual_notes += 1;
+    }
+
+    fn any(&self) -> bool {
+        !self.roots.is_empty()
+    }
+
+    fn ordered(&self) -> Vec<&RootCause> {
+        let mut v: Vec<&RootCause> = self.roots.values().collect();
+        v.sort_by_key(|r| (r.cause.rank(), std::cmp::Reverse(r.findings + r.notes)));
+        v
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Check {
     pub success: bool,
@@ -141,6 +316,10 @@ pub(crate) struct Check {
     pub errors: usize,
     pub warnings: usize,
     pub findings: Vec<Finding>,
+    /// `not checked` notes: dependent items blocked by a root failure.
+    pub notes: Vec<Note>,
+    /// Non-JSON process output lines (toolchain wrappers, `time -v`, …).
+    pub evidence: Vec<String>,
     pub process_error: Option<String>,
     pub log: String,
 }
@@ -154,18 +333,25 @@ impl Check {
         self.unused_imports().count()
     }
 
+    /// Causal compaction: the root/blocking failures survive any budget and
+    /// the dependent `not checked` noise collapses beneath them. Parsed
+    /// strictly from the documented JSON finding/note fields; residual or
+    /// unclassified diagnostics are reported as such — never mapped onto a
+    /// pretend Blaze-internal graph.
     pub fn compact(&self, max_tokens: usize) -> String {
+        let budget = max_tokens.saturating_mul(4);
         let mut out = format!(
-            "blaze check: {} (exit {:?}); {} error(s), {} warning(s), {} fix(es)\n",
+            "blaze check: {} (exit {:?}); {} error(s), {} warning(s), {} fix(es), {} not checked\n",
             if self.success { "ok" } else { "failed" },
             self.status,
             self.errors,
             self.warnings,
-            self.findings.iter().filter(|it| it.fix.is_some()).count()
+            self.findings.iter().filter(|it| it.fix.is_some()).count(),
+            self.notes.len()
         );
-        if self.findings.is_empty() {
+        if self.findings.is_empty() && self.notes.is_empty() {
             if let Some(error) = &self.process_error {
-                let remaining = max_tokens.saturating_mul(4).saturating_sub(out.len());
+                let remaining = budget.saturating_sub(out.len());
                 if error.len() <= remaining {
                     out.push_str(error);
                     out.push('\n');
@@ -178,13 +364,14 @@ impl Check {
                     out.push_str("\n… error truncated; see the archived report\n");
                 }
             }
+            return out;
         }
-        // Errors are the actionable frontier. Stable dedup removes repeated
-        // configurations without pretending to have Blaze's internal DBSP graph.
+
+        let mut roots = RootCauses::default();
         let mut seen = BTreeSet::new();
         let mut ordered: Vec<&Finding> = self.findings.iter().collect();
         ordered.sort_by_key(|it| (it.severity != "error", &it.path, it.line, it.col, &it.id));
-        let mut omitted = 0;
+        let mut unclassified: Vec<&Finding> = Vec::new();
         for finding in ordered {
             let key = (
                 &finding.code,
@@ -196,18 +383,89 @@ impl Check {
             if !seen.insert(key) {
                 continue;
             }
-            let line = finding.compact();
-            if out.len() + line.len() + 1 > max_tokens.saturating_mul(4) {
+            match finding.cause() {
+                Some(cause) => roots.record_finding(&cause),
+                None => unclassified.push(finding),
+            }
+        }
+        for note in &self.notes {
+            match note.cause() {
+                Some(cause) => roots.record_note(&cause),
+                None => roots.record_residual_note(),
+            }
+        }
+        for line in &self.evidence {
+            let lower = line.to_ascii_lowercase();
+            let names_toolchain = ["toolchain", "shelf", "pinned source", "source pin"]
+                .iter()
+                .any(|word| lower.contains(word));
+            let reads_as_refusal = ["refus", "missing", "not available", "no such", "absent"]
+                .iter()
+                .any(|word| lower.contains(word));
+            if names_toolchain && reads_as_refusal {
+                roots.record_finding(&Cause::ToolchainOrSourceRefused);
+            }
+        }
+
+        let mut omitted = 0usize;
+        let mut rendered = 0usize;
+        // 1. Root causes, most blocking first.
+        for root in roots.ordered() {
+            let line = root.headline();
+            if out.len() + line.len() + 1 > budget {
                 omitted += 1;
                 continue;
             }
-            out.push_str(&line);
-            out.push('\n');
+            let _ = writeln!(out, "{line}");
+            rendered += 1;
+            if root.notes > 0 {
+                let dep = format!(
+                    "  {} dependent `not checked` item(s) collapse under this root\n",
+                    root.notes
+                );
+                if out.len() + dep.len() <= budget {
+                    out.push_str(&dep);
+                } else {
+                    omitted += 1;
+                }
+            }
+        }
+        // 2. Unclassified findings stay visible and honest. When roots exist
+        //    they cap at four exemplars; without roots every finding is the
+        //    frontier and is listed until the budget runs out.
+        let cap = if roots.any() { 4 } else { usize::MAX };
+        let mut unlisted = 0usize;
+        for (index, finding) in unclassified.iter().enumerate() {
+            if index >= cap {
+                unlisted += 1;
+                continue;
+            }
+            let line = format!("  {}", finding.compact());
+            if out.len() + line.len() + 1 > budget {
+                omitted += 1;
+                continue;
+            }
+            let _ = writeln!(out, "{line}");
+            rendered += 1;
+        }
+        let _ = rendered;
+        if roots.any() && unlisted > 0 {
+            let _ = writeln!(
+                out,
+                "… {unlisted} unclassified finding(s) omitted by max_tokens; see the archived report"
+            );
+        }
+        if roots.residual_notes > 0 {
+            let _ = writeln!(
+                out,
+                "… {} `not checked` note(s) did not match a known root; see the archived report",
+                roots.residual_notes
+            );
         }
         if omitted > 0 {
             let _ = writeln!(
                 out,
-                "… {omitted} diagnostic(s) omitted by max_tokens; see the archived report"
+                "… {omitted} line(s) omitted by max_tokens; see the archived report"
             );
         }
         out
@@ -227,14 +485,23 @@ pub(crate) fn parse_check(output: &std::process::Output) -> Check {
     let mut closing = None;
     for line in stdout.lines().chain(stderr.lines()) {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
+            if !line.trim().is_empty() {
+                // Non-JSON process output (toolchain wrappers, `time -v`, …):
+                // kept as raw evidence and classified conservatively.
+                check.evidence.push(line.trim().to_owned());
+            }
             continue;
         };
         if value.get("id").is_some() {
             if let Some(finding) = Finding::from_json(&value) {
                 check.findings.push(finding);
             }
+        } else if let Some(note) = Note::from_json(&value) {
+            check.notes.push(note);
         } else if value.get("errors").and_then(Value::as_u64).is_some() {
             closing = Some(value);
+        } else if !line.trim().is_empty() {
+            check.evidence.push(line.trim().to_owned());
         }
     }
     if let Some(summary) = closing {
@@ -319,7 +586,8 @@ fn result(
     output: &std::process::Output,
     text: String,
     max_tokens: usize,
-) -> AgentToolResult {
+    meter: &super::blaze_tokens::TokenMeter,
+) -> Result<AgentToolResult> {
     let mut details = json!({
         "workflow": "blaze",
         "action": action,
@@ -328,17 +596,18 @@ fn result(
         "success": output.status.success(),
         "maxTokens": max_tokens,
     });
+    let raw = compact_output(action, output, usize::MAX / 4);
+    meter.add_counts(&mut details, &raw, &text)?;
     let failed = !output.status.success();
     if failed {
-        let log = compact_output(action, output, usize::MAX / 4);
-        if let Some(url) = super::util::save_artifact(&log) {
+        if let Some(url) = super::util::save_artifact(&raw) {
             details["log"] = json!(url);
         }
     }
     let mut result = AgentToolResult::text(text);
     result.details = details;
     result.is_error = failed.then_some(true);
-    result
+    Ok(result)
 }
 
 fn resolve_project(env: &Env, raw: &str) -> Result<PathBuf> {
@@ -379,6 +648,7 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
         .and_then(Value::as_u64)
         .unwrap_or(2000)
         .clamp(128, 16000) as usize;
+    let meter = super::blaze_tokens::TokenMeter::from_env()?;
     let call_id = super::macro_step::next_call_id("blaze");
     let command_text = match action {
         "why" => format!(
@@ -400,13 +670,16 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
     match action {
         "check" => {
             let checked = check(&project, timeout).await?;
-            let mut result = AgentToolResult::text(checked.compact(max_tokens));
-            result.details = json!({
+            let text = checked.compact(max_tokens);
+            let mut details = json!({
                 "workflow": "blaze", "action": "check", "status": checked.status,
                 "success": checked.success, "errors": checked.errors,
                 "warnings": checked.warnings, "findings": checked.findings.len(),
                 "maxTokens": max_tokens,
             });
+            meter.add_counts(&mut details, &checked.log, &text)?;
+            let mut result = AgentToolResult::text(text);
+            result.details = details;
             result.is_error = (!checked.success).then_some(true);
             if !checked.success {
                 if let Some(url) = super::util::save_artifact(&checked.log) {
@@ -419,8 +692,11 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
             if action == "verify" {
                 let checked = check(&project, timeout).await?;
                 if !checked.success {
-                    let mut result = AgentToolResult::text(checked.compact(max_tokens));
-                    result.details = json!({"workflow":"blaze","action":"verify","stage":"check","success":false,"status":checked.status});
+                    let text = checked.compact(max_tokens);
+                    let mut details = json!({"workflow":"blaze","action":"verify","stage":"check","success":false,"status":checked.status});
+                    meter.add_counts(&mut details, &checked.log, &text)?;
+                    let mut result = AgentToolResult::text(text);
+                    result.details = details;
                     result.is_error = Some(true);
                     if let Some(url) = super::util::save_artifact(&checked.log) {
                         result.details["log"] = json!(url);
@@ -431,7 +707,7 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
             let command = args_with_path("test", &project, &[]);
             let output = run(&project, &command, timeout).await?;
             let text = compact_output(action, &output, max_tokens);
-            Ok(result(action, &project, &output, text, max_tokens))
+            Ok(result(action, &project, &output, text, max_tokens, &meter)?)
         }
         "why" => {
             let item = args
@@ -441,7 +717,7 @@ pub async fn blaze(env: Arc<Env>, args: Value, signal: AbortSignal) -> Result<Ag
                 .ok_or_else(|| anyhow!("blaze why requires item"))?;
             let output = run(&project, &["why".to_owned(), item.to_owned()], timeout).await?;
             let text = compact_output("why", &output, max_tokens);
-            Ok(result("why", &project, &output, text, max_tokens))
+            Ok(result("why", &project, &output, text, max_tokens, &meter)?)
         }
         _ => unreachable!(),
     }
@@ -512,6 +788,134 @@ mod tests {
             panic!("Blaze returned non-text content");
         };
         assert!(text.text.len() < 700, "unbounded process output: {}", text.text);
+    }
+
+
+    /// Cold-log regression (runs/omt-blaze-v2/omt-blaze-cold.log): the real
+    /// omt check produced 1 root-blocking proc-macro failure family, missing
+    /// crate scopes and a mountain of dependent `not checked` notes. Under a
+    /// small budget the roots must survive verbatim and the noise must
+    /// collapse under them.
+    #[test]
+    #[cfg(unix)]
+    fn causal_compaction_roots_survive_small_budget_and_noise_collapses() {
+        // Mirrors real lines from runs/omt-blaze-v2/omt-blaze-cold.log (and
+        // runs/omt-blaze-v2/root-cause/cold-slice.jsonl).
+        let tokio_macro = r#"{"id":"r3fhe","severity":"error","code":"macro-call-failed","path":"crates/omp-auth-broker/src/main.rs","line":618,"col":1,"message":"the call of `crate :: select_priv_clean_pattern` failed: the proc macro cannot run: `select_priv_clean_pattern`: tokio-macros 2.7.2: no compiled module in the store or the cache (module key 41c9de28dd66e5d18772b43c8a182702544acde9157d4ac87da4eb7122783813); build it with scripts/src/bin/proc_macro_modules.rs (D52)"}"#;
+        let unresolved = r#"{"id":"g7hmx","severity":"error","code":"unresolved","path":"crates/omp-cli/src/compact.rs","line":354,"col":7,"message":"no `serde` in this scope"}"#;
+        let note_icu = r#"{"note":"`crates/omp-cli/src/approval.rs`: body `mode_max_tier`: not checked because its member's check scope holds `icu_properties_data`, which has no names record this command (its `CrateScope` task failed: that failure is reported at it)"}"#;
+        let note_rv = r#"{"note":"`crates/omp-tui/src/tools/task.rs`: body `AgentTreeRow`: not checked because its member's check scope holds `rustversion`, which has no names record this command (its `CrateScope` task failed: that failure is reported at it)"}"#;
+        let note_self = r#"{"note":"`crates/omp-providers/src/command.rs`: body `FAILURE_RETRY`: not checked because its crate has no names record this command: its `CrateScope` task failed, and that failure is reported at it"}"#;
+        let summary = r#"{"errors":1257,"warnings":0,"fixes":0,"command":"blaze check","not_checked":["types","borrows"]}"#;
+
+        let mut stdout = String::new();
+        // 1 tokio-macros root finding + 1 unresolved (unclassified), then the
+        // dependent noise: 40 icu, 12 rustversion, 3 self-crate notes.
+        stdout.push_str(tokio_macro);
+        stdout.push('\n');
+        stdout.push_str(unresolved);
+        stdout.push('\n');
+        for _ in 0..40 {
+            stdout.push_str(note_icu);
+            stdout.push('\n');
+        }
+        for _ in 0..12 {
+            stdout.push_str(note_rv);
+            stdout.push('\n');
+        }
+        for _ in 0..3 {
+            stdout.push_str(note_self);
+            stdout.push('\n');
+        }
+        stdout.push_str(summary);
+        stdout.push('\n');
+
+        let output = std::process::Output {
+            status: status(1),
+            stdout: stdout.into_bytes(),
+            stderr: vec![],
+        };
+        let parsed = parse_check(&output);
+        assert_eq!(parsed.findings.len(), 2);
+        assert_eq!(parsed.notes.len(), 55);
+
+        let compact = parsed.compact(700);
+        // The root survives verbatim even at a tiny budget.
+        assert!(
+            compact.contains("root: proc-macro/build-script module missing (tokio-macros)"),
+            "missing proc-macro root in: {compact}"
+        );
+        assert!(compact.contains("proc_macro_modules.rs"));
+        // Dependent noise collapses into counts beneath its root.
+        assert!(compact.contains("40 dependent `not checked` item(s) collapse under this root"));
+        assert!(compact.contains("crate scope failed (icu_properties_data)"));
+        assert!(compact.contains("crate scope failed (rustversion)"));
+        assert!(compact.contains("crate scope failed (<self>)"));
+        // The dependent notes themselves never flood the output.
+        assert!(compact.matches("not checked because").count() == 0);
+        // The unclassified finding is visible exactly once as an exemplar.
+        assert_eq!(compact.matches("no `serde` in this scope").count(), 1);
+        let head = compact.lines().next().unwrap();
+        assert!(head.contains("not checked"), "{head}");
+    }
+
+    /// A missing build-script module and an explicit toolchain/source refusal
+    /// classify into their own honest buckets; residual notes stay counted.
+    #[test]
+    #[cfg(unix)]
+    fn causal_buckets_build_script_toolchain_and_residual() {
+        let build_script = r#"{"id":"bs001","severity":"error","code":"macro-call-failed","path":"build.rs","line":1,"col":1,"message":"build script cannot run: the build script module is missing from the store"}"#;
+        let tool_refused = r#"{"id":"tc001","severity":"error","code":"toolchain","path":"<workspace>","line":null,"col":null,"message":"the pinned source for this toolchain is missing; command refused"}"#;
+        let odd_note = r#"{"note":"`src/x.rs`: body `y`: not checked because the config disables this lint"}"#;
+        let stdout = format!(
+            "{build_script}\n{tool_refused}\n{odd_note}\n{{\"errors\":2,\"warnings\":0}}\n"
+        );
+        let output = std::process::Output {
+            status: status(1),
+            stdout: stdout.clone().into_bytes(),
+            stderr: vec![],
+        };
+        let parsed = parse_check(&output);
+        assert_eq!(parsed.notes.len(), 1);
+        let compact = parsed.compact(2000);
+        assert!(compact.contains("proc-macro/build-script module missing (build-script)"));
+        assert!(compact.contains("toolchain/source refused the command"));
+        assert!(compact.contains("did not match a known root"));
+        // Evidence line (non-JSON) with explicit toolchain refusal wording maps to its root.
+        let with_stderr = std::process::Output {
+            status: status(1),
+            stdout: stdout.into_bytes(),
+            stderr: b"error: toolchain shelf is missing; command refused\n".to_vec(),
+        };
+        let compact2 = parse_check(&with_stderr).compact(2000);
+        assert!(compact2.contains("toolchain/source refused the command"));
+    }
+
+    /// The full-output artifact (checked.log) still carries every raw line:
+    /// compaction may shrink the model view but never the archived report.
+    #[test]
+    #[cfg(unix)]
+    fn artifact_log_keeps_raw_lines_while_compact_shrinks() {
+        let mut stdout = String::from(
+            r#"{"id":"r3fhe","severity":"error","code":"macro-call-failed","path":"a.rs","line":1,"col":1,"message":"the proc macro cannot run: `m`: tokio-macros 2.7.2: no compiled module"}"#,
+        );
+        stdout.push('\n');
+        for i in 0..200 {
+            let _ = writeln!(
+                stdout,
+                r#"{{"note":"`src/f{i}.rs`: body `b{i}`: not checked because its member's check scope holds `icu_properties_data`, which has no names record this command"}}"#
+            );
+        }
+        let output = std::process::Output {
+            status: status(1),
+            stdout: stdout.into_bytes(),
+            stderr: vec![],
+        };
+        let parsed = parse_check(&output);
+        assert_eq!(parsed.notes.len(), 200);
+        let compact = parsed.compact(256);
+        assert!(compact.len() < 2000, "compact leaked raw noise: {}", compact.len());
+        assert_eq!(parsed.log.matches("icu_properties_data").count(), 200);
     }
 
     #[test]
