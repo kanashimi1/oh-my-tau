@@ -1,8 +1,9 @@
 //! `judge()` op: question parsing and single judgments.
 
 use super::{
-    json, AbortSignal, AgentDir, JudgeRequest, JudgmentCache, Map, OpCtx, Value, REQUEST_SLOTS,
+    json, AbortSignal, Map, OpCtx, Value, REQUEST_SLOTS,
 };
+use omp_providers::{AgentDir, JudgeRequest, JudgmentCache};
 
 /// TS `parseState`: a non-empty string or any JSON value (object/array).
 pub(super) fn parse_state(value: &Value) -> Result<Value, String> {

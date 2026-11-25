@@ -1,7 +1,7 @@
 //! Grammars linked into the addon; the rest load as WebAssembly (see
 //! [`super::grammar`]).
 
-use ast_grep_core::tree_sitter::TSLanguage;
+use tree_sitter::Language as TSLanguage;
 
 pub fn language_bash() -> TSLanguage {
     tree_sitter_bash::LANGUAGE.into()

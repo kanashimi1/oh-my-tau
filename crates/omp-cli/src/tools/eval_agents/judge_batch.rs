@@ -1,9 +1,10 @@
 //! `judge_batch()` op: batch parsing, fan-out workers and per-item retries.
 
 use super::judge::{judgment_cache, judgment_result_value, parse_questions, parse_state};
+use omp_providers::{AgentDir, JudgeRequest};
 use super::{
-    json, mint_id, AbortSignal, AgentDir, Arc, AtomicU64, CancellationToken, Duration, Instant,
-    JudgeRequest, Map, Mutex, Notify, OpCtx, Ordering, Value, EVAL_HANDLE_CONCURRENCY,
+    json, mint_id, AbortSignal, Arc, AtomicU64, CancellationToken, Duration, Instant,
+    Map, Mutex, Notify, OpCtx, Ordering, Value, EVAL_HANDLE_CONCURRENCY,
     JUDGE_BATCHES, REQUEST_SLOTS,
 };
 

@@ -1,11 +1,12 @@
 //! `completion()` handle ops: candidate resolution and one-shot executions.
 
 use super::{
-    json, mint_id, provider_target, AbortSignal, AgentDir, AssistantContentBlock, Context, Handle,
-    HandleStatus, Map, Message, Model, OpCtx, ResolvedModel, SimpleStreamOptions, SimpleToolChoice,
+    json, mint_id, provider_target, AbortSignal, AssistantContentBlock, Context, Handle,
+    HandleStatus, Map, Message, Model, OpCtx, SimpleStreamOptions, SimpleToolChoice,
     StopReason, Tool, UserContent, UserMessage, Value, COMPLETION_HANDLES, REQUEST_SLOTS,
     STRUCTURED_TOOL_NAME,
 };
+use omp_providers::{AgentDir, ResolvedModel};
 use tokio_util::sync::CancellationToken;
 
 /// One candidate in the tier's fallback chain (TS `CompletionCandidate`).

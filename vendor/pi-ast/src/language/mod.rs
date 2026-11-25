@@ -14,9 +14,10 @@ use ast_grep_core::{
     AstGrep, Doc, Language, Node,
     matcher::{KindMatcher, Pattern, PatternBuilder, PatternError},
     meta_var::MetaVariable,
-    tree_sitter::{LanguageExt, StrDoc, TSLanguage, TSRange},
+    tree_sitter::{LanguageExt, StrDoc},
 };
 use phf::phf_map;
+use tree_sitter::{Language as TSLanguage, Range as TSRange};
 
 use self::grammar::{GrammarSource, LanguageGrammar, WasmGrammar};
 

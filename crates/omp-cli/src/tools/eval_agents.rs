@@ -28,8 +28,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{Duration, Instant};
 
-use omp_providers::{AgentDir, ResolvedModel};
-use omp_providers::{JudgeRequest, JudgmentCache};
 use pa_agent::abort::AbortSignal;
 use pa_ai::types::{SimpleStreamOptions, SimpleToolChoice};
 use pa_types::ai::{
