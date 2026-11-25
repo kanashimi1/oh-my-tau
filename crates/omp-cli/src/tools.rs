@@ -9,6 +9,7 @@ pub(crate) mod a2a;
 pub mod ask;
 mod ast;
 pub mod bash;
+mod blaze;
 pub mod checkpoint;
 mod edit;
 mod edit_diagnostics;
@@ -426,6 +427,12 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
         web_search::tool(),
         lsp::tool(env.clone()),
         mk(
+            "blaze",
+            blaze::DESCRIPTION.to_string(),
+            blaze::schema(),
+            Arc::new(|env, args, signal| Box::pin(blaze::blaze(env, args, signal))),
+        ),
+        mk(
             "macro_step",
             macro_step::DESCRIPTION.to_string(),
             macro_step::schema(),
@@ -640,7 +647,15 @@ mod tests {
         for off in ["ast_grep", "checkpoint", "rewind"] {
             assert!(!defaults.iter().any(|n| n == off), "{off} on by default");
         }
-        for on in ["read", "bash", "ast_edit", "lsp", "todo", "macro_step"] {
+        for on in [
+            "read",
+            "bash",
+            "ast_edit",
+            "lsp",
+            "todo",
+            "blaze",
+            "macro_step",
+        ] {
             assert!(defaults.iter().any(|n| n == on), "{on} off by default");
         }
         let custom = names(
@@ -679,6 +694,7 @@ mod tests {
                 "todo",
                 "web_search",
                 "lsp",
+                "blaze",
                 "macro_step",
                 "checkpoint",
                 "rewind"

@@ -14,6 +14,7 @@ omp-urls = { path = "../omp-urls" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 pa-types.workspace = true
