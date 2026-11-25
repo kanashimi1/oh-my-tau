@@ -20,7 +20,7 @@ use super::Env;
 use crate::approval::{deny_message, parse_mode, resolve_approval, tool_decision, Gate, Policy};
 use omp_ext::lifecycle::ApprovalMode;
 
-pub const DESCRIPTION: &str = "Run Blaze v2 directly in a Rust workspace: `check` emits compact structured diagnostics, `test` uses Blaze's reached-code/read selection (no manual --test heuristic), `verify` runs check then test, and `why` explains a stored file/item answer. No cargo/rustc fallback. `max_tokens` bounds model-facing diagnostics; full failure output is archived. Cargo/CI remains the final compatibility oracle while Blaze is young.";
+pub const DESCRIPTION: &str = "Run Blaze v2 directly in a Rust workspace: `check` emits compact structured diagnostics, `test` uses Blaze's reached-code/read selection (no manual --test heuristic), `verify` runs check then test, and `why` explains a stored file/item answer. No cargo/rustc fallback. `max_tokens` bounds model-facing diagnostics; full failure output is archived. Cargo/CI remains the final compatibility oracle while Blaze is young. Set OMT_BLAZE_BIN to the absolute Blaze binary/wrapper when it is not on PATH.";
 
 #[must_use]
 pub fn schema() -> Value {
@@ -259,9 +259,10 @@ pub(crate) fn parse_check(output: &std::process::Output) -> Check {
 
 async fn run(project: &Path, args: &[String], timeout: Duration) -> Result<std::process::Output> {
     let shown = args.join(" ");
+    let binary = std::env::var_os("OMT_BLAZE_BIN").unwrap_or_else(|| "blaze".into());
     tokio::time::timeout(
         timeout,
-        Command::new("blaze")
+        Command::new(&binary)
             .args(args)
             .current_dir(project)
             .kill_on_drop(true)
@@ -274,8 +275,9 @@ async fn run(project: &Path, args: &[String], timeout: Duration) -> Result<std::
     })
 }
 
-fn args_with_path(command: &str, project: &Path, tail: &[&str]) -> Vec<String> {
-    let mut args = vec![command.to_owned(), project.display().to_string()];
+fn args_with_path(command: &str, _project: &Path, tail: &[&str]) -> Vec<String> {
+    // Blaze resolves the checkout from the child cwd and rejects absolute roots.
+    let mut args = vec![command.to_owned(), ".".to_owned()];
     args.extend(tail.iter().map(|it| (*it).to_owned()));
     args
 }
@@ -478,12 +480,13 @@ mod tests {
     }
 
     /// Opt-in host smoke: drives the actual tool boundary and installed Blaze.
-    /// The release currently fails without its pinned toolchain; the contract
-    /// under test is a bounded tool error, never a cargo fallback or raw wall.
+    /// Supports either the stock release's bounded toolchain failure or a
+    /// configured working binary's successful check, never a cargo fallback.
     #[tokio::test]
     #[allow(clippy::disallowed_methods)] // tokio::test drives the real async tool boundary
-    async fn real_blaze_failure_is_a_bounded_tool_error() {
-        if std::env::var("OMT_BLAZE_LIVE_TEST").ok().as_deref() != Some("1") {
+    async fn real_blaze_tool_result_is_bounded() {
+        let expect_success = std::env::var("OMT_BLAZE_LIVE_SUCCESS").ok().as_deref() == Some("1");
+        if !expect_success && std::env::var("OMT_BLAZE_LIVE_TEST").ok().as_deref() != Some("1") {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -502,9 +505,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.is_error, (!expect_success).then_some(true), "details={} content={:?}", result.details, result.content);
         assert_eq!(result.details["workflow"], "blaze");
-        assert_ne!(result.details["status"], 0);
+        assert_eq!(result.details["success"], expect_success);
         let pa_agent::types::ToolResultContent::Text(text) = &result.content[0] else {
             panic!("Blaze returned non-text content");
         };
