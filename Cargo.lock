@@ -2271,6 +2271,7 @@ dependencies = [
  "parking_lot",
  "serde_json",
  "serde_yaml_ng",
+ "temp-env",
  "tempfile",
 ]
 

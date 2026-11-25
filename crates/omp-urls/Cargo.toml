@@ -15,6 +15,7 @@ flate2 = "1"
 parking_lot = "0.12"
 
 [dev-dependencies]
+temp-env = { version = "0.3", features = ["async_closure"] }
 tempfile = "3"
 
 [lints.clippy]

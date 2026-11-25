@@ -344,25 +344,27 @@ mod tests {
 
     #[test]
     fn listing_matches_ts() {
-        std::env::set_var("OMP_DOCS_EMBED", fixture());
-        // A fresh process-global would be polluted across tests; call the
-        // render path through `decode_docs_index`-backed helpers instead.
-        let filenames: Vec<String> =
-            serde_json::from_str(fixture().split('\n').next().unwrap()).unwrap();
-        let listing = filenames
-            .iter()
-            .map(|f| format!("- [{f}](omp://{f})"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let content = format!(
-            "# Documentation\n\n{} files available:\n\n{listing}\n",
-            filenames.len()
-        );
-        assert_eq!(
-            content,
-            "# Documentation\n\n2 files available:\n\n- [a.md](omp://a.md)\n- [guide/getting-started.md](omp://guide/getting-started.md)\n"
-        );
-        std::env::remove_var("OMP_DOCS_EMBED");
+        // temp_env serializes and restores the mutation (no direct set_var, which the
+        // Blaze checker refuses even though this crate is edition 2021).
+        temp_env::with_var("OMP_DOCS_EMBED", Some(fixture()), || {
+            // A fresh process-global would be polluted across tests; call the
+            // render path through `decode_docs_index`-backed helpers instead.
+            let filenames: Vec<String> =
+                serde_json::from_str(fixture().split('\n').next().unwrap()).unwrap();
+            let listing = filenames
+                .iter()
+                .map(|f| format!("- [{f}](omp://{f})"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let content = format!(
+                "# Documentation\n\n{} files available:\n\n{listing}\n",
+                filenames.len()
+            );
+            assert_eq!(
+                content,
+                "# Documentation\n\n2 files available:\n\n- [a.md](omp://a.md)\n- [guide/getting-started.md](omp://guide/getting-started.md)\n"
+            );
+        });
     }
 
     #[test]
