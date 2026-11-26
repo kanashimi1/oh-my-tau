@@ -243,6 +243,9 @@ impl Runtime {
                 })
                 .unwrap_or_default(),
         });
+        // Bounded flight log for deterministic replay of this pass
+        // (`OMP_COMPACTION_FLIGHT_LOG`); unset keeps the pass IO-free.
+        let flight = crate::compact::replay::flight_log_from_env();
         let params = crate::compact::CompactParams {
             settings: &settings,
             model_id: &model_id,
@@ -254,6 +257,7 @@ impl Runtime {
                 .as_ref()
                 .map(|b| b as &dyn crate::compact::CompactHook),
             guard: Some(guard),
+            flight: flight.as_ref(),
         };
         if trace {
             turn_trace!("[turn-trace] compact-planned rss={}kB", rss_kb());

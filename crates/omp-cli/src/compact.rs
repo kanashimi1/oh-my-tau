@@ -27,6 +27,8 @@ use serde_json::{json, Value};
 
 use crate::persist::{iso_from_ms, Persistence};
 
+pub mod replay;
+
 /// `compaction.*` from `config.yml` (flat dotted keys are honoured too), TS defaults otherwise.
 #[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -330,6 +332,10 @@ pub struct CompactParams<'a> {
     /// Session+generation snapshot the commit must still match (see
     /// [`CommitGuard`]); `None` skips the commit gate (tests, offline replays).
     pub guard: Option<&'a CommitGuard>,
+    /// Bounded flight log recording this pass's state transitions for
+    /// deterministic replay (see [`replay`]); `None` keeps the pass
+    /// allocation- and IO-free.
+    pub flight: Option<&'a replay::FlightLog>,
 }
 
 /// `session_before_compact` bridge: receives the TS-shaped `preparation` (and the journal's
@@ -620,7 +626,7 @@ fn branch_from_leaf(index: &omp_session::index::SessionIndex, leaf_id: &str) -> 
 pub async fn compact_now(
     persist: &Persistence,
     path: &Path,
-    completer: &impl Completer,
+    completer: &(impl Completer + Sync),
     params: &CompactParams<'_>,
 ) -> Result<(CompactionResult, Value, Vec<Value>)> {
     let index = omp_session::index::SessionIndex::load(path)
@@ -670,6 +676,25 @@ pub async fn compact_now(
     let Some(prep) = prep else {
         return Err(anyhow!("Nothing to compact (session too small)"));
     };
+    let flight = params.flight;
+    if let Some(f) = flight {
+        let leaf = heads.last().map_or("", |h| h.id.as_str());
+        f.start_pass(
+            &persist.session_id(),
+            leaf,
+            params.model_id,
+            params.custom_instructions,
+            params.non_message_tokens,
+        );
+        f.record(replay::FlightEvent::Planned {
+            boundary_start: u64::try_from(boundary.boundary_start).unwrap_or(u64::MAX),
+            first_kept_entry_id: prep.first_kept_entry_id.clone(),
+            tokens_before: prep.tokens_before,
+            messages_to_summarize: u64::try_from(prep.messages_to_summarize.len())
+                .unwrap_or(u64::MAX),
+            is_split_turn: prep.is_split_turn,
+        });
+    }
     if let Some(hook) = params.hook {
         let preparation = json!({
             "firstKeptEntryId": prep.first_kept_entry_id,
@@ -687,6 +712,9 @@ pub async fn compact_now(
             },
         });
         if hook.before(preparation, params.custom_instructions).await {
+            if let Some(f) = flight {
+                f.record(replay::FlightEvent::HookCancelled);
+            }
             return Err(anyhow!("Compaction cancelled"));
         }
     }
@@ -709,14 +737,38 @@ pub async fn compact_now(
     let result = if squash {
         trajectory_squash_result(&prep)
     } else {
-        omp_compact::compact(completer, &prep, &summary_params).await?
+        let summarized = match flight {
+            Some(f) => {
+                omp_compact::compact(&replay::RecordingCompleter::new(completer, f), &prep, &summary_params)
+                    .await
+            }
+            None => omp_compact::compact(completer, &prep, &summary_params).await,
+        };
+        match summarized {
+            Ok(result) => result,
+            Err(e) => {
+                if let Some(f) = flight {
+                    f.record(replay::FlightEvent::Failed {
+                        error: format!("{e:#}"),
+                    });
+                }
+                return Err(e);
+            }
+        }
     };
     // Commit gate (TS `sessionId() !== sourceSessionId || getBranch().at(-1)?.id
     // !== sourceLeafId`): a session switch, a `/tree` move, a concurrent append
     // or an abort since the plan was captured discards the pass — the summary
     // must not land in the wrong file or on the wrong branch.
     if let Some(guard) = params.guard {
-        guard.check_commit(persist)?;
+        if let Err(e) = guard.check_commit(persist) {
+            if let Some(f) = flight {
+                f.record(replay::FlightEvent::CommitRefused {
+                    reason: format!("{e:#}"),
+                });
+            }
+            return Err(e);
+        }
     }
     let leaf_id = heads.last().map_or("", |h| h.id.as_str()).to_owned();
     let (ts, view, tokens_after) = build_rebuild_view(
@@ -732,9 +784,27 @@ pub async fn compact_now(
         tokens_after,
         from_extension: Some(false),
     };
-    persist
+    if let Err(e) = persist
         .append_compaction(&result, &ts, &options)
-        .context("writing the compaction entry")?;
+        .context("writing the compaction entry")
+    {
+        if let Some(f) = flight {
+            f.record(replay::FlightEvent::PersistFailed {
+                error: format!("{e:#}"),
+            });
+        }
+        return Err(e);
+    }
+    if let Some(f) = flight {
+        f.record(replay::FlightEvent::Committed {
+            method: method.to_owned(),
+            tokens_after,
+            summary: result.summary.clone(),
+            short_summary: result.short_summary.clone(),
+            first_kept_entry_id: result.first_kept_entry_id.clone(),
+            tokens_before: result.tokens_before,
+        });
+    }
     let mut data = json!({
         "summary": result.summary,
         "shortSummary": result.short_summary,
