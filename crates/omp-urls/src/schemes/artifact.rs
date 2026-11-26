@@ -44,7 +44,7 @@ pub(crate) fn resolve_artifact_file(
         };
         any_dir_exists = true;
         for entry in files.flatten() {
-            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
             if let Some(rest) = name.strip_prefix(id).and_then(|r| r.strip_prefix('.')) {
@@ -147,7 +147,7 @@ impl UrlProvider for ArtifactProvider {
                 continue;
             };
             for entry in files.flatten() {
-                let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                let Ok(name) = entry.file_name().into_string() else {
                     continue;
                 };
                 if let Some(num) = name.split('.').next().and_then(|p| p.parse::<u64>().ok()) {
