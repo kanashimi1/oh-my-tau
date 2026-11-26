@@ -1973,6 +1973,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omp-cas"
+version = "0.10.0"
+dependencies = [
+ "hex",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "zstd",
+]
+
+[[package]]
 name = "omp-cli"
 version = "0.10.0"
 dependencies = [

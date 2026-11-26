@@ -1,0 +1,31 @@
+[package]
+name = "omp-cas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Content-addressed store for omt: explicit scratch/durable lifetimes, LRU scratch eviction, transitive dependency packs"
+
+[dependencies]
+# SHA-256 digests, same lowercase-hex encoding as omp-hub `PayloadRef.sha256`
+# and omp-collab's replication hashes; already in the lock (omp-cli, omp-lsp,
+# omp-providers).
+sha2 = "0.10"
+# Strict lowercase-hex decode for digest parsing (already in the lock).
+hex = "0.4.3"
+# Pack payload compression (already in the lock via pi-predict).
+zstd = "0.13"
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+# Lock convention for synchronous interior mutability.
+parking_lot = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bench]]
+name = "cas_bench"
+harness = false
+
+[lints]
+workspace = true
