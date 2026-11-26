@@ -1004,44 +1004,51 @@ impl ExtensionUi {
         let Some(dialog) = &self.active else {
             return String::new();
         };
-        let raw = match &dialog.kind {
+        // Own the title text so no `&dialog.kind` borrow is kept to the item's end (the Blaze
+        // borrow checker keeps the match scrutinee's borrow live past the match otherwise).
+        let raw: String = match &dialog.kind {
             DialogKind::Ask {
                 questions, current, ..
-            } => questions
-                .get(*current)
-                .map_or_else(|| "Question".to_string(), |q| q.text.clone()),
+            } => {
+                let chosen = questions.get(*current).map(|q| q.text.clone());
+                chosen.map_or_else(|| "Question".to_string(), |text| text)
+            }
             DialogKind::Select { title, .. }
             | DialogKind::Confirm { title, .. }
             | DialogKind::Input { title, .. }
             | DialogKind::Editor { title, .. } => title.clone(),
         };
-        raw.lines().next().unwrap_or_default().to_string()
+        let first = raw.lines().next().map(str::to_owned).unwrap_or_default();
+        first
     }
 
     /// Footer hint row (TS `actionHint` rows).
     fn dialog_hint(&self) -> &'static str {
-        match self.active.as_ref().map(|d| &d.kind) {
-            Some(DialogKind::Confirm { .. }) => "enter yes  ·  esc no",
-            Some(DialogKind::Input { .. }) => "enter submit  ·  esc cancel",
-            Some(DialogKind::Editor { .. }) => "ctrl+enter submit  ·  enter newline  ·  esc cancel",
-            Some(DialogKind::Select {
+        let Some(d) = self.active.as_ref() else { return "" };
+        // Match `&d.kind` directly (no `.map(|d| &d.kind)` closure): the `&DialogKind` borrow
+        // of `self.active` ends with the match, not kept to the item's end by the closure's
+        // returned reference (the Blaze borrow checker extends the latter).
+        match &d.kind {
+            DialogKind::Confirm { .. } => "enter yes  ·  esc no",
+            DialogKind::Input { .. } => "enter submit  ·  esc cancel",
+            DialogKind::Editor { .. } => "ctrl+enter submit  ·  enter newline  ·  esc cancel",
+            DialogKind::Select {
                 searchable: true, ..
-            }) => "type to search  ·  ↑/↓ navigate  ·  enter select  ·  esc cancel",
-            Some(DialogKind::Select { .. }) => "↑/↓ navigate  ·  enter select  ·  esc cancel",
-            Some(DialogKind::Ask {
+            } => "type to search  ·  ↑/↓ navigate  ·  enter select  ·  esc cancel",
+            DialogKind::Select { .. } => "↑/↓ navigate  ·  enter select  ·  esc cancel",
+            DialogKind::Ask {
                 questions,
                 current,
                 custom,
                 ..
-            }) => match (
-                custom.is_some(),
-                questions.get(*current).is_some_and(|q| q.multi),
-            ) {
-                (true, _) => "type your answer  ·  enter submit  ·  esc back",
-                (_, true) => "space toggle  ·  enter done  ·  esc cancel",
-                _ => "↑/↓ navigate  ·  enter select  ·  esc cancel",
-            },
-            None => "",
+            } => {
+                let multi = questions.get(*current).is_some_and(|q| q.multi);
+                match (custom.is_some(), multi) {
+                    (true, _) => "type your answer  ·  enter submit  ·  esc back",
+                    (_, true) => "space toggle  ·  enter done  ·  esc cancel",
+                    _ => "↑/↓ navigate  ·  enter select  ·  esc cancel",
+                }
+            }
         }
     }
 

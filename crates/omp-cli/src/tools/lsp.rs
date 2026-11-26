@@ -2283,9 +2283,13 @@ fn truncate_line(line: &str, max: usize) -> String {
 /// Read the 1-indexed `line` of `path` as a raw string, if available.
 async fn read_source_line(path: &Path, line: usize) -> Option<String> {
     let text = tokio::fs::read_to_string(path).await.ok()?;
-    text.split('\n')
+    // The `.nth` result is owned here so the `&str` borrow of `text` ends before
+    // `text`'s drop (the Blaze borrow checker keeps it live to the item's end otherwise).
+    let source = text
+        .split('\n')
         .nth(line.saturating_sub(1))
-        .map(str::to_string)
+        .map(str::to_string);
+    source
 }
 
 /// Strip markdown code-fence markers from hover text (keeps the inner code).
