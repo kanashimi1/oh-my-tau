@@ -73,8 +73,71 @@ fn policy(cwd: &Path) -> PathPolicy {
     }
 }
 
-/// Host-side byte owner for the engine: plain filesystem writes.
-struct FsWriter;
+/// Original bytes for one successful host write. Kept in memory only: this is
+/// rollback for a live tool call, not a crash-recovery journal.
+struct Undo {
+    source: PathBuf,
+    source_bytes: Option<Vec<u8>>,
+    destination: Option<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl Undo {
+    fn capture(request: &WriteRequest) -> EditResult<Self> {
+        let source_bytes = read_optional(&request.absolute)?;
+        let target = request.move_to.as_deref().unwrap_or(&request.absolute);
+        let destination = if target == request.absolute {
+            None
+        } else {
+            Some((target.to_path_buf(), read_optional(target)?))
+        };
+        Ok(Self {
+            source: request.absolute.clone(),
+            source_bytes,
+            destination,
+        })
+    }
+
+    fn restore(self) -> EditResult<()> {
+        if let Some((path, bytes)) = self.destination {
+            restore_path(&path, bytes)?;
+        }
+        restore_path(&self.source, self.source_bytes)
+    }
+}
+
+fn read_optional(path: &Path) -> EditResult<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_err(path, &error)),
+    }
+}
+
+fn restore_path(path: &Path, bytes: Option<Vec<u8>>) -> EditResult<()> {
+    match bytes {
+        Some(bytes) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| io_err(parent, &error))?;
+            }
+            std::fs::write(path, bytes).map_err(|error| io_err(path, &error))
+        }
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_err(path, &error)),
+        },
+    }
+}
+
+/// Host-side byte owner for the engine. Each instance belongs to one apply.
+#[derive(Default)]
+struct FsWriter {
+    undo: parking_lot::Mutex<Vec<Undo>>,
+    #[cfg(test)]
+    fail_at: Option<usize>,
+    #[cfg(test)]
+    write_calls: std::sync::atomic::AtomicUsize,
+}
 
 fn io_err(path: &Path, e: &std::io::Error) -> EditError {
     EditError::Writer(format!("{}: {e}", path.display()))
@@ -83,8 +146,21 @@ fn io_err(path: &Path, e: &std::io::Error) -> EditError {
 #[async_trait]
 impl EditWriter for FsWriter {
     async fn write(&self, request: WriteRequest) -> EditResult<WriteResponse> {
+        #[cfg(test)]
+        {
+            let call = self
+                .write_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            if self.fail_at == Some(call) {
+                return Err(EditError::Writer(format!(
+                    "injected write failure at call {call}"
+                )));
+            }
+        }
+        let undo = Undo::capture(&request)?;
         let target = request.move_to.as_deref().unwrap_or(&request.absolute);
-        match request.op {
+        let result: EditResult<WriteResponse> = (|| match request.op {
             FileOp::Delete => {
                 std::fs::remove_file(&request.absolute)
                     .map_err(|e| io_err(&request.absolute, &e))?;
@@ -106,15 +182,38 @@ impl EditWriter for FsWriter {
                     diagnostics_json: None,
                 })
             }
+        })();
+        match result {
+            Ok(response) => {
+                self.undo.lock().push(undo);
+                Ok(response)
+            }
+            Err(error) => match undo.restore() {
+                Ok(()) => Err(error),
+                Err(rollback) => Err(EditError::Writer(format!(
+                    "{error}; failed-write rollback failed: {rollback}"
+                ))),
+            },
+        }
+    }
+
+    async fn rollback(&self, _completed: &[WriteRequest]) -> EditResult<()> {
+        let completed = std::mem::take(&mut *self.undo.lock());
+        let mut errors = Vec::new();
+        for undo in completed.into_iter().rev() {
+            if let Err(error) = undo.restore() {
+                errors.push(error.to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(EditError::Writer(errors.join("; ")))
         }
     }
 }
 
-/// Run one edit call.
-///
-/// # Errors
-/// The engine's model-facing message (parse, locate, apply or write failure).
-pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
+fn edit_session(env: &Env, args: &Value) -> Session {
     let config = SessionConfig {
         mode: env.edit_mode,
         policy: policy(&env.cwd),
@@ -126,6 +225,26 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let mut session = Session::new(config, env.store.clone());
     session.set_args_json(&args.to_string());
     session.finish();
+    session
+}
+
+#[cfg(test)]
+async fn apply_with_writer(
+    env: &Env,
+    args: &Value,
+    writer: &dyn EditWriter,
+) -> EditResult<pi_edit::session::ApplyOutcome> {
+    edit_session(env, args)
+        .apply(ApplyRequest::default(), writer)
+        .await
+}
+
+/// Run one edit call.
+///
+/// # Errors
+/// The engine's model-facing message (parse, locate, apply or write failure).
+pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
+    let mut session = edit_session(env, args);
     // Claims guard (OMP_CLAIMS=block): refuse before the first write when
     // another live endpoint holds a claim on a target path. Warning mode
     // checks after the apply instead (the engine knows the exact paths then)
@@ -136,10 +255,13 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
             bail!("{reason}");
         }
     }
-    let outcome = session
-        .apply(ApplyRequest::default(), &FsWriter)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
+    let outcome = {
+        let _transaction = env.begin_edit_transaction();
+        session
+            .apply(ApplyRequest::default(), &FsWriter::default())
+            .await
+    }
+    .map_err(|e| anyhow!("{e}"))?;
     let mut result = AgentToolResult::text(outcome.text.clone());
     result.details = edit_details(&outcome);
     // Advisory post-write LSP gate: report diagnostics new to this edit.
@@ -151,12 +273,14 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
         .map(|f| f.absolute.clone())
         .collect();
     if let Some(gate) = edit_diagnostics::run(env, &changed).await {
+        let oracle = gate.details();
         result
             .content
             .push(pa_agent::types::ToolResultContent::text(gate.section));
         if !result.details.is_object() {
             result.details = json!({});
         }
+        result.details["oracle"] = oracle;
         result.details["diagnostics"] = Value::Array(gate.diagnostics);
     }
     // Advisory post-write claims guard: a live claim held by another
@@ -305,12 +429,14 @@ pub async fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     ));
     // Advisory post-write LSP gate (same rules as `edit`).
     if let Some(gate) = edit_diagnostics::run(env, std::slice::from_ref(&path)).await {
+        let oracle = gate.details();
         result
             .content
             .push(pa_agent::types::ToolResultContent::text(gate.section));
         if !result.details.is_object() {
             result.details = json!({});
         }
+        result.details["oracle"] = oracle;
         result.details["diagnostics"] = Value::Array(gate.diagnostics);
     }
     // Advisory post-write claims guard (warning line) + auto-claim.
@@ -451,6 +577,188 @@ mod tests {
         .await
         .unwrap_err();
         assert!(!err.to_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_commits_two_files_as_one_patch_set() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+        let env = Env::with_mode(dir.path(), EditMode::ApplyPatch);
+        let input = "*** Begin Patch\n*** Update File: a.txt\n@@\n-alpha\n+ALPHA\n*** Update File: b.txt\n@@\n-beta\n+BETA\n*** End Patch\n";
+        edit(&env, &json!({"input": input})).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "ALPHA\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "BETA\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn second_write_failure_rolls_back_first_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_a = "alpha\r\nhéllo\r\n";
+        let original_b = "beta\r\n";
+        std::fs::write(dir.path().join("a.txt"), original_a).unwrap();
+        std::fs::write(dir.path().join("b.txt"), original_b).unwrap();
+        let env = Env::new(dir.path(), true);
+        let tag_a = tag_of(&text_of(&read(&env, &json!({"path": "a.txt"})).unwrap()));
+        let tag_b = tag_of(&text_of(&read(&env, &json!({"path": "b.txt"})).unwrap()));
+        let input = format!("[a.txt#{tag_a}]\nPUT 1.=1:\n+ALPHA\n[b.txt#{tag_b}]\nPUT 1.=1:\n+BETA\n");
+        let writer = FsWriter {
+            fail_at: Some(2),
+            ..FsWriter::default()
+        };
+        let error = apply_with_writer(&env, &json!({"input": input}), &writer)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("injected write failure at call 2"),
+            "{error}"
+        );
+        assert!(error.contains("Rolled back 1 completed write"), "{error}");
+        assert_eq!(
+            std::fs::read(dir.path().join("a.txt")).unwrap(),
+            original_a.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("b.txt")).unwrap(),
+            original_b.as_bytes()
+        );
+        let key_a = pi_edit::path_policy::canonical_key(&dir.path().join("a.txt"));
+        let key_b = pi_edit::path_policy::canonical_key(&dir.path().join("b.txt"));
+        assert_eq!(env.store.head_hash(&key_a).as_deref(), Some(tag_a.as_str()));
+        assert_eq!(env.store.head_hash(&key_b).as_deref(), Some(tag_b.as_str()));
+    }
+
+    #[tokio::test]
+    async fn stale_second_file_rejects_whole_set_with_current_context() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a0\na1\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b0\nb1\n").unwrap();
+        let env = Env::new(dir.path(), true);
+        let tag_a = tag_of(&text_of(&read(&env, &json!({"path": "a.txt"})).unwrap()));
+        let tag_b = tag_of(&text_of(&read(&env, &json!({"path": "b.txt"})).unwrap()));
+        std::fs::write(dir.path().join("b.txt"), "b0 changed\nb1\n").unwrap();
+        let input = format!("[a.txt#{tag_a}]\nPUT 1.=1:\n+A0\n[b.txt#{tag_b}]\nPUT 1.=1:\n+B0\n");
+        let error = edit(&env, &json!({"input": input}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("file changed between read and edit"),
+            "{error}"
+        );
+        assert!(error.contains("*1:b0 changed"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "a0\na1\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "b0 changed\nb1\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_anchors_and_out_of_range_lines_reject_without_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("dup.txt"), "dup\ndup\n").unwrap();
+        let replace = Env::with_mode(dir.path(), EditMode::Replace);
+        let args = json!({"path": "dup.txt", "old_string": "dup", "new_string": "x"});
+        let first = edit(&replace, &args).await.unwrap_err().to_string();
+        let second = edit(&replace, &args).await.unwrap_err().to_string();
+        assert_eq!(first, second);
+        assert!(first.contains("2 occurrences"), "{first}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dup.txt")).unwrap(),
+            "dup\ndup\n"
+        );
+
+        std::fs::write(dir.path().join("lines.txt"), "one\ntwo\n").unwrap();
+        let hashline = Env::new(dir.path(), true);
+        let tag = tag_of(&text_of(
+            &read(&hashline, &json!({"path": "lines.txt"})).unwrap(),
+        ));
+        let error = edit(
+            &hashline,
+            &json!({"input": format!("[lines.txt#{tag}]\nPUT 9.=9:\n+x\n")}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("lines 9 of lines.txt"), "{error}");
+        assert!(error.contains("never displayed"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("lines.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_hashline_file_anchor_resolution_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("f.txt"),
+            "one
+",
+        )
+        .unwrap();
+        let env = Env::new(dir.path(), true);
+        let tag = tag_of(&text_of(&read(&env, &json!({"path": "f.txt"})).unwrap()));
+        let input = format!(
+            "[f.txt#{tag}]
+PUT 1.=1:
++ONE
+[f.txt#{tag}]
+PUT 1.=1:
++UNO
+"
+        );
+        let result = edit(&env, &json!({"input": input})).await.unwrap();
+        let text = text_of(&result);
+        assert!(
+            text.contains("Multiple hunks targeted the same exact range; kept only the last"),
+            "{text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "UNO
+"
+        );
+    }
+
+    #[tokio::test]
+    async fn bash_rejects_uncommitted_overlay_then_runs_after_commit_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = std::sync::Arc::new(Env::new(dir.path(), true));
+        let transaction = env.begin_edit_transaction();
+        let error = super::super::bash::bash(
+            env.clone(),
+            json!({"command": "printf bad > overlay-escaped"}),
+            pa_agent::abort::AbortSignal::never(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("no isolated filesystem exists"), "{error}");
+        assert!(!dir.path().join("overlay-escaped").exists());
+        drop(transaction);
+        super::super::bash::bash(
+            env,
+            json!({"command": "printf good > overlay-escaped"}),
+            pa_agent::abort::AbortSignal::never(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("overlay-escaped")).unwrap(),
+            "good"
+        );
     }
 
     #[tokio::test]

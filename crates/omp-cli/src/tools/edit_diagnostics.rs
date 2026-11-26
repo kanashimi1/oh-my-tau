@@ -11,7 +11,10 @@
 //!   the project's server on first read so the first edit is already gated.
 //!   The gate itself still never cold-starts a server.
 //! - **Budget**: at most [`GATE_BUDGET_MS`] (2000ms) is spent per call,
-//!   split evenly across the changed files.
+//!   including refresh notifications and polling, split across changed files.
+//!   Exhaustion is reported as a timeout; the committed edit is retained.
+//! - **Compactness**: at most eight diagnostic rows, 240 chars per message,
+//!   and 4000 chars of model-facing oracle text are returned.
 //! - **Escalation**: repeating an *identical* per-file diagnostic delta
 //!   bumps the `Env` recurrence ledger and renders a `BLOCKED-RETRY` hint.
 
@@ -29,6 +32,9 @@ use super::Env;
 
 /// Total time budget for one `edit`/`write` gate call (split across files).
 pub const GATE_BUDGET_MS: u64 = 2000;
+const MAX_GATE_DIAGNOSTICS: usize = 8;
+const MAX_DIAGNOSTIC_MESSAGE_CHARS: usize = 240;
+const MAX_SECTION_CHARS: usize = 4000;
 /// Poll cadence while waiting for a refreshed publish.
 const POLL_STEP_MS: u64 = 150;
 /// Budget to start a server in [`prewarm`] (initialize handshake).
@@ -46,8 +52,21 @@ const MAX_GATED_SEVERITY: u32 = 2;
 pub struct GateResult {
     /// Lines to append to the tool's text output (empty when nothing is new).
     pub section: String,
-    /// Full new-diagnostic list for `details["diagnostics"]`.
+    /// Compact new-diagnostic list for `details["diagnostics"]`.
     pub diagnostics: Vec<Value>,
+    pub timed_out: bool,
+    pub truncated: bool,
+}
+
+impl GateResult {
+    pub fn details(&self) -> Value {
+        json!({
+            "status": if self.timed_out { "timeout" } else { "ok" },
+            "budgetMs": GATE_BUDGET_MS,
+            "failurePolicy": "advisory-edit-kept",
+            "diagnosticsTruncated": self.truncated,
+        })
+    }
 }
 
 /// A normalized new diagnostic (subject-visible).
@@ -199,33 +218,94 @@ async fn notify_refresh(client: &LspClient, path: &Path, uri: &str) {
     }
 }
 
+fn compact_message(message: &str) -> String {
+    if message.chars().count() <= MAX_DIAGNOSTIC_MESSAGE_CHARS {
+        return message.to_string();
+    }
+    let prefix: String = message
+        .chars()
+        .take(MAX_DIAGNOSTIC_MESSAGE_CHARS - 1)
+        .collect();
+    format!("{prefix}…")
+}
+
+fn compact_section(section: &str) -> (String, bool) {
+    if section.chars().count() <= MAX_SECTION_CHARS {
+        return (section.to_string(), false);
+    }
+    const SUFFIX: &str = "\n… [oracle output truncated]";
+    let prefix: String = section
+        .chars()
+        .take(MAX_SECTION_CHARS - SUFFIX.chars().count())
+        .collect();
+    (format!("{prefix}{SUFFIX}"), true)
+}
+
+/// Poll `ready` without sleeping beyond the absolute deadline.
+async fn wait_until(deadline: Instant, mut ready: impl FnMut() -> bool) -> bool {
+    loop {
+        if ready() {
+            return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        tokio::time::sleep((deadline - now).min(Duration::from_millis(POLL_STEP_MS))).await;
+    }
+}
+
+fn finish_gate(
+    mut sections: Vec<String>,
+    diagnostics: Vec<Value>,
+    timed_out: bool,
+    mut truncated: bool,
+) -> Option<GateResult> {
+    if timed_out {
+        sections.push(format!(
+            "[lsp] TIMEOUT: post-edit oracle budget exhausted ({GATE_BUDGET_MS}ms total cap); edit kept (advisory)"
+        ));
+    }
+    if sections.is_empty() {
+        return None;
+    }
+    let (section, section_truncated) = compact_section(&sections.join("\n"));
+    truncated |= section_truncated;
+    Some(GateResult {
+        section,
+        diagnostics,
+        timed_out,
+        truncated,
+    })
+}
+
 /// Run the advisory gate over `files`, returning `None` when there is nothing
 /// to report (including when no LSP server is running at all).
-#[allow(clippy::too_many_lines)] // gate pipeline: prewarm, cold budget, collect, filter, render
+#[allow(clippy::too_many_lines)] // bounded refresh, poll, filter and compact rendering
 pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
-    /// Budget while a cold-started server (file opened by `prewarm` but never
-    /// published yet) produces its first diagnostics. rust-analyzer needs
-    /// 15-30s on a cold project; without this the gate would always lose the
-    /// race against the model's first edit.
-    const COLD_GATE_BUDGET_MS: u64 = 25_000;
     let clients = omp_lsp::client::active_clients();
     if files.is_empty() || clients.is_empty() {
         return None;
     }
-    // Per-file budget: the normal fast path, or the cold path below.
 
+    let total_deadline = Instant::now() + Duration::from_millis(GATE_BUDGET_MS);
+    let per_file = Duration::from_millis((GATE_BUDGET_MS / files.len() as u64).max(1));
     let mut sections = Vec::new();
     let mut all_diagnostics = Vec::new();
+    let mut timed_out = false;
+    let mut truncated = false;
 
-    for path in files {
+    'files: for (file_index, path) in files.iter().enumerate() {
+        let now = Instant::now();
+        if now >= total_deadline {
+            timed_out = true;
+            break;
+        }
         let relevant: Vec<&LspClient> = clients.iter().filter(|c| client_serves(c, path)).collect();
         if relevant.is_empty() {
             continue;
         }
         let uri = file_to_uri(path);
-
-        // Pre-write snapshot. Nothing above has touched the client, so this is
-        // still the pre-edit publish for the changed file.
         let before_snapshot: Vec<Option<PublishedDiagnostics>> = relevant
             .iter()
             .map(|c| c.published_diagnostics(&uri))
@@ -239,70 +319,59 @@ pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
             .iter()
             .map(|p| p.as_ref().and_then(|p| p.version))
             .collect();
-        // Refresh feasibility: at least one client must know the file (open
-        // or previously published), otherwise `notify_refresh` sent nothing
-        // and no publish can ever arrive — skip instead of burning budget.
         if !relevant
             .iter()
             .any(|c| c.is_open(&uri) || c.published_diagnostics(&uri).is_some())
         {
             continue;
         }
-        // Cold path: the file is open (via `prewarm`) but this client never
-        // published for it — the first publish is still on its way. Warm
-        // project-aware servers (rust-analyzer) can also lag a didChange
-        // re-publish while still loading a cold project, so they get the
-        // same extended budget; healthy warm servers answer in well under
-        // a second and the poll loop exits early.
         let cold = relevant
             .iter()
             .zip(&before_versions)
             .any(|(c, v)| v.is_none() && c.is_open(&uri));
-        let slow = relevant
-            .iter()
-            .any(|c| omp_lsp::servers::is_project_aware_lsp_server(c.config()));
-        let budget = if cold || slow {
-            Duration::from_millis(COLD_GATE_BUDGET_MS)
-        } else {
-            Duration::from_millis((GATE_BUDGET_MS / files.len() as u64).max(1))
-        };
+        let file_deadline = total_deadline.min(now + per_file);
 
-        // Ask each client to refresh with the new content, then poll for a
-        // newer publish until the per-file budget runs out.
-        for c in &relevant {
-            notify_refresh(c, path, &uri).await;
+        for client in &relevant {
+            let now = Instant::now();
+            if now >= file_deadline {
+                timed_out = true;
+                break 'files;
+            }
+            if tokio::time::timeout(file_deadline - now, notify_refresh(client, path, &uri))
+                .await
+                .is_err()
+            {
+                timed_out = true;
+                break 'files;
+            }
         }
-        let deadline = Instant::now() + budget;
         let mut updated = vec![false; relevant.len()];
-        loop {
-            for (i, c) in relevant.iter().enumerate() {
+        let settled = wait_until(file_deadline, || {
+            for (i, client) in relevant.iter().enumerate() {
                 if updated[i] {
                     continue;
                 }
-                let now = c.published_diagnostics(&uri);
-                let now_v = now.as_ref().and_then(|p| p.version);
-                let changed = match (before_versions[i], now_v) {
-                    (Some(b), Some(n)) => n != b,
+                let now = client.published_diagnostics(&uri);
+                let now_version = now.as_ref().and_then(|p| p.version);
+                let changed = match (before_versions[i], now_version) {
+                    (Some(before), Some(now)) => now != before,
                     (None, Some(_)) => true,
                     _ => false,
                 };
-                // Cold path: a project-aware server's first publish may be
-                // empty because analysis is still running. Treat an empty
-                // publish as final only once the server is quiescent (or a
-                // non-empty publish arrived, or the budget runs out).
-                let strict = cold && omp_lsp::servers::is_project_aware_lsp_server(c.config());
-                let settled = !strict
+                // A project-aware server's first empty publish can be a
+                // placeholder. It never extends the shared time budget.
+                let strict = cold && omp_lsp::servers::is_project_aware_lsp_server(client.config());
+                let ready = !strict
                     || now.as_ref().is_some_and(|p| !p.diagnostics.is_empty())
-                    || c.is_quiescent();
-                if changed && settled {
+                    || client.is_quiescent();
+                if changed && ready {
                     updated[i] = true;
                 }
             }
-            if updated.iter().all(|&u| u) || Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(POLL_STEP_MS)).await;
-        }
+            updated.iter().all(|&updated| updated)
+        })
+        .await;
+        timed_out |= !settled;
 
         let after: Vec<Diagnostic> = relevant
             .iter()
@@ -325,36 +394,49 @@ pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
                 delta.len()
             ));
         } else {
-            let items = delta
+            let capacity = MAX_GATE_DIAGNOSTICS.saturating_sub(all_diagnostics.len());
+            let shown = delta.iter().take(capacity).collect::<Vec<_>>();
+            let items = shown
                 .iter()
-                .map(|d| format!("{}:{} {}", d.line + 1, d.col + 1, d.message))
+                .map(|d| {
+                    format!(
+                        "{}:{} {}",
+                        d.line + 1,
+                        d.col + 1,
+                        compact_message(&d.message)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("; ");
             sections.push(format!(
-                "[lsp] +{} new diagnostics in {}: {}",
+                "[lsp] +{} new diagnostics in {}{}: {}",
                 delta.len(),
                 rel,
+                if shown.len() < delta.len() {
+                    format!(" (showing {})", shown.len())
+                } else {
+                    String::new()
+                },
                 items
             ));
+            truncated |= shown.len() < delta.len();
+            all_diagnostics.extend(shown.into_iter().map(|d| {
+                json!({
+                    "file": rel,
+                    "line": d.line + 1,
+                    "column": d.col + 1,
+                    "message": compact_message(&d.message),
+                    "severity": "warning",
+                })
+            }));
         }
-        all_diagnostics.extend(delta.iter().map(|d| {
-            json!({
-                "file": rel,
-                "line": d.line + 1,
-                "column": d.col + 1,
-                "message": d.message,
-                "severity": "warning",
-            })
-        }));
+        if all_diagnostics.len() >= MAX_GATE_DIAGNOSTICS {
+            truncated |= file_index + 1 < files.len();
+            break;
+        }
     }
 
-    if sections.is_empty() {
-        return None;
-    }
-    Some(GateResult {
-        section: sections.join("\n"),
-        diagnostics: all_diagnostics,
-    })
+    finish_gate(sections, all_diagnostics, timed_out, truncated)
 }
 
 // ============================================================================
@@ -534,6 +616,30 @@ mod tests {
         assert_eq!(delta.len(), 1);
         assert_eq!(delta[0].line, 2);
         assert_eq!(delta[0].col, 0);
+    }
+
+    #[tokio::test]
+    async fn oracle_poll_stops_at_an_exhausted_budget() {
+        assert!(!wait_until(Instant::now(), || false).await);
+        assert!(wait_until(Instant::now(), || true).await);
+    }
+
+    #[test]
+    fn oracle_timeout_and_failure_policy_are_explicit() {
+        let result = finish_gate(Vec::new(), Vec::new(), true, false).unwrap();
+        assert!(result.section.contains("edit kept (advisory)"));
+        let details = result.details();
+        assert_eq!(details["status"], "timeout");
+        assert_eq!(details["budgetMs"], GATE_BUDGET_MS);
+        assert_eq!(details["failurePolicy"], "advisory-edit-kept");
+    }
+    #[test]
+    fn oracle_messages_and_sections_are_compact() {
+        let message = compact_message(&"m".repeat(MAX_DIAGNOSTIC_MESSAGE_CHARS * 2));
+        assert_eq!(message.chars().count(), MAX_DIAGNOSTIC_MESSAGE_CHARS);
+        let (section, truncated) = compact_section(&"s".repeat(MAX_SECTION_CHARS * 2));
+        assert!(truncated);
+        assert_eq!(section.chars().count(), MAX_SECTION_CHARS);
     }
 
     #[test]

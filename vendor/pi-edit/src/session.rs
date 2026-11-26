@@ -71,7 +71,14 @@ pub struct WriteResponse {
 /// Host-side byte owner.
 #[async_trait]
 pub trait EditWriter: Send + Sync {
+    /// Write one staged file. An error must leave that request's targets as
+    /// they were before the call (the host may restore a partial write itself).
     async fn write(&self, request: WriteRequest) -> EditResult<WriteResponse>;
+
+    /// Restore every successfully completed request, in reverse order, after a
+    /// later request fails. The host retains the original bytes captured by
+    /// `write`; this is process-local rollback, not a crash-recovery journal.
+    async fn rollback(&self, completed: &[WriteRequest]) -> EditResult<()>;
 }
 
 /// Apply-time knobs.
@@ -279,10 +286,12 @@ impl Session {
     ///
     /// Order: reread every target fresh, stage all files in memory (any
     /// failure aborts before the first write), enforce the plan-mode guard
-    /// for every file, then write in payload order. A writer failure aborts
-    /// the loop; files already written stay written and the error is
-    /// returned verbatim. URL targets never reuse preview-time answers (see
-    /// [`Self::begin_apply_url_targets`]).
+    /// for every file, then write in payload order. If a writer fails, its own
+    /// request is unchanged and every earlier write is rolled back in reverse
+    /// order. Rollback failures are reported explicitly. This is not
+    /// crash-atomic: there is no on-disk journal, so a process or machine crash
+    /// between writes can leave a committed prefix. URL targets never reuse
+    /// preview-time answers (see [`Self::begin_apply_url_targets`]).
     ///
     /// # Errors
     /// Staging and plan-mode failures, all raised before the first write —
@@ -309,25 +318,47 @@ impl Session {
         }
 
         let last_write = staged.iter().rposition(|file| file.op != FileOp::Noop);
-        let mut files = Vec::with_capacity(staged.len());
-        for (index, mut file) in staged.into_iter().enumerate() {
-            let canonical = canonical_key(&file.absolute);
+        let mut completed_writes = Vec::new();
+        let mut written = Vec::with_capacity(staged.len());
+        for (index, file) in staged.into_iter().enumerate() {
             let response = if file.op == FileOp::Noop {
                 WriteResponse::default()
             } else {
-                writer
-                    .write(WriteRequest {
-                        absolute: file.absolute.clone(),
-                        display: file.display.clone(),
-                        op: file.op,
-                        move_to: file.move_to.as_ref().map(|m| m.absolute.clone()),
-                        content: file.persisted.clone(),
-                        flush_lsp: request.lsp_flush && last_write == Some(index),
-                        lsp_batch_id: request.lsp_batch_id.clone(),
-                    })
-                    .await?
+                let write = WriteRequest {
+                    absolute: file.absolute.clone(),
+                    display: file.display.clone(),
+                    op: file.op,
+                    move_to: file.move_to.as_ref().map(|m| m.absolute.clone()),
+                    content: file.persisted.clone(),
+                    flush_lsp: request.lsp_flush && last_write == Some(index),
+                    lsp_batch_id: request.lsp_batch_id.clone(),
+                };
+                match writer.write(write.clone()).await {
+                    Ok(response) => {
+                        completed_writes.push(write);
+                        response
+                    }
+                    Err(error) => {
+                        return Err(match writer.rollback(&completed_writes).await {
+                            Ok(()) => EditError::Writer(format!(
+                                "{error}\nRolled back {} completed write(s); no files were modified by this patch set.",
+                                completed_writes.len()
+                            )),
+                            Err(rollback) => EditError::Writer(format!(
+                                "{error}\nRollback failed: {rollback}. Files may be partially modified."
+                            )),
+                        });
+                    }
+                }
             };
+            written.push((file, response));
+        }
 
+        // Publish snapshot/clipboard state only after every filesystem write
+        // succeeds, so a rolled-back patch set leaves memory epochs unchanged.
+        let mut files = Vec::with_capacity(written.len());
+        for (mut file, response) in written {
+            let canonical = canonical_key(&file.absolute);
             let mut tag: Option<String> = None;
             // Updated files register their response rows (plus still-valid prior
             // provenance) against the minted tag: (store key, carried lines,

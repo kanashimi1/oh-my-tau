@@ -453,6 +453,7 @@ pub async fn bash(
     args: Value,
     signal: AbortSignal,
 ) -> Result<AgentToolResult> {
+    env.ensure_external_fs_visible()?;
     let cwd = env.cwd.clone();
     let command = str_arg(&args, "command")?.to_string();
     let dir = args
