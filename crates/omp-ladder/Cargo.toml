@@ -1,0 +1,15 @@
+[package]
+name = "omp-ladder"
+description = "Item-level parsing phase: rustc_lexer-based lexing, a content-addressed CST cache, and a syntax-derived semantic item index (not full rustc HIR)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ra-ap-rustc_lexer = "0.179"
+rustc-hash = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
