@@ -144,10 +144,11 @@ async fn edit_with_writer(
             bail!("{reason}");
         }
     }
-    let outcome = session
-        .apply(ApplyRequest::default(), writer)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
+    let outcome = {
+        let _transaction = env.begin_edit_transaction();
+        session.apply(ApplyRequest::default(), writer).await
+    }
+    .map_err(|e| anyhow!("{e}"))?;
     let mut result = AgentToolResult::text(outcome.text.clone());
     result.details = edit_details(&outcome);
     // Advisory post-write LSP gate: report diagnostics new to this edit.
@@ -159,12 +160,14 @@ async fn edit_with_writer(
         .map(|f| f.absolute.clone())
         .collect();
     if let Some(gate) = edit_diagnostics::run(env, &changed).await {
+        let oracle = gate.details();
         result
             .content
             .push(pa_agent::types::ToolResultContent::text(gate.section));
         if !result.details.is_object() {
             result.details = json!({});
         }
+        result.details["oracle"] = oracle;
         result.details["diagnostics"] = Value::Array(gate.diagnostics);
     }
     // Advisory post-write claims guard: a live claim held by another
@@ -313,12 +316,14 @@ pub async fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     ));
     // Advisory post-write LSP gate (same rules as `edit`).
     if let Some(gate) = edit_diagnostics::run(env, std::slice::from_ref(&path)).await {
+        let oracle = gate.details();
         result
             .content
             .push(pa_agent::types::ToolResultContent::text(gate.section));
         if !result.details.is_object() {
             result.details = json!({});
         }
+        result.details["oracle"] = oracle;
         result.details["diagnostics"] = Value::Array(gate.diagnostics);
     }
     // Advisory post-write claims guard (warning line) + auto-claim.
@@ -463,6 +468,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bash_rejects_uncommitted_overlay_then_runs_after_commit_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = std::sync::Arc::new(Env::new(dir.path(), true));
+        let transaction = env.begin_edit_transaction();
+        let error = super::super::bash::bash(
+            env.clone(),
+            json!({"command": "printf bad > overlay-escaped"}),
+            pa_agent::abort::AbortSignal::never(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("no isolated filesystem exists"), "{error}");
+        assert!(!dir.path().join("overlay-escaped").exists());
+        drop(transaction);
+        super::super::bash::bash(
+            env,
+            json!({"command": "printf good > overlay-escaped"}),
+            pa_agent::abort::AbortSignal::never(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("overlay-escaped")).unwrap(),
+            "good"
+        );
+    }
+
+    #[tokio::test]
     async fn replace_mode_edits_by_string() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.txt"), "hello world\n").unwrap();
@@ -550,30 +584,33 @@ mod tests {
         assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"beta\n");
     }
 
-    struct FailSecondWriter {
+    struct FailAfterSecondWriter {
         calls: AtomicUsize,
     }
 
     #[async_trait]
-    impl EditWriter for FailSecondWriter {
+    impl EditWriter for FailAfterSecondWriter {
         async fn write(&self, request: WriteRequest) -> EditResult<WriteResponse> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let response = FsWriter.write(request).await?;
             if call == 2 {
-                return Err(EditError::Writer("injected second write failure".into()));
+                return Err(EditError::Writer(
+                    "injected failure after the second write".into(),
+                ));
             }
-            FsWriter.write(request).await
+            Ok(response)
         }
     }
 
     #[tokio::test]
-    async fn apply_patch_second_write_failure_rolls_back_first_bytes() {
+    async fn apply_patch_failure_rolls_back_current_and_previous_writes() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"alpha\r\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), b"beta\n").unwrap();
         let env = Env::with_mode(dir.path(), EditMode::ApplyPatch);
         let first = blake3::hash(b"alpha\r\n").to_hex().to_string();
         let (_, second) = original_hashes();
-        let writer = FailSecondWriter {
+        let writer = FailAfterSecondWriter {
             calls: AtomicUsize::new(0),
         };
         let error = edit_with_writer(
@@ -584,8 +621,11 @@ mod tests {
         .await
         .unwrap_err()
         .to_string();
-        assert!(error.contains("injected second write failure"), "{error}");
-        assert_eq!(writer.calls.load(Ordering::SeqCst), 3);
+        assert!(
+            error.contains("injected failure after the second write"),
+            "{error}"
+        );
+        assert_eq!(writer.calls.load(Ordering::SeqCst), 4);
         assert_eq!(
             std::fs::read(dir.path().join("a.txt")).unwrap(),
             b"alpha\r\n"

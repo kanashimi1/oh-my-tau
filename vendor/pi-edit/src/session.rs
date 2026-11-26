@@ -316,6 +316,12 @@ impl Session {
         let mut files = Vec::with_capacity(staged.len());
         for (index, mut file) in staged.into_iter().enumerate() {
             let canonical = canonical_key(&file.absolute);
+            // A writer can fail after partially applying the current operation
+            // (for example, after writing a move destination but before removing
+            // its source), so rollback must include the failing operation too.
+            if transactional && file.op != FileOp::Noop {
+                written.push(file.clone());
+            }
             let response = if file.op == FileOp::Noop {
                 Ok(WriteResponse::default())
             } else {
@@ -352,10 +358,6 @@ impl Session {
                 }
                 Err(error) => return Err(error),
             };
-            if transactional {
-                written.push(file.clone());
-            }
-
             let mut tag: Option<String> = None;
             // Updated files register their response rows (plus still-valid prior
             // provenance) against the minted tag: (store key, carried lines,

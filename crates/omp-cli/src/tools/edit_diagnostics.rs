@@ -56,6 +56,8 @@ pub struct GateResult {
     pub diagnostics: Vec<Value>,
     pub timed_out: bool,
     pub truncated: bool,
+    /// Lossless diagnostics when the inline view is compacted.
+    pub full_output: Option<String>,
 }
 
 impl GateResult {
@@ -65,6 +67,7 @@ impl GateResult {
             "budgetMs": GATE_BUDGET_MS,
             "failurePolicy": "advisory-edit-kept",
             "diagnosticsTruncated": self.truncated,
+            "fullOutput": self.full_output,
         })
     }
 }
@@ -260,6 +263,7 @@ fn finish_gate(
     diagnostics: Vec<Value>,
     timed_out: bool,
     mut truncated: bool,
+    full_diagnostics: Vec<Value>,
 ) -> Option<GateResult> {
     if timed_out {
         sections.push(format!(
@@ -269,6 +273,16 @@ fn finish_gate(
     if sections.is_empty() {
         return None;
     }
+    let full_output = if truncated && !full_diagnostics.is_empty() {
+        super::util::save_artifact(
+            &serde_json::json!({ "diagnostics": full_diagnostics }).to_string(),
+        )
+    } else {
+        None
+    };
+    if let Some(full_output) = &full_output {
+        sections.insert(0, format!("[lsp] full diagnostics: {full_output}"));
+    }
     let (section, section_truncated) = compact_section(&sections.join("\n"));
     truncated |= section_truncated;
     Some(GateResult {
@@ -276,6 +290,7 @@ fn finish_gate(
         diagnostics,
         timed_out,
         truncated,
+        full_output,
     })
 }
 
@@ -292,10 +307,11 @@ pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
     let per_file = Duration::from_millis((GATE_BUDGET_MS / files.len() as u64).max(1));
     let mut sections = Vec::new();
     let mut all_diagnostics = Vec::new();
+    let mut full_diagnostics = Vec::new();
     let mut timed_out = false;
     let mut truncated = false;
 
-    'files: for (file_index, path) in files.iter().enumerate() {
+    'files: for path in files {
         let now = Instant::now();
         if now >= total_deadline {
             timed_out = true;
@@ -383,11 +399,20 @@ pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
             continue;
         }
 
+        let rel = format_path_relative_to_cwd(path, &env.cwd, false);
+        full_diagnostics.extend(delta.iter().map(|d| {
+            json!({
+                "file": rel,
+                "line": d.line + 1,
+                "column": d.col + 1,
+                "message": d.message,
+                "severity": "warning",
+            })
+        }));
         let escalated = {
             let mut ledger = env.diagnostics_ledger.lock();
             record_recurrence(&mut ledger, path, &delta)
         };
-        let rel = format_path_relative_to_cwd(path, &env.cwd, false);
         if escalated {
             sections.push(format!(
                 "[lsp BLOCKED-RETRY] this exact edit reproduces the same {} new diagnostics — change approach, do not repeat the same edit",
@@ -408,18 +433,23 @@ pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            sections.push(format!(
-                "[lsp] +{} new diagnostics in {}{}: {}",
-                delta.len(),
-                rel,
-                if shown.len() < delta.len() {
-                    format!(" (showing {})", shown.len())
-                } else {
-                    String::new()
-                },
-                items
-            ));
-            truncated |= shown.len() < delta.len();
+            if !shown.is_empty() {
+                sections.push(format!(
+                    "[lsp] +{} new diagnostics in {}{}: {}",
+                    delta.len(),
+                    rel,
+                    if shown.len() < delta.len() {
+                        format!(" (showing {})", shown.len())
+                    } else {
+                        String::new()
+                    },
+                    items
+                ));
+            }
+            truncated |= shown.len() < delta.len()
+                || shown
+                    .iter()
+                    .any(|d| d.message.chars().count() > MAX_DIAGNOSTIC_MESSAGE_CHARS);
             all_diagnostics.extend(shown.into_iter().map(|d| {
                 json!({
                     "file": rel,
@@ -430,13 +460,15 @@ pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
                 })
             }));
         }
-        if all_diagnostics.len() >= MAX_GATE_DIAGNOSTICS {
-            truncated |= file_index + 1 < files.len();
-            break;
-        }
     }
 
-    finish_gate(sections, all_diagnostics, timed_out, truncated)
+    finish_gate(
+        sections,
+        all_diagnostics,
+        timed_out,
+        truncated,
+        full_diagnostics,
+    )
 }
 
 // ============================================================================
@@ -626,7 +658,7 @@ mod tests {
 
     #[test]
     fn oracle_timeout_and_failure_policy_are_explicit() {
-        let result = finish_gate(Vec::new(), Vec::new(), true, false).unwrap();
+        let result = finish_gate(Vec::new(), Vec::new(), true, false, Vec::new()).unwrap();
         assert!(result.section.contains("edit kept (advisory)"));
         let details = result.details();
         assert_eq!(details["status"], "timeout");
@@ -640,6 +672,32 @@ mod tests {
         let (section, truncated) = compact_section(&"s".repeat(MAX_SECTION_CHARS * 2));
         assert!(truncated);
         assert_eq!(section.chars().count(), MAX_SECTION_CHARS);
+    }
+
+    #[test]
+    fn compact_oracle_retains_lossless_diagnostics_artifact() {
+        let _lock = super::super::util::SESSION_FILE_TEST_LOCK.lock();
+        let dir = tempfile::tempdir().unwrap();
+        let previous = omp_urls::global_session_file();
+        omp_urls::set_global_session_file(Some(dir.path().join("session.jsonl")));
+        let full = vec![json!({"message": "m".repeat(MAX_DIAGNOSTIC_MESSAGE_CHARS * 2)})];
+        let result = finish_gate(
+            vec!["[lsp] compact".to_string()],
+            Vec::new(),
+            false,
+            true,
+            full.clone(),
+        )
+        .unwrap();
+        assert_eq!(result.full_output.as_deref(), Some("artifact://0"));
+        assert!(result.section.contains("artifact://0"));
+        assert_eq!(result.details()["fullOutput"], "artifact://0");
+        let artifact: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("session/0.log")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(artifact["diagnostics"], Value::Array(full));
+        omp_urls::set_global_session_file(previous);
     }
 
     #[test]

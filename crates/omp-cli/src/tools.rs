@@ -94,6 +94,9 @@ pub struct Env {
     /// Escalation ledger for the post-write `edit`/`write` diagnostics gate:
     /// maps a `(file, delta-hash)` to how many times that exact delta recurred.
     pub diagnostics_ledger: parking_lot::Mutex<HashMap<(PathBuf, u64), usize>>,
+    /// Edit calls with staged but not yet committed filesystem writes. External
+    /// bash must not observe the real filesystem through this memory overlay.
+    active_edit_transactions: std::sync::atomic::AtomicUsize,
     /// The a2a session these tools belong to ([`a2a::Owner`]): the runtime
     /// stamps its token here at session start, and `task`/`wait`/`agent()`
     /// stamp and consume children/deliveries under it — so concurrent
@@ -103,7 +106,38 @@ pub struct Env {
     pub a2a_owner: parking_lot::Mutex<a2a::Owner>,
 }
 
+pub(crate) struct EditTransactionGuard<'a>(&'a Env);
+
+impl Drop for EditTransactionGuard<'_> {
+    fn drop(&mut self) {
+        self.0
+            .active_edit_transactions
+            .fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
 impl Env {
+    pub(crate) fn begin_edit_transaction(&self) -> EditTransactionGuard<'_> {
+        self.active_edit_transactions
+            .fetch_add(1, std::sync::atomic::Ordering::Acquire);
+        EditTransactionGuard(self)
+    }
+
+    /// Refuse external execution while this session has an uncommitted edit
+    /// overlay. There is no isolated filesystem that could project it to bash.
+    pub(crate) fn ensure_external_fs_visible(&self) -> anyhow::Result<()> {
+        if self
+            .active_edit_transactions
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0
+        {
+            anyhow::bail!(
+                "external bash is unsupported while an edit has uncommitted in-memory writes; no isolated filesystem exists — retry after the edit completes"
+            );
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn with_mode(cwd: &Path, edit_mode: EditMode) -> Self {
         Self {
@@ -114,6 +148,7 @@ impl Env {
             jobs: jobs::JobRegistry::default(),
             query: parking_lot::Mutex::default(),
             diagnostics_ledger: parking_lot::Mutex::new(HashMap::new()),
+            active_edit_transactions: std::sync::atomic::AtomicUsize::new(0),
             a2a_owner: parking_lot::Mutex::new(None),
         }
     }
