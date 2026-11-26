@@ -184,9 +184,15 @@ pub fn scan_loc_uses(cst: &Cst) -> Vec<LocUse> {
 /// or relocating any observable use changes it.
 #[must_use]
 pub fn loc_dep_hash(uses: &[LocUse]) -> ContentHash {
-    let mut buf = Vec::with_capacity(uses.len() * 8);
+    let mut buf = Vec::with_capacity(uses.len() * 24);
     for u in uses {
         buf.extend_from_slice(&u.symbolic.anchor.0.to_le_bytes());
+        // Identity is symbolic, but line!/column!() values are not: even a
+        // whole-item shift changes their observable result. Keep the stable
+        // anchor for tracking and add the current absolute span to the
+        // semantic dependency, so every relocation invalidates.
+        buf.extend_from_slice(&u.span.start.to_le_bytes());
+        buf.extend_from_slice(&u.span.end.to_le_bytes());
     }
     hash_bytes(&buf)
 }

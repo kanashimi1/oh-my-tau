@@ -28,6 +28,8 @@ pub enum WireError {
         /// Bytes still available.
         remaining: usize,
     },
+    /// JSON nesting exceeded the arena's explicit recursion bound.
+    DepthExceeded,
 }
 
 /// A bounded, append-then-freeze JSON wire buffer.
@@ -119,7 +121,21 @@ impl WireArena {
         if self.frozen {
             return Err(WireError::Frozen);
         }
-        let start = self.buf.len();
+        let remaining = self.remaining();
+        let needed = s.chars().try_fold(2_usize, |len, ch| {
+            let escaped = match ch {
+                '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+                c if (c as u32) < 0x20 => 6,
+                c => c.len_utf8(),
+            };
+            len.checked_add(escaped)
+        });
+        if needed.is_none_or(|needed| needed > remaining) {
+            return Err(WireError::Overflow {
+                needed: needed.unwrap_or(usize::MAX),
+                remaining,
+            });
+        }
         self.buf.push('"');
         for ch in s.chars() {
             match ch {
@@ -138,12 +154,6 @@ impl WireArena {
             }
         }
         self.buf.push('"');
-        if self.buf.len() > self.cap {
-            let needed = self.buf.len() - start;
-            let remaining = self.cap.saturating_sub(start);
-            self.buf.truncate(start);
-            return Err(WireError::Overflow { needed, remaining });
-        }
         Ok(())
     }
 
@@ -154,14 +164,17 @@ impl WireArena {
     /// As [`WireArena::write_raw`].
     pub fn write_value(&mut self, v: &Value) -> Result<(), WireError> {
         let start = self.buf.len();
-        let r = self.write_value_inner(v);
+        let r = self.write_value_inner(v, 0);
         if r.is_err() {
             self.buf.truncate(start);
         }
         r
     }
 
-    fn write_value_inner(&mut self, v: &Value) -> Result<(), WireError> {
+    fn write_value_inner(&mut self, v: &Value, depth: usize) -> Result<(), WireError> {
+        if depth >= 64 {
+            return Err(WireError::DepthExceeded);
+        }
         match v {
             Value::Null => self.write_raw("null"),
             Value::Bool(true) => self.write_raw("true"),
@@ -178,7 +191,7 @@ impl WireArena {
                     if i > 0 {
                         self.write_raw(",")?;
                     }
-                    self.write_value_inner(item)?;
+                    self.write_value_inner(item, depth + 1)?;
                 }
                 self.write_raw("]")
             }
@@ -190,7 +203,7 @@ impl WireArena {
                     }
                     self.write_escaped_str(k)?;
                     self.write_raw(":")?;
-                    self.write_value_inner(val)?;
+                    self.write_value_inner(val, depth + 1)?;
                 }
                 self.write_raw("}")
             }

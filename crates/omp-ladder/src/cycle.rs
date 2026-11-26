@@ -5,9 +5,9 @@
 //! `(workspace_digest, active_subgoal_id, normalized_error_sig)`:
 //! identical error text in different workspaces or under different
 //! subgoals can never collide. The error signature is normalized
-//! (paths reduced to basenames, digit runs folded, whitespace
-//! collapsed) so cosmetic differences do not fragment the cache,
-//! while the semantic content of the error is preserved.
+//! (paths reduced to basenames, line/column suffixes folded, whitespace
+//! collapsed) so cosmetic differences do not fragment the cache. Error
+//! codes and numeric Rust semantics are preserved.
 //!
 //! Negative constraints ("no fix is known for this error in this
 //! context") are content-anchored: each records the anchor (e.g. an
@@ -24,9 +24,9 @@ use crate::hash::{hash_str, ContentHash};
 
 /// Normalize a raw compiler error message into a stable signature:
 /// absolute or relative path tokens are reduced to their basename,
-/// runs of ASCII digits are folded to `0` (line/column numbers,
-/// error-code suffixes, byte offsets), and whitespace is collapsed
-/// to single spaces. Case and punctuation are preserved.
+/// numeric runs immediately following `:` are folded to `0` for
+/// line/column suffixes, and whitespace is collapsed to single spaces.
+/// Error-code suffixes, integer types and other semantic digits are kept.
 #[must_use]
 pub fn normalize_error_sig(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -39,13 +39,12 @@ pub fn normalize_error_sig(raw: &str) -> String {
         let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
         let mut chars = base.chars().peekable();
         while let Some(c) = chars.next() {
-            if c.is_ascii_digit() {
+            out.push(c);
+            if c == ':' && chars.peek().is_some_and(char::is_ascii_digit) {
                 out.push('0');
                 while chars.peek().is_some_and(char::is_ascii_digit) {
                     chars.next();
                 }
-            } else {
-                out.push(c);
             }
         }
     }

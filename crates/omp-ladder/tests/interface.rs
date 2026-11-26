@@ -241,9 +241,13 @@ fn observable_uses_are_symbolic_and_late_resolved() {
     let r2 = resolve_use(&cst2, &uses2[0], Some("src/lib.rs"));
     assert_eq!(r2.line, 3, "late resolution sees the shifted line");
     assert_eq!(
+        uses[0].symbolic.anchor, uses2[0].symbolic.anchor,
+        "item-relative symbolic identity survives a pure whole-item shift"
+    );
+    assert_ne!(
         loc_dep_hash(&uses),
         loc_dep_hash(&uses2),
-        "item-relative anchor: a pure whole-item shift is the same dependency"
+        "a whole-item shift changes line!()/column!() values and must invalidate"
     );
 }
 
@@ -335,6 +339,12 @@ fn cycle_key_isolation_and_normalization() {
     assert_ne!(k1, k3);
     assert_ne!(k1, k4);
 
+    let code_a = normalize_error_sig("error[E0308]: expected u32 at src/lib.rs:1:2");
+    let code_b = normalize_error_sig("error[E9999]: expected u32 at src/lib.rs:9:9");
+    assert_ne!(code_a, code_b, "error codes are semantic, not locations");
+    assert!(code_a.contains("u32"), "integer types must not be normalized");
+    assert!(code_a.contains("lib.rs:0:0"));
+
     let mut store: CycleStore<&str> = CycleStore::new();
     store.insert(k1, "fix-a");
     assert_eq!(store.get(&k1), Some(&"fix-a"));
@@ -410,6 +420,18 @@ fn wire_arena_is_bounded_and_transactional() {
     arena.write_raw("90abcdef").unwrap();
     assert_eq!(arena.remaining(), 0);
     assert_eq!(arena.write_raw("x"), Err(WireError::Overflow { needed: 1, remaining: 0 }));
+}
+
+#[test]
+fn wire_arena_rejects_excess_nesting_without_partial_output() {
+    let mut value = serde_json::Value::Null;
+    for _ in 0..65 {
+        value = serde_json::json!([value]);
+    }
+    let mut arena = WireArena::new(1 << 20);
+    arena.write_raw("kept").unwrap();
+    assert_eq!(arena.write_value(&value), Err(WireError::DepthExceeded));
+    assert_eq!(arena.as_str(), "kept");
 }
 
 #[test]
