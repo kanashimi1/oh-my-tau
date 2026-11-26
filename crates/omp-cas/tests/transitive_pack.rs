@@ -190,11 +190,15 @@ fn manifest_digest_mismatch_is_corrupt_error_with_that_digest() {
     let store = Store::open(dir.path()).unwrap();
     let mut graph = DepGraph::new();
     let a = put_with_deps(&store, &mut graph, b"true bytes", &[]);
-    let (_, path) = store.build_pack_file(&[a], &graph, 10).unwrap();
+    let b = put_with_deps(&store, &mut graph, b"second object", &[]);
+    let (_, path) = store.build_pack_file(&[a, b], &graph, 10).unwrap();
 
-    // Tamper: rewrite the manifest's digest field to another valid digest.
+    // Tamper with the last manifest row: the earlier valid row must not be
+    // committed before the later corruption is discovered.
     let mut bytes = std::fs::read(&path).unwrap();
-    let needle = format!("\"digest\":\"{}\"", a.hex());
+    let mut ordered = [a, b];
+    ordered.sort_by_key(|id| id.hex());
+    let needle = format!("\"digest\":\"{}\"", ordered[1].hex());
     let wrong = Digest::of(b"other object entirely");
     let patch_text = format!("\"digest\":\"{}\"", wrong.hex());
     let pos = bytes

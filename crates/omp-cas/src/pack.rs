@@ -17,7 +17,7 @@
 //! before any indexing; digests are strictly parsed and re-verified when
 //! the objects are written out.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -130,11 +130,20 @@ pub(crate) fn parse_pack(bytes: &[u8]) -> Result<(PackManifest, Vec<u8>)> {
     // Decompression-bomb bound: the manifest's declared content total is
     // the ceiling for the decompressed size, and the decoder output must
     // match it exactly.
-    let declared_total: u64 = manifest.objects.iter().map(|e| e.size).sum();
+    let declared_total = manifest.objects.iter().try_fold(0_u64, |total, entry| {
+        total
+            .checked_add(entry.size)
+            .ok_or(Error::Limit("pack declared content size overflow"))
+    })?;
     if declared_total > MAX_TOTAL_BYTES {
         return Err(Error::Limit("pack declares more content than cap"));
     }
-    let raw = zstd::stream::decode_all(payload)
+    let decoder = zstd::stream::read::Decoder::new(payload)
+        .map_err(|_| Error::Format("zstd decoder init failed"))?;
+    let mut raw = Vec::new();
+    decoder
+        .take(declared_total + 1)
+        .read_to_end(&mut raw)
         .map_err(|_| Error::Format("zstd decompress failed"))?;
     if raw.len() as u64 != declared_total {
         return Err(Error::Format("decompressed payload != manifest total"));
@@ -175,7 +184,9 @@ pub fn apply_pack(
     mut insert: impl FnMut(VerifiedObject) -> Result<()>,
 ) -> Result<Vec<ObjectId>> {
     let (manifest, raw) = parse_pack(bytes)?;
-    let mut ids = Vec::with_capacity(manifest.objects.len());
+    // Verify the complete pack before invoking a stateful importer: a corrupt
+    // later object must not leave earlier objects committed.
+    let mut verified = Vec::with_capacity(manifest.objects.len());
     for entry in manifest.objects {
         let digest =
             Digest::parse(&entry.digest).map_err(|_| Error::Format("manifest entry digest invalid"))?;
@@ -194,9 +205,13 @@ pub fn apply_pack(
                 reason: "pack payload does not match manifest digest".into(),
             });
         }
+        verified.push((id, start, end));
+    }
+    let mut ids = Vec::with_capacity(verified.len());
+    for (id, start, end) in verified {
         insert(VerifiedObject {
             id,
-            bytes: std::borrow::Cow::Borrowed(object_bytes),
+            bytes: std::borrow::Cow::Borrowed(&raw[start..end]),
         })?;
         ids.push(id);
     }
