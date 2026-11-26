@@ -394,6 +394,12 @@ impl EvalBridge {
             if format == "stripped" {
                 selected = strip_ansi(&selected);
             }
+            if query.is_none() {
+                selected = super::structured::render_text(
+                    selected,
+                    &super::util::SpillConfig::load(&self.ctx.cwd),
+                );
+            }
 
             if format == "json" {
                 let mut data = json!({
@@ -1028,6 +1034,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+        temp_env::with_var("PI_ARTIFACTS_DIR", Some(&artifacts), || {
         let previous = omp_urls::global_session_file();
         omp_urls::set_global_session_file(Some(session));
         let env = env("structured-output");
@@ -1047,5 +1054,43 @@ mod tests {
         assert!(text.starts_with("# omt.table.v1\n"), "{text}");
         assert!(text.contains("ok\tzero\tnil\ttext\nboolean\tnumber\tnull\tstring"));
         assert!(text.contains("false\t0\tnull\ta\\tb\\nc\\\\d"));
+        });
+    }
+
+    #[test]
+    fn raw_output_is_bounded_and_spilled_without_changing_small_results() {
+        let _lock = super::super::util::SESSION_FILE_TEST_LOCK.lock();
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path().join("session.jsonl");
+        let artifacts = dir.path().join("session");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        let raw = "prefix\n".repeat(20_000);
+        std::fs::write(artifacts.join("large.md"), &raw).unwrap();
+        std::fs::write(artifacts.join("small.md"), "false 0 null\n").unwrap();
+        temp_env::with_var("PI_ARTIFACTS_DIR", Some(&artifacts), || {
+        let previous = omp_urls::global_session_file();
+        omp_urls::set_global_session_file(Some(session));
+        let env = env("bounded-raw-output");
+        let bridge = bridge(
+            &env,
+            BridgePolicy {
+                tools: Vec::new(),
+                before: None,
+                after: None,
+            },
+        );
+        let small = bridge.output_helper(&json!({"id": "small"})).unwrap();
+        assert_eq!(small, json!("false 0 null\n"));
+        let large = bridge.output_helper(&json!({"id": "large"})).unwrap();
+        omp_urls::set_global_session_file(previous);
+        let envelope: Value = serde_json::from_str(large.as_str().unwrap()).unwrap();
+        assert_eq!(envelope["full_output"], "artifact://0");
+        assert_eq!(envelope["full_bytes"], raw.len());
+        assert!(large.as_str().unwrap().len() < raw.len());
+        assert_eq!(
+            std::fs::read_to_string(artifacts.join("0.log")).unwrap(),
+            raw
+        );
+        });
     }
 }

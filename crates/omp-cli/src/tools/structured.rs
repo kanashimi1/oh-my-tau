@@ -40,7 +40,14 @@ pub fn encode_with_options(value: &Value, options: EncodeOptions<'_>) -> String 
 /// value as an artifact and return a bounded JSON envelope.
 #[must_use]
 pub fn render(value: &Value, cfg: &SpillConfig) -> String {
-    budget(encode(value), cfg)
+    render_text(encode(value), cfg)
+}
+
+/// Apply the same lossless spill budget to an already encoded text result.
+/// Small strings are returned byte-for-byte unchanged.
+#[must_use]
+pub fn render_text(full: String, cfg: &SpillConfig) -> String {
+    budget(full, cfg)
 }
 
 fn budget(full: String, cfg: &SpillConfig) -> String {
