@@ -217,7 +217,7 @@ impl EvalBridge {
         match op {
             "read" => self.read_helper(args).await,
             "write" => self.write_helper(args).await,
-            "output" => Self::output_helper(&args),
+            "output" => self.output_helper(&args),
             "env" => env_helper(&args),
             "tool.list" => Ok(Value::Array(
                 self.policy.callable().map(tool_descriptor).collect(),
@@ -317,7 +317,7 @@ impl EvalBridge {
     // one host op: id lookup, offset/limit slicing, reply shape
     // invariant: results.len() == 1 was checked above, so pop yields Some.
     #[allow(clippy::expect_used)]
-    fn output_helper(args: &Value) -> Result<Value, String> {
+    fn output_helper(&self, args: &Value) -> Result<Value, String> {
         let ids: Vec<String> = match args.get("ids") {
             Some(Value::String(s)) => vec![s.clone()],
             Some(Value::Array(items)) => items
@@ -364,9 +364,10 @@ impl EvalBridge {
                 let value = apply_query(&parsed, query).unwrap_or(Value::Null);
                 selected = match value {
                     Value::Null => "null".to_string(),
-                    other => {
-                        serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string())
-                    }
+                    other => super::structured::render(
+                        &other,
+                        &super::util::SpillConfig::load(&self.ctx.cwd),
+                    ),
                 };
             } else if offset.is_some() || limit.is_some() {
                 let start = offset.unwrap_or(1).max(1);
@@ -1010,5 +1011,41 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+    #[test]
+    fn output_query_uses_lossless_typed_tsv() {
+        let _lock = super::super::util::SESSION_FILE_TEST_LOCK.lock();
+        let dir = tempfile::tempdir().unwrap();
+        let session = dir.path().join("session.jsonl");
+        let artifacts = dir.path().join("session");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        std::fs::write(
+            artifacts.join("worker.md"),
+            serde_json::to_string(&json!({"rows": [
+                {"ok": false, "zero": 0, "nil": null, "text": "a\tb\nc\\d"},
+                {"ok": true, "zero": 2, "nil": null, "text": "plain"}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let previous = omp_urls::global_session_file();
+        omp_urls::set_global_session_file(Some(session));
+        let env = env("structured-output");
+        let bridge = bridge(
+            &env,
+            BridgePolicy {
+                tools: Vec::new(),
+                before: None,
+                after: None,
+            },
+        );
+        let result = bridge
+            .output_helper(&json!({"id": "worker", "query": ".rows"}))
+            .unwrap();
+        omp_urls::set_global_session_file(previous);
+        let text = result.as_str().unwrap();
+        assert!(text.starts_with("# omt.table.v1\n"), "{text}");
+        assert!(text.contains("ok\tzero\tnil\ttext\nboolean\tnumber\tnull\tstring"));
+        assert!(text.contains("false\t0\tnull\ta\\tb\\nc\\\\d"));
     }
 }
