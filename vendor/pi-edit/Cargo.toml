@@ -8,6 +8,7 @@ description = "Vendored from can1357/oh-my-pi (MIT), see ../LICENSE-oh-my-pi."
 
 [dependencies]
 async-trait = "0.1"
+blake3 = "1"
 parking_lot = "0.12"
 pi-ast = { path = "../pi-ast" }
 pi-diff = { path = "../pi-diff" }

@@ -13,7 +13,7 @@ use regex::Regex;
 
 use super::patch::{Operation, PatchEngine, PatchInput, preview_patch, stage_patch};
 use crate::{
-    engine::{EditMode, FileOpIntent, Inspection, ModeEngine, PreviewFile, StagedFile},
+    engine::{EditMode, FileOp, FileOpIntent, Inspection, ModeEngine, PreviewFile, StagedFile},
     error::EditError,
     files::FileSource,
     store::EditStore,
@@ -27,6 +27,7 @@ const ADD_FILE_MARKER: &str = "*** Add File: ";
 const DELETE_FILE_MARKER: &str = "*** Delete File: ";
 const UPDATE_FILE_MARKER: &str = "*** Update File: ";
 const MOVE_TO_MARKER: &str = "*** Move to: ";
+const EXPECTED_BLAKE3_MARKER: &str = "*** Expected BLAKE3: ";
 const ATOMICITY_NOTICE: &str = "No files were modified — sections apply atomically.";
 
 static PATH_NOISE_FILE: LazyLock<Regex> = LazyLock::new(|| {
@@ -58,6 +59,8 @@ pub struct ApplyPatchEntry {
     pub rename: Option<String>,
     /// Full create content or update hunks.
     pub diff: Option<String>,
+    /// Optional BLAKE3 hex digest of the original file bytes.
+    pub expected_blake3: Option<String>,
 }
 
 fn parse_error(message: impl Into<String>, line: Option<usize>) -> EditError {
@@ -66,6 +69,27 @@ fn parse_error(message: impl Into<String>, line: Option<usize>) -> EditError {
         Some(line) => format!("Line {line}: {message}"),
         None => message,
     })
+}
+
+fn parse_expected_blake3(
+    lines: &[&str],
+    index: &mut usize,
+    end: usize,
+) -> Result<Option<String>, EditError> {
+    if *index >= end {
+        return Ok(None);
+    }
+    let Some(hex) = js_trim(lines[*index]).strip_prefix(EXPECTED_BLAKE3_MARKER) else {
+        return Ok(None);
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(parse_error(
+            "Expected BLAKE3 must be exactly 64 hexadecimal characters",
+            Some(*index + 1),
+        ));
+    }
+    *index += 1;
+    Ok(Some(hex.to_owned()))
 }
 
 fn parse_with_options(
@@ -117,6 +141,7 @@ fn parse_with_options(
         let first = js_trim(lines[index]);
         if let Some(path) = first.strip_prefix(ADD_FILE_MARKER) {
             index += 1;
+            let expected_blake3 = parse_expected_blake3(&lines, &mut index, end)?;
             let mut content = String::new();
             while index < end {
                 let Some(line) = lines[index].strip_prefix('+') else {
@@ -131,22 +156,26 @@ fn parse_with_options(
                 op: Operation::Create,
                 rename: None,
                 diff: Some(content),
+                expected_blake3,
             });
             continue;
         }
         if let Some(path) = first.strip_prefix(DELETE_FILE_MARKER) {
+            index += 1;
+            let expected_blake3 = parse_expected_blake3(&lines, &mut index, end)?;
             output.push(ApplyPatchEntry {
                 path: path.to_owned(),
                 op: Operation::Delete,
                 rename: None,
                 diff: None,
+                expected_blake3,
             });
-            index += 1;
             continue;
         }
         if let Some(path) = first.strip_prefix(UPDATE_FILE_MARKER) {
             let path = path.to_owned();
             index += 1;
+            let expected_blake3 = parse_expected_blake3(&lines, &mut index, end)?;
             let mut rename = None;
             if index < end
                 && let Some(destination) = lines[index].strip_prefix(MOVE_TO_MARKER)
@@ -172,6 +201,7 @@ fn parse_with_options(
                         op: Operation::Update,
                         rename,
                         diff: Some(String::new()),
+                        expected_blake3,
                     });
                     continue;
                 }
@@ -185,6 +215,7 @@ fn parse_with_options(
                 op: Operation::Update,
                 rename,
                 diff: Some(lines[body_start..index].join("\n")),
+                expected_blake3,
             });
             continue;
         }
@@ -270,6 +301,59 @@ fn wrap_file_error(path: &str, error: EditError, multiple_files: bool) -> EditEr
     }
 }
 
+fn validate_content_anchor(
+    path: &str,
+    entries: &[&ApplyPatchEntry],
+    staged: &[StagedFile],
+    anchors_required: bool,
+    multiple_files: bool,
+) -> Result<(), EditError> {
+    let mut anchors = entries
+        .iter()
+        .filter_map(|entry| entry.expected_blake3.as_deref());
+    let expected = anchors.next();
+    if anchors.next().is_some() {
+        return Err(wrap_file_error(
+            path,
+            EditError::apply("Duplicate BLAKE3 expected-content anchor"),
+            multiple_files,
+        ));
+    }
+    let changes_existing = staged
+        .iter()
+        .any(|file| file.existed && file.op != FileOp::Noop);
+    let Some(expected) = expected else {
+        if anchors_required && changes_existing {
+            return Err(wrap_file_error(
+                path,
+                EditError::apply(
+                    "Missing BLAKE3 expected-content anchor for a changed existing file",
+                ),
+                multiple_files,
+            ));
+        }
+        return Ok(());
+    };
+    let Some(before) = staged.iter().find_map(|file| file.before_raw.as_deref()) else {
+        return Err(wrap_file_error(
+            path,
+            EditError::apply("BLAKE3 expected-content anchor requires original file bytes"),
+            multiple_files,
+        ));
+    };
+    let actual = blake3::hash(before.as_bytes()).to_hex().to_string();
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(wrap_file_error(
+            path,
+            EditError::apply(format!(
+                "Stale BLAKE3 expected-content anchor: expected {expected}, actual {actual}"
+            )),
+            multiple_files,
+        ));
+    }
+    Ok(())
+}
+
 fn stage_entries(
     entries: &[ApplyPatchEntry],
     files: &mut dyn FileSource,
@@ -280,6 +364,7 @@ fn stage_entries(
         return Err(EditError::apply("No files were modified."));
     }
     let multiple_files = distinct_paths(entries) > 1;
+    let anchors_required = entries.iter().any(|entry| entry.expected_blake3.is_some());
     let mut order = Vec::<String>::new();
     let mut groups = HashMap::<String, Vec<&ApplyPatchEntry>>::new();
     for entry in entries {
@@ -339,7 +424,16 @@ fn stage_entries(
             engine.stage(&args, files, &EditStore::new())
         };
         match result {
-            Ok(mut files) => staged.append(&mut files),
+            Ok(mut staged_files) => {
+                validate_content_anchor(
+                    &path,
+                    group,
+                    &staged_files,
+                    anchors_required,
+                    multiple_files,
+                )?;
+                staged.append(&mut staged_files);
+            }
             Err(error) => return Err(wrap_file_error(&path, error, multiple_files)),
         }
     }
@@ -371,7 +465,10 @@ fn natural_order_previews(input: &str) -> Vec<PreviewFile> {
             current = Some(path);
             continue;
         }
-        if trimmed.starts_with("*** Move to:") || trimmed.starts_with("*** End of File") {
+        if trimmed.starts_with("*** Move to:")
+            || trimmed.starts_with(EXPECTED_BLAKE3_MARKER)
+            || trimmed.starts_with("*** End of File")
+        {
             continue;
         }
         if let Some(path) = &current

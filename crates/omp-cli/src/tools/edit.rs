@@ -115,6 +115,14 @@ impl EditWriter for FsWriter {
 /// # Errors
 /// The engine's model-facing message (parse, locate, apply or write failure).
 pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
+    edit_with_writer(env, args, &FsWriter).await
+}
+
+async fn edit_with_writer(
+    env: &Env,
+    args: &Value,
+    writer: &dyn EditWriter,
+) -> Result<AgentToolResult> {
     let config = SessionConfig {
         mode: env.edit_mode,
         policy: policy(&env.cwd),
@@ -137,7 +145,7 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
         }
     }
     let outcome = session
-        .apply(ApplyRequest::default(), &FsWriter)
+        .apply(ApplyRequest::default(), writer)
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let mut result = AgentToolResult::text(outcome.text.clone());
@@ -328,6 +336,7 @@ pub async fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
 mod tests {
     use super::*;
     use crate::tools::read::read;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn text_of(r: &AgentToolResult) -> String {
         r.content
@@ -468,6 +477,120 @@ mod tests {
             std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
             "hello rust\n"
         );
+    }
+
+    fn anchored_two_file_patch(first: &str, second: &str) -> String {
+        format!(
+            "*** Begin Patch\n\
+             *** Update File: a.txt\n\
+             *** Expected BLAKE3: {first}\n\
+             @@\n\
+             -alpha\n\
+             +ALPHA\n\
+             *** Update File: b.txt\n\
+             *** Expected BLAKE3: {second}\n\
+             @@\n\
+             -beta\n\
+             +BETA\n\
+             *** End Patch\n"
+        )
+    }
+
+    fn original_hashes() -> (String, String) {
+        (
+            blake3::hash(b"alpha\n").to_hex().to_string(),
+            blake3::hash(b"beta\n").to_hex().to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn apply_patch_anchored_two_file_success() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+        let env = Env::with_mode(dir.path(), EditMode::ApplyPatch);
+        let (first, second) = original_hashes();
+        edit(
+            &env,
+            &json!({"input": anchored_two_file_patch(&first, &second)}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(dir.path().join("a.txt")).unwrap(), b"ALPHA\n");
+        assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"BETA\n");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_stale_or_missing_anchor_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "beta\n").unwrap();
+        let env = Env::with_mode(dir.path(), EditMode::ApplyPatch);
+        let (first, _) = original_hashes();
+        let stale = "0".repeat(64);
+        let error = edit(
+            &env,
+            &json!({"input": anchored_two_file_patch(&first, &stale)}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Stale BLAKE3"), "{error}");
+        assert_eq!(std::fs::read(dir.path().join("a.txt")).unwrap(), b"alpha\n");
+        assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"beta\n");
+
+        let missing = anchored_two_file_patch(&first, &stale)
+            .replace(&format!("*** Expected BLAKE3: {stale}\n"), "");
+        let error = edit(&env, &json!({"input": missing}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Missing BLAKE3"), "{error}");
+        assert_eq!(std::fs::read(dir.path().join("a.txt")).unwrap(), b"alpha\n");
+        assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"beta\n");
+    }
+
+    struct FailSecondWriter {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl EditWriter for FailSecondWriter {
+        async fn write(&self, request: WriteRequest) -> EditResult<WriteResponse> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == 2 {
+                return Err(EditError::Writer("injected second write failure".into()));
+            }
+            FsWriter.write(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_patch_second_write_failure_rolls_back_first_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"alpha\r\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"beta\n").unwrap();
+        let env = Env::with_mode(dir.path(), EditMode::ApplyPatch);
+        let first = blake3::hash(b"alpha\r\n").to_hex().to_string();
+        let (_, second) = original_hashes();
+        let writer = FailSecondWriter {
+            calls: AtomicUsize::new(0),
+        };
+        let error = edit_with_writer(
+            &env,
+            &json!({"input": anchored_two_file_patch(&first, &second)}),
+            &writer,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("injected second write failure"), "{error}");
+        assert_eq!(writer.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            std::fs::read(dir.path().join("a.txt")).unwrap(),
+            b"alpha\r\n"
+        );
+        assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"beta\n");
     }
 
     #[tokio::test]

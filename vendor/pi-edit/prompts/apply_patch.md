@@ -8,8 +8,10 @@ Envelope:
 ```
 Each file operation MUST start with an action header:
 `*** Add File: <path>`: create file; every following line MUST start with `+` (initial content).
-`*** Delete File: <path>`: remove existing file; nothing follows.
+`*** Delete File: <path>`: remove existing file; nothing follows except an optional content anchor.
 `*** Update File: <path>`: patch in place; optional immediate `*** Move to: <new path>` renames; then one or more `@@` hunks (header optional). Hunk lines start with space, `-` or `+`.
+
+Optional transactional anchors: put `*** Expected BLAKE3: <64-lowercase-hex>` immediately after an action header. The digest covers the exact original file bytes. If any section has an anchor, every changed pre-existing file in the patch MUST have one; new files do not need anchors. A stale or missing anchor rejects the whole patch before any write.
 
 Context: 3 unchanged lines before and after each change. For changes within 3 lines of each other, do NOT repeat the first change's after-context as the second's before-context. If 3 lines don't identify the code uniquely, add `@@ <class/function>`; if still ambiguous, stack several `@@` lines:
 ```
@@ -27,9 +29,10 @@ Patch := Begin { FileOp } End
 Begin := "*** Begin Patch" NEWLINE
 End := "*** End Patch" NEWLINE
 FileOp := AddFile | DeleteFile | UpdateFile
-AddFile := "*** Add File: " path NEWLINE { "+" line NEWLINE }
-DeleteFile := "*** Delete File: " path NEWLINE
-UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
+AddFile := "*** Add File: " path NEWLINE [ Expected ] { "+" line NEWLINE }
+DeleteFile := "*** Delete File: " path NEWLINE [ Expected ]
+UpdateFile := "*** Update File: " path NEWLINE [ Expected ] [ MoveTo ] { Hunk }
+Expected := "*** Expected BLAKE3: " 64-hex-digit-original-byte-digest NEWLINE
 MoveTo := "*** Move to: " newPath NEWLINE
 Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
 HunkLine := (" " | "-" | "+") text NEWLINE

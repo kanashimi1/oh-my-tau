@@ -3,13 +3,14 @@ begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
 
 hunk: add_hunk | delete_hunk | update_hunk
-add_hunk: "*** Add File: " filename LF add_line+
-delete_hunk: "*** Delete File: " filename LF
-update_hunk: "*** Update File: " filename LF change_move? change?
+add_hunk: "*** Add File: " filename LF expected_blake3? add_line+
+delete_hunk: "*** Delete File: " filename LF expected_blake3?
+update_hunk: "*** Update File: " filename LF expected_blake3? change_move? change?
 
 filename: /(.+)/
 add_line: "+" /(.*)/ LF -> line
 
+expected_blake3: "*** Expected BLAKE3: " /[0-9a-fA-F]{64}/ LF
 change_move: "*** Move to: " filename LF
 change: (change_context | change_line)+ eof_line?
 change_context: ("@@" | "@@ " /(.+)/) LF
