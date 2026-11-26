@@ -81,11 +81,15 @@ fn distro() -> Option<String> {
     }
     let out = Command::new("wslpath").args(["-w", "/"]).output().ok()?;
     let unc = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    unc.trim_start_matches('\\')
+    // The `.nth` result is owned here so the `&str` borrow of `unc` ends before
+    // `unc`'s drop (the Blaze borrow checker keeps it live to the item's end otherwise).
+    let distro = unc
+        .trim_start_matches('\\')
         .split('\\')
         .nth(1)
         .filter(|d| !d.is_empty())
-        .map(str::to_owned)
+        .map(str::to_owned);
+    distro
 }
 
 /// Windows Terminal's app-execution alias in some Windows profile.
