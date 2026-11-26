@@ -289,6 +289,18 @@ fn relocating_an_observable_use_invalidates() {
 }
 
 #[test]
+fn observable_column_matches_rustc_unicode_semantics() {
+    let src = "pub fn f() { let _ = \"✓\"; let _ = column!(); }\n";
+    let cst = parse_top_level(src);
+    let uses = scan_loc_uses(&cst);
+    assert_eq!(uses.len(), 1);
+    let start = uses[0].span.start;
+    let expected = src[..start].chars().count() + 1;
+    assert_ne!(expected, start + 1, "probe contains a multibyte character");
+    assert_eq!(resolve_use(&cst, &uses[0], None).col as usize, expected);
+}
+
+#[test]
 fn not_every_bang_is_a_location_macro() {
     // `a != b` and non-location macros must not be detected.
     let src = "pub fn f() { let a = 1; let b = 2; let _ = a != b; foo!(); let _ = columns!(); }\n";

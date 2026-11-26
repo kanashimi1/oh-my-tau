@@ -205,7 +205,7 @@ pub struct ResolvedLoc {
     pub file: Option<String>,
     /// 1-based line.
     pub line: u32,
-    /// 1-based column (in bytes, matching rustc's `column!`).
+    /// 1-based column in Unicode scalar values, matching rustc's `column!`.
     pub col: u32,
 }
 
@@ -219,7 +219,7 @@ pub fn resolve_offset(src: &str, offset: usize) -> (u32, u32) {
     let prefix = src.get(..off).unwrap_or("");
     let line = u32::try_from(prefix.matches('\n').count()).unwrap_or(u32::MAX) + 1;
     let col_start = prefix.rfind('\n').map_or(0, |p| p + 1);
-    let col = u32::try_from(off - col_start).unwrap_or(u32::MAX) + 1;
+    let col = u32::try_from(prefix[col_start..].chars().count()).unwrap_or(u32::MAX) + 1;
     (line, col)
 }
 
