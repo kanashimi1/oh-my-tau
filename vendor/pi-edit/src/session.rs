@@ -279,9 +279,11 @@ impl Session {
     ///
     /// Order: reread every target fresh, stage all files in memory (any
     /// failure aborts before the first write), enforce the plan-mode guard
-    /// for every file, then write in payload order. A writer failure aborts
-    /// the loop; files already written stay written and the error is
-    /// returned verbatim. URL targets never reuse preview-time answers (see
+    /// for every file, then write in payload order. For `apply_patch`, a
+    /// writer failure restores earlier writes in reverse order on a best-effort
+    /// basis and reports any rollback failure. This does not provide crash
+    /// atomicity. Other modes leave earlier writes in place. URL targets never
+    /// reuse preview-time answers (see
     /// [`Self::begin_apply_url_targets`]).
     ///
     /// # Errors
@@ -309,11 +311,13 @@ impl Session {
         }
 
         let last_write = staged.iter().rposition(|file| file.op != FileOp::Noop);
+        let transactional = self.config.mode == EditMode::ApplyPatch;
+        let mut written = Vec::new();
         let mut files = Vec::with_capacity(staged.len());
         for (index, mut file) in staged.into_iter().enumerate() {
             let canonical = canonical_key(&file.absolute);
             let response = if file.op == FileOp::Noop {
-                WriteResponse::default()
+                Ok(WriteResponse::default())
             } else {
                 writer
                     .write(WriteRequest {
@@ -325,8 +329,32 @@ impl Session {
                         flush_lsp: request.lsp_flush && last_write == Some(index),
                         lsp_batch_id: request.lsp_batch_id.clone(),
                     })
-                    .await?
+                    .await
             };
+            let response = match response {
+                Ok(response) => response,
+                Err(error) if transactional => {
+                    let rollback = rollback_written(&written, writer).await;
+                    for previous in &written {
+                        self.store.invalidate(&canonical_key(&previous.absolute));
+                        if let Some(destination) = &previous.move_to {
+                            self.store.invalidate(&canonical_key(&destination.absolute));
+                        }
+                    }
+                    return Err(match rollback {
+                        Ok(()) => EditError::Writer(format!(
+                            "{error}\nRolled back earlier apply_patch writes."
+                        )),
+                        Err(rollback) => EditError::Writer(format!(
+                            "{error}\nRollback was incomplete: {rollback}"
+                        )),
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            if transactional {
+                written.push(file.clone());
+            }
 
             let mut tag: Option<String> = None;
             // Updated files register their response rows (plus still-valid prior
@@ -438,6 +466,95 @@ impl Session {
             .collect::<Vec<_>>()
             .join(EDIT_RESULT_SEPARATOR);
         Ok(ApplyOutcome { text, files })
+    }
+}
+
+/// Restore successful writes from an `apply_patch` call in reverse order.
+/// The original writer owns every filesystem operation, including rollback.
+async fn rollback_written(files: &[StagedFile], writer: &dyn EditWriter) -> EditResult<()> {
+    let mut failures = Vec::new();
+    for file in files.iter().rev() {
+        let original = || {
+            file.before_raw.clone().ok_or_else(|| {
+                EditError::Writer(format!(
+                    "original bytes for {} are unavailable",
+                    file.display
+                ))
+            })
+        };
+        let requests = match file.op {
+            FileOp::Noop => Vec::new(),
+            FileOp::Create => vec![rollback_request(
+                file,
+                file.absolute.clone(),
+                FileOp::Delete,
+                None,
+            )],
+            FileOp::Update => {
+                let original = match original() {
+                    Ok(original) => original,
+                    Err(error) => {
+                        failures.push(error.to_string());
+                        continue;
+                    }
+                };
+                let mut requests = Vec::new();
+                if let Some(destination) = &file.move_to {
+                    requests.push(rollback_request(
+                        file,
+                        destination.absolute.clone(),
+                        FileOp::Delete,
+                        None,
+                    ));
+                }
+                requests.push(rollback_request(
+                    file,
+                    file.absolute.clone(),
+                    FileOp::Update,
+                    Some(original),
+                ));
+                requests
+            }
+            FileOp::Delete => match original() {
+                Ok(original) => vec![rollback_request(
+                    file,
+                    file.absolute.clone(),
+                    FileOp::Create,
+                    Some(original),
+                )],
+                Err(error) => {
+                    failures.push(error.to_string());
+                    continue;
+                }
+            },
+        };
+        for request in requests {
+            if let Err(error) = writer.write(request).await {
+                failures.push(format!("{}: {error}", file.display));
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(EditError::Writer(failures.join("; ")))
+    }
+}
+
+fn rollback_request(
+    file: &StagedFile,
+    absolute: PathBuf,
+    op: FileOp,
+    content: Option<String>,
+) -> WriteRequest {
+    WriteRequest {
+        absolute,
+        display: file.display.clone(),
+        op,
+        move_to: None,
+        content,
+        flush_lsp: false,
+        lsp_batch_id: None,
     }
 }
 
