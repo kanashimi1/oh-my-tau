@@ -180,14 +180,15 @@ impl FlightLog {
     }
 
     /// A log that also appends every record to `sink` as JSONL. An existing
-    /// sink larger than `max_file_bytes` is truncated on construction, so the
-    /// on-disk log stays bounded too.
+    /// sink is replaced with an explicit truncation marker before an append
+    /// would exceed `max_file_bytes`, so the on-disk log stays bounded and an
+    /// incomplete on-disk history is never mistaken for a complete pass.
     #[must_use]
     pub fn with_sink(capacity: usize, sink: Option<PathBuf>, max_file_bytes: u64) -> Self {
         if let Some(path) = &sink {
-            if std::fs::metadata(path).is_ok_and(|m| m.len() > max_file_bytes) {
-                // Explicit bounded-file behavior: start over rather than grow
-                // without limit. A failure here is counted on the first write.
+            if std::fs::metadata(path).is_ok_and(|meta| meta.len() > max_file_bytes) {
+                // Start a fresh flight-log generation rather than appending to
+                // an already over-budget file. The next append stays bounded.
                 let _ = std::fs::File::create(path);
             }
         }
@@ -252,6 +253,39 @@ impl FlightLog {
                 continue;
             };
             line.push('\n');
+            let file_len = inner
+                .file
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .map_or_else(
+                    || std::fs::metadata(path).map_or(0, |meta| meta.len()),
+                    |meta| meta.len(),
+                );
+            if file_len.saturating_add(line.len() as u64) > self.max_file_bytes {
+                inner.file = None;
+                match std::fs::File::create(path) {
+                    Ok(mut file) => {
+                        let marker = FlightRecord {
+                            seq: inner.seq,
+                            pass: inner.current_pass.clone(),
+                            event: FlightEvent::LogTruncated { dropped: 1 },
+                        };
+                        if let Ok(mut marker) = serde_json::to_string(&marker) {
+                            marker.push('\n');
+                            if marker.len() as u64 <= self.max_file_bytes
+                                && file.write_all(marker.as_bytes()).is_err()
+                            {
+                                inner.write_failures += 1;
+                            }
+                        }
+                        inner.file = Some(file);
+                    }
+                    Err(_) => inner.write_failures += 1,
+                }
+                // The record that triggered the reset is represented by the
+                // truncation marker, keeping the JSONL sequence monotonic.
+                continue;
+            }
             if inner.file.is_none() {
                 inner.file = std::fs::OpenOptions::new()
                     .create(true)
@@ -1278,6 +1312,25 @@ mod tests {
     /// Persistence failure of the flight-log sink is explicit and harmless:
     /// the pass commits, the in-memory log is complete, and the failure is
     /// counted (never propagated into the compaction).
+    #[test]
+    fn sink_append_bound_is_enforced_with_an_explicit_truncation_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flight.jsonl");
+        let log = FlightLog::with_sink(256, Some(path.clone()), 1024);
+        log.start_pass("session", "leaf", "model", None, 0);
+        for _ in 0..30 {
+            log.record(FlightEvent::Failed {
+                error: "x".repeat(200),
+            });
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() <= 1024, "sink grew to {}", bytes.len());
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("\"event\":\"log_truncated\""), "{text}");
+        let records = decode_log(&text).unwrap();
+        assert!(records.windows(2).all(|pair| pair[0].seq < pair[1].seq));
+    }
+
     #[tokio::test]
     async fn sink_failure_never_fails_the_pass() {
         let dir = tempfile::tempdir().unwrap();
@@ -1307,8 +1360,12 @@ mod tests {
         let sink_dir = tempfile::tempdir().unwrap();
         let sink_session = build_session(sink_dir.path());
         let sink = sink_dir.path().join("flight.jsonl");
-        std::fs::write(&sink, "x".repeat(4096)).unwrap();
-        let flight = FlightLog::with_sink(DEFAULT_CAPACITY, Some(sink.clone()), 1024);
+        std::fs::write(&sink, "x".repeat(DEFAULT_MAX_FILE_BYTES as usize + 1)).unwrap();
+        let flight = FlightLog::with_sink(
+            DEFAULT_CAPACITY,
+            Some(sink.clone()),
+            DEFAULT_MAX_FILE_BYTES,
+        );
         assert_eq!(std::fs::metadata(&sink).unwrap().len(), 0, "bounded file");
         let scripted = ScriptedSummarizer::new(vec![
             Injected::Reply("S".to_owned()),
