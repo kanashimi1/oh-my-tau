@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cfg::{cfg_attr_from_meta, cfg_from_meta, CfgContext, CfgExpr};
-use crate::cst::{Cst, TopKind};
+use crate::cst::{Cst, TopKind, Visibility};
 use crate::hash::{hash_str, ContentHash};
 use crate::lex::Span;
 
@@ -53,8 +53,10 @@ pub enum ItemStatus {
     Active,
     /// cfg-disabled under the projection's [`CfgContext`].
     CfgDisabled,
-    /// Macro invocation: expansion unknown, body opaque. Never treat
-    /// as safely parsed.
+    /// Not safely parsed: either a macro invocation (expansion
+    /// unknown, body opaque) or an item whose signature hit a
+    /// syntactic ambiguity (fail closed). Never treat as ordinary
+    /// parsed code.
     Opaque,
 }
 
@@ -82,6 +84,8 @@ pub struct Item {
     /// Whether `cfg` evaluates true under the projection context.
     pub cfg_enabled: bool,
     pub status: ItemStatus,
+    /// Syntactic visibility of the item.
+    pub visibility: Visibility,
     /// Invoked macro path for [`ItemKind::MacroCall`].
     pub macro_path: Option<String>,
     pub deps: Vec<Dep>,
@@ -196,7 +200,12 @@ pub fn project(cst: &Cst, ctx: &CfgContext) -> SemanticIndex {
             }
         }
         let cfg_enabled = cfg.as_ref().is_none_or(|c| c.eval(ctx));
-        let (status, deps) = if kind == ItemKind::MacroCall {
+        let (status, deps) = if node.ambiguous {
+            // The parser's angle-bracket heuristic could not trust
+            // this signature: fail closed. Never surface an item with
+            // an untrusted span as ordinary parsed code.
+            (ItemStatus::Opaque, Vec::new())
+        } else if kind == ItemKind::MacroCall {
             // Conservative: opaque, depends on the macro env.
             let mut deps = vec![Dep::MacroEnv(env_hash)];
             if let Some(p) = &node.macro_path {
@@ -217,6 +226,7 @@ pub fn project(cst: &Cst, ctx: &CfgContext) -> SemanticIndex {
             cfg,
             cfg_enabled,
             status,
+            visibility: node.visibility,
             macro_path: node.macro_path.clone(),
             deps,
             metadata: serde_json::Map::new(),

@@ -42,6 +42,22 @@ pub enum TopKind {
     Unknown,
 }
 
+/// Item visibility as written syntactically. `pub(crate)`-style
+/// restrictions are recorded as [`Visibility::PubRestricted`] without
+/// resolving the restriction path (syntax-derived, no name
+/// resolution); only [`Visibility::Pub`] is an unconditional public
+/// interface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Visibility {
+    /// No `pub` prefix: visible only in the defining module.
+    #[default]
+    Inherited,
+    /// Unrestricted `pub`.
+    Pub,
+    /// `pub(...)`, `crate fn`, etc.: restricted visibility.
+    PubRestricted,
+}
+
 /// One parsed attribute (`#[...]` or `#![...]`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attr {
@@ -68,6 +84,14 @@ pub struct TopNode {
     pub attrs: Vec<Attr>,
     /// Full path of a macro invocation, e.g. `foo::bar`.
     pub macro_path: Option<String>,
+    /// Syntactic visibility of the item.
+    pub visibility: Visibility,
+    /// The parser's angle-bracket heuristic hit an ambiguous
+    /// signature; the span is best-effort and the item must be
+    /// treated as opaque (fail closed), never as a trusted
+    /// item/body span.
+    #[serde(default)]
+    pub ambiguous: bool,
 }
 
 /// The parsed concrete syntax of one source file.
@@ -216,8 +240,13 @@ impl<'a> Parser<'a> {
     /// Scan an item header until its body brace (consumed, returned)
     /// or a terminating `;`. Angle brackets at depth 0 are tracked
     /// heuristically so const-generic braces (`Foo<{ N }>`) are not
-    /// mistaken for the item body.
-    fn consume_braced(&mut self) -> (usize, Option<Span>) {
+    /// mistaken for the item body. The third return value is an
+    /// *ambiguity* flag: when the heuristic cannot be trusted (a `;`
+    /// or stray `}` at depth 0 while angle brackets are still open,
+    /// or EOF with open angles — e.g. a comparison `<` in a
+    /// signature), the caller must fail closed and treat the item as
+    /// opaque rather than trust the span.
+    fn consume_braced(&mut self) -> (usize, Option<Span>, bool) {
         let mut depth = 0usize;
         let mut angle = 0usize;
         while let Some(t) = self.peek() {
@@ -226,13 +255,14 @@ impl<'a> Parser<'a> {
                     let start = t.span.start;
                     let body = self.consume_balanced();
                     let end = body.map_or(start, |b| b.end);
-                    return (end, body);
+                    return (end, body, false);
                 }
-                Tk::Semi if depth == 0 && angle == 0 => {
+                Tk::Semi if depth == 0 => {
+                    let ambiguous = angle > 0;
                     self.bump();
-                    return (t.span.end, None);
+                    return (t.span.end, None, ambiguous);
                 }
-                Tk::CloseBrace if depth == 0 => return (t.span.start, None),
+                Tk::CloseBrace if depth == 0 => return (t.span.start, None, angle > 0),
                 Tk::OpenParen | Tk::OpenBrace | Tk::OpenBracket => depth += 1,
                 Tk::CloseParen | Tk::CloseBracket | Tk::CloseBrace => {
                     depth = depth.saturating_sub(1);
@@ -243,7 +273,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        (self.src.len(), None)
+        (self.src.len(), None, angle > 0)
     }
 
     /// Parse one `#[...]` / `#![...]` attribute starting at `#`.
@@ -358,6 +388,8 @@ impl<'a> Parser<'a> {
             name: None,
             attrs,
             macro_path: path,
+            visibility: Visibility::Inherited,
+            ambiguous: false,
         })
     }
 
@@ -392,6 +424,8 @@ impl<'a> Parser<'a> {
                                 name: None,
                                 attrs: Vec::new(),
                                 macro_path: None,
+                                visibility: Visibility::Inherited,
+                                ambiguous: false,
                             });
                         }
                         break;
@@ -411,6 +445,8 @@ impl<'a> Parser<'a> {
                             name: None,
                             attrs: vec![attr],
                             macro_path: None,
+                            visibility: Visibility::Inherited,
+                            ambiguous: false,
                         });
                     }
                     attrs.push(attr);
@@ -432,6 +468,8 @@ impl<'a> Parser<'a> {
             name: None,
             attrs,
             macro_path: None,
+            visibility: Visibility::Inherited,
+            ambiguous: false,
         }
     }
 
@@ -452,6 +490,7 @@ impl<'a> Parser<'a> {
         }
 
         // Visibility / modifier prefixes.
+        let mut vis = Visibility::Inherited;
         loop {
             self.skip_trivia();
             let Some(t) = self.peek() else { break };
@@ -489,7 +528,13 @@ impl<'a> Parser<'a> {
                 self.skip_trivia();
                 if self.peek().is_some_and(|t| t.kind == Tk::OpenParen) {
                     self.consume_balanced();
+                    vis = Visibility::PubRestricted;
+                } else {
+                    vis = Visibility::Pub;
                 }
+            } else if text == "crate" {
+                // `crate fn` / `crate struct` etc.: restricted visibility.
+                vis = Visibility::PubRestricted;
             }
         }
 
@@ -498,15 +543,20 @@ impl<'a> Parser<'a> {
             let end = attrs.last().map_or(start, |a| a.span.end);
             return Self::plain_node(TopKind::Unknown, start, end, attrs);
         };
-        self.dispatch_keyword(start, attrs, kw)
+        let mut node = self.dispatch_keyword(start, attrs, kw);
+        node.visibility = vis;
+        node
     }
 
     /// Dispatch on the item's leading keyword and consume the rest of
     /// the item.
+    // One flat match over item keywords: splitting it would scatter
+    // the keyword table without reducing complexity.
+    #[allow(clippy::too_many_lines)]
     fn dispatch_keyword(&mut self, start: usize, attrs: Vec<Attr>, kw: Token) -> TopNode {
         let kw_text = self.text_of(&kw).to_owned();
 
-        let braced = |p: &mut Self| -> (usize, Option<Span>) { p.consume_braced() };
+        let braced = |p: &mut Self| -> (usize, Option<Span>, bool) { p.consume_braced() };
         let semi = |p: &mut Self| -> usize {
             p.consume_until_semi();
             p.tokens
@@ -514,58 +564,58 @@ impl<'a> Parser<'a> {
                 .map_or(start, |t| t.span.end)
         };
 
-        let (kind, name, end, body) = match kw_text.as_str() {
+        let (kind, name, end, body, ambiguous) = match kw_text.as_str() {
             "fn" => {
                 self.bump();
                 let name = self.next_name();
-                let (end, body) = braced(self);
-                (TopKind::Fn, name, end, body)
+                let (end, body, amb) = braced(self);
+                (TopKind::Fn, name, end, body, amb)
             }
             "struct" => {
                 self.bump();
                 let name = self.next_name();
-                let (end, body) = braced(self);
-                (TopKind::Struct, name, end, body)
+                let (end, body, amb) = braced(self);
+                (TopKind::Struct, name, end, body, amb)
             }
             "union" => {
                 self.bump();
                 let name = self.next_name();
-                let (end, body) = braced(self);
-                (TopKind::Union, name, end, body)
+                let (end, body, amb) = braced(self);
+                (TopKind::Union, name, end, body, amb)
             }
             "enum" => {
                 self.bump();
                 let name = self.next_name();
-                let (end, body) = braced(self);
-                (TopKind::Enum, name, end, body)
+                let (end, body, amb) = braced(self);
+                (TopKind::Enum, name, end, body, amb)
             }
             "impl" => {
                 self.bump();
-                let (end, body) = braced(self);
-                (TopKind::Impl, None, end, body)
+                let (end, body, amb) = braced(self);
+                (TopKind::Impl, None, end, body, amb)
             }
             "trait" => {
                 self.bump();
                 let name = self.next_name();
-                let (end, body) = braced(self);
-                (TopKind::Trait, name, end, body)
+                let (end, body, amb) = braced(self);
+                (TopKind::Trait, name, end, body, amb)
             }
             "mod" => {
                 self.bump();
                 let name = self.next_name();
-                let (end, body) = braced(self);
-                (TopKind::Mod, name, end, body)
+                let (end, body, amb) = braced(self);
+                (TopKind::Mod, name, end, body, amb)
             }
             "use" => {
                 self.bump();
                 let end = semi(self);
-                (TopKind::Use, None, end, None)
+                (TopKind::Use, None, end, None, false)
             }
             "type" => {
                 self.bump();
                 let name = self.next_name();
                 let end = semi(self);
-                (TopKind::TypeAlias, name, end, None)
+                (TopKind::TypeAlias, name, end, None, false)
             }
             "static" => {
                 self.bump();
@@ -579,16 +629,19 @@ impl<'a> Parser<'a> {
                 }
                 let name = self.next_name();
                 let end = semi(self);
-                (TopKind::Static, name, end, None)
+                (TopKind::Static, name, end, None, false)
             }
             "const" => {
                 self.bump();
                 let name = self.next_name();
                 let end = semi(self);
-                (TopKind::Const, name, end, None)
+                (TopKind::Const, name, end, None, false)
             }
             "extern" => self.parse_extern(start),
-            "macro_rules" | "macro" => self.parse_macro_def(start, kw_text == "macro_rules"),
+            "macro_rules" | "macro" => {
+                let (k, n, e, b) = self.parse_macro_def(start, kw_text == "macro_rules");
+                (k, n, e, b, false)
+            }
             _ => {
                 if let Some(node) = self.parse_macro_call(start, attrs.clone()) {
                     return node;
@@ -596,7 +649,7 @@ impl<'a> Parser<'a> {
                 // Unrecognised keyword-ish token: consume it alone.
                 let end = kw.span.end;
                 self.bump();
-                (TopKind::Unknown, None, end, None)
+                (TopKind::Unknown, None, end, None, false)
             }
         };
 
@@ -607,10 +660,15 @@ impl<'a> Parser<'a> {
             name,
             attrs,
             macro_path: None,
+            visibility: Visibility::Inherited,
+            ambiguous,
         }
     }
     /// `extern crate ...;`, `extern "C" { ... }`, or `extern "C" fn`.
-    fn parse_extern(&mut self, start: usize) -> (TopKind, Option<String>, usize, Option<Span>) {
+    fn parse_extern(
+        &mut self,
+        start: usize,
+    ) -> (TopKind, Option<String>, usize, Option<Span>, bool) {
         self.bump(); // `extern`
         self.skip_trivia();
         let next_is_crate = self
@@ -624,7 +682,7 @@ impl<'a> Parser<'a> {
                 .tokens
                 .get(self.pos.saturating_sub(1))
                 .map_or(start, |t| t.span.end);
-            return (TopKind::ExternCrate, name, end, None);
+            return (TopKind::ExternCrate, name, end, None, false);
         }
         // Optional ABI string.
         if self
@@ -638,7 +696,7 @@ impl<'a> Parser<'a> {
             let start_b = self.peek().map_or(start, |t| t.span.start);
             let body = self.consume_balanced();
             let end = body.map_or(start_b, |b| b.end);
-            return (TopKind::ExternBlock, None, end, body);
+            return (TopKind::ExternBlock, None, end, body, false);
         }
         // `extern "C" fn` — treat as a function item.
         if self
@@ -648,8 +706,8 @@ impl<'a> Parser<'a> {
             self.bump();
         }
         let name = self.next_name();
-        let (end, body) = self.consume_braced();
-        (TopKind::Fn, name, end, body)
+        let (end, body, amb) = self.consume_braced();
+        (TopKind::Fn, name, end, body, amb)
     }
 
     /// `macro_rules! name { ... }` or `macro name(...) { ... }`. The
