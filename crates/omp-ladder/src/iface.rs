@@ -174,10 +174,25 @@ pub fn project_interface(
             incomplete = true;
             continue;
         }
+        if item.status == ItemStatus::Opaque {
+            // An opaque macro expansion or ambiguous item can introduce
+            // public names. Omitting it from positive buckets is safe only
+            // if negative guards also refuse to answer.
+            incomplete = true;
+            continue;
+        }
         if item.status != ItemStatus::Active {
-            // cfg-disabled and opaque items never leak into the
-            // global projection; the cfg guard is propagated through
-            // the semantic index's cfg hash in the cache key.
+            // cfg-disabled items never leak into the global projection;
+            // the cfg guard is propagated through the cache key.
+            continue;
+        }
+        if (item.kind == ItemKind::MacroDef && item.visibility != Visibility::Pub)
+            || item.kind == ItemKind::ExternBlock
+            || (item.kind == ItemKind::ExternCrate && item.visibility == Visibility::Pub)
+        {
+            // macro_export and foreign/re-exported declarations need more
+            // semantic information than this syntax layer has.
+            incomplete = true;
             continue;
         }
         let Some(kind) = bucket_of(item) else { continue };

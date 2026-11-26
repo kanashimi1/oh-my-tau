@@ -160,6 +160,22 @@ fn negative_guard_hit_and_added_name_invalidation() {
 }
 
 #[test]
+fn opaque_macros_make_negative_guards_fail_closed() {
+    let proj = project_src(
+        "pub struct A;\nmake_public_items!();\n",
+        &CfgContext::default(),
+        "ws-a",
+    );
+    assert!(proj.incomplete, "opaque expansion can export arbitrary names");
+    let mut guards = GuardStore::new();
+    assert_eq!(guards.record(&proj, BucketKind::Types, "Generated"), None);
+    assert_eq!(
+        guards.check(&proj, BucketKind::Types, "Generated"),
+        GuardVerdict::Miss(GuardMiss::Incomplete)
+    );
+}
+
+#[test]
 fn guard_record_refuses_present_names() {
     let proj = project_src("pub struct A;\n", &CfgContext::default(), "ws-a");
     let mut guards = GuardStore::new();
