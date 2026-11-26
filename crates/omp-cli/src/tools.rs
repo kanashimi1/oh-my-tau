@@ -35,6 +35,7 @@ pub use todo::{Status, TodoItem};
 mod goal;
 mod lsp;
 mod macro_step;
+mod structured;
 mod think;
 mod tree;
 mod util;
