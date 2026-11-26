@@ -98,7 +98,7 @@ pub(crate) fn visit_session_entries_lenient(bytes: &[u8], visit: &mut dyn FnMut(
 #[must_use]
 pub fn parse_all_session_entries(bytes: &[u8]) -> Vec<SessionEntry> {
     let mut entries = Vec::new();
-    visit_session_entries_lenient(bytes, &mut |entry| {
+    visit_session_entries_lenient(bytes, &mut |entry: &Value| {
         if let Ok(e) = serde_json::from_value::<SessionEntry>(entry.clone()) {
             entries.push(e);
         }

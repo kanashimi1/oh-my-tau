@@ -127,7 +127,14 @@ pub async fn login(
         } else {
             "Validating API key..."
         });
-        if let Err(error) = run_validation(validate, &rule.name, &key, http, env).await {
+        let env = EnvLookup(env);
+        let result = match build_validation_request(validate, &rule.name, &key, env) {
+            Ok((method, url, headers, body)) => {
+                run_validation(validate, &rule.name, http, method, url, headers, body).await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
             let trusts_forbidden = validate.trust_forbidden && error.status == Some(403);
             let auth_failed = matches!(error.status, Some(401 | 403));
             if !validate.optional || (auth_failed && !trusts_forbidden) {
@@ -142,6 +149,19 @@ pub async fn login(
     Ok(key)
 }
 
+/// Concrete handle for the `env` lookup callback. Handing the bare `&dyn Fn`
+/// to another fn makes the Blaze borrow checker equate the trait object
+/// higher-ranked binder both ways and report a false outlives; the wrapper
+/// keeps every crossing a plain lifetime subset on a concrete type.
+#[derive(Clone, Copy)]
+struct EnvLookup<'a>(&'a (dyn Fn(&str) -> Option<String> + Sync + 'a));
+
+impl EnvLookup<'_> {
+    fn get(&self, name: &str) -> Option<String> {
+        (self.0)(name)
+    }
+}
+
 struct ValidationError {
     status: Option<u16>,
     message: String,
@@ -149,7 +169,7 @@ struct ValidationError {
 
 fn headers_for_hook(
     hook: Option<&str>,
-    env: &(dyn Fn(&str) -> Option<String> + Sync),
+    env: EnvLookup<'_>,
     provider: &str,
 ) -> Result<Vec<(String, String)>, ValidationError> {
     let fail = |message: String| ValidationError {
@@ -173,7 +193,7 @@ fn headers_for_hook(
         .to_vec()),
         Some("coreweave-project") => {
             let clean = |k: &str| {
-                env(k)
+                env.get(k)
                     .map(|v| v.trim().to_string())
                     .filter(|v| !v.is_empty())
             };
@@ -197,14 +217,16 @@ fn headers_for_hook(
     }
 }
 
-async fn run_validation(
+// Build the probe request. Kept sync and given the concrete EnvLookup handle
+// on purpose: letting the `&dyn Fn` cross a fn boundary makes the Blaze
+// borrow checker equate the trait object higher-ranked binder both ways and
+// report a false outlives ("a lifetime must outlive another").
+fn build_validation_request(
     validate: &Validate,
     login_label: &str,
     key: &str,
-    http: &dyn ProviderHttp,
-    env: &(dyn Fn(&str) -> Option<String> + Sync),
-) -> Result<(), ValidationError> {
-    let label = validate.label.as_deref().unwrap_or(login_label);
+    env: EnvLookup<'_>,
+) -> Result<(ProviderHttpMethod, String, Vec<(String, String)>, Option<String>), ValidationError> {
     let fail = |message: String| ValidationError {
         status: None,
         message,
@@ -255,7 +277,7 @@ async fn run_validation(
             let env_base = validate
                 .base_url_env
                 .as_deref()
-                .and_then(env)
+                .and_then(|k| env.get(k))
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty());
             let url = match env_base {
@@ -270,6 +292,23 @@ async fn run_validation(
             (ProviderHttpMethod::Get, url, headers, None)
         }
         other => return Err(fail(format!("unknown validation kind {other}"))),
+    };
+    Ok((method, url, headers, body))
+}
+
+async fn run_validation(
+    validate: &Validate,
+    login_label: &str,
+    http: &dyn ProviderHttp,
+    method: ProviderHttpMethod,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+) -> Result<(), ValidationError> {
+    let label = validate.label.as_deref().unwrap_or(login_label);
+    let fail = |message: String| ValidationError {
+        status: None,
+        message,
     };
     let response = http
         .request(

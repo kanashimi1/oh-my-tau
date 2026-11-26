@@ -1561,7 +1561,7 @@ mod tests {
         let mut queue = PendingMessageQueue::new(QueueMode::OneAtATime);
         queue.enqueue(AgentMessageBatch::Single(AgentMessage::user("drop-me")));
         queue.enqueue(AgentMessageBatch::Single(AgentMessage::user("keep-me")));
-        let removed = queue.remove_where(&|m| matches!(m, AgentMessage::Standard(crate::types::Message::User(u)) if matches!(&u.content, crate::types::UserContent::Text(t) if t.contains("drop"))));
+        let removed = queue.remove_where(&|m: &AgentMessage| matches!(m, AgentMessage::Standard(crate::types::Message::User(u)) if matches!(&u.content, crate::types::UserContent::Text(t) if t.contains("drop"))));
         assert_eq!(removed.len(), 1);
         assert!(queue.has_items());
     }
