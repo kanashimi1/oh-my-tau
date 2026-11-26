@@ -226,6 +226,18 @@ pub fn apply_pack_file(
     path: &Path,
     insert: impl FnMut(VerifiedObject) -> Result<()>,
 ) -> Result<Vec<ObjectId>> {
-    let bytes = std::fs::read(path).map_err(|e| io_err(path, e))?;
+    const MAX_FILE_BYTES: u64 = 12 + MAX_HEADER_BYTES as u64 + MAX_TOTAL_BYTES;
+    let file = std::fs::File::open(path).map_err(|e| io_err(path, e))?;
+    let file_len = file.metadata().map_err(|e| io_err(path, e))?.len();
+    if file_len > MAX_FILE_BYTES {
+        return Err(Error::Limit("pack file exceeds container cap"));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| io_err(path, e))?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(Error::Limit("pack stream exceeds container cap"));
+    }
     apply_pack(&bytes, insert)
 }

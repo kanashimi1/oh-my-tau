@@ -276,3 +276,36 @@ fn pack_import_with_hostile_entry_names_cannot_escape_the_store() {
     assert!(!dir.path().join("evil").exists());
     assert_eq!(restore.scratch_stats().objects, 0);
 }
+
+
+#[test]
+fn repeated_pack_import_does_not_inflate_scratch_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("source")).unwrap();
+    let mut graph = DepGraph::new();
+    let a = put_with_deps(&store, &mut graph, b"one", &[]);
+    let b = put_with_deps(&store, &mut graph, b"two", &[a]);
+    let (_, path) = store.build_pack_file(&[b], &graph, 10).unwrap();
+    let restore = Store::open(dir.path().join("restore")).unwrap();
+    restore.import_pack(&path, Tier::Scratch).unwrap();
+    let before = restore.scratch_stats();
+    restore.import_pack(&path, Tier::Scratch).unwrap();
+    let after = restore.scratch_stats();
+    assert_eq!(after.objects, before.objects);
+    assert_eq!(after.bytes, before.bytes);
+}
+
+#[test]
+fn oversized_pack_file_is_rejected_before_reading_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("oversized.pack");
+    let file = std::fs::File::create(&path).unwrap();
+    // Sparse: exercises the metadata bound without consuming three GiB of disk.
+    file.set_len(3 * 1024 * 1024 * 1024).unwrap();
+    let store = Store::open(dir.path().join("store")).unwrap();
+    assert!(matches!(
+        store.import_pack(&path, Tier::Scratch),
+        Err(omp_cas::Error::Limit(_))
+    ));
+    assert_eq!(store.scratch_stats().objects, 0);
+}

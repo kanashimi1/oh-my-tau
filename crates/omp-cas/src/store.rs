@@ -220,8 +220,10 @@ impl Store {
             }
         }
         let id = ObjectId::of(bytes);
-        self.write_verified(Tier::Scratch, id, bytes)?;
-        self.clock.record_put(id.size());
+        let inserted = self.write_verified(Tier::Scratch, id, bytes)?;
+        if inserted {
+            self.clock.record_put(id.size());
+        }
         self.clock.stamp_now(&id.digest());
         self.evict_scratch()?;
         Ok(id)
@@ -423,9 +425,11 @@ impl Store {
     /// Format corruption, digest mismatch, I/O failure, policy rejection.
     pub fn import_pack(&self, path: &Path, tier: Tier) -> Result<Vec<ObjectId>> {
         let ids = pack::apply_pack_file(path, |obj| {
-            self.write_verified(tier, obj.id, &obj.bytes)?;
+            let inserted = self.write_verified(tier, obj.id, &obj.bytes)?;
             if tier == Tier::Scratch {
-                self.clock.record_put(obj.id.size());
+                if inserted {
+                    self.clock.record_put(obj.id.size());
+                }
                 self.clock.stamp_now(&obj.id.digest());
             }
             Ok(())
@@ -439,8 +443,10 @@ impl Store {
     // ── internals ───────────────────────────────────────────────────────
 
     /// Stage bytes in `tmp/`, verify them from disk, then atomically rename
-    /// into the tier. Scratch accounting is the caller's responsibility.
-    fn write_verified(&self, tier: Tier, id: ObjectId, bytes: &[u8]) -> Result<()> {
+    /// into the tier. Returns `true` only for a newly inserted object, so
+    /// scratch accounting counts an on-disk object once; re-puts still refresh
+    /// recency at the caller. Scratch accounting is the caller's responsibility.
+    fn write_verified(&self, tier: Tier, id: ObjectId, bytes: &[u8]) -> Result<bool> {
         let dest = self.tier_path(tier, &id.digest());
         if dest.is_file() {
             // Already present: verify the existing bytes anyway so a
@@ -452,7 +458,7 @@ impl Store {
                     reason: "existing file does not match digest".into(),
                 });
             }
-            return Ok(());
+            return Ok(false);
         }
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
@@ -474,7 +480,7 @@ impl Store {
             });
         }
         fs::rename(&tmp, &dest).map_err(|e| io_err(&dest, e))?;
-        Ok(())
+        Ok(true)
     }
 
     /// Read and verify an object if present in `tier`; `None` when absent.

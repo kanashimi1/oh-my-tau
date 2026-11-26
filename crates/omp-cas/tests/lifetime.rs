@@ -166,3 +166,19 @@ fn remove_is_explicit_and_tier_scoped() {
     assert_eq!(store.scratch_stats().objects, 0);
     assert_eq!(store.scratch_stats().bytes, 0);
 }
+
+
+#[test]
+fn repeated_scratch_put_counts_the_live_object_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let id = store.put_scratch(b"same bytes").unwrap();
+    let before = store.scratch_stats();
+    store.put_scratch(b"same bytes").unwrap();
+    let after = store.scratch_stats();
+    assert_eq!(after.objects, 1);
+    assert_eq!(after.bytes, before.bytes);
+    store.remove(Tier::Scratch, &id.digest()).unwrap();
+    assert_eq!(store.scratch_stats().objects, 0);
+    assert_eq!(store.scratch_stats().bytes, 0);
+}
