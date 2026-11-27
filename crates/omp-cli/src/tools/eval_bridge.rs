@@ -364,10 +364,11 @@ impl EvalBridge {
                 let value = apply_query(&parsed, query).unwrap_or(Value::Null);
                 selected = match value {
                     Value::Null => "null".to_string(),
-                    other => super::structured::render(
+                    other if super::structured::enabled() => super::structured::render(
                         &other,
                         &super::util::SpillConfig::load(&self.ctx.cwd),
                     ),
+                    other => serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string()),
                 };
             } else if offset.is_some() || limit.is_some() {
                 let start = offset.unwrap_or(1).max(1);
@@ -394,7 +395,7 @@ impl EvalBridge {
             if format == "stripped" {
                 selected = strip_ansi(&selected);
             }
-            if query.is_none() {
+            if query.is_none() && super::structured::enabled() {
                 selected = super::structured::render_text(
                     selected,
                     &super::util::SpillConfig::load(&self.ctx.cwd),

@@ -60,6 +60,8 @@ pub struct LineRange {
 pub enum Selector {
     None,
     Raw,
+    /// Item map of a Rust source file (`path.rs:outline`).
+    Outline,
     Lines { ranges: Vec<LineRange>, raw: bool },
     Tail { count: usize, raw: bool },
 }
@@ -162,12 +164,13 @@ pub fn parse_sel(sel: &str) -> Result<Selector> {
     }
     let invalid = || {
         anyhow::anyhow!(
-            "Invalid selector ':{sel}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, or a range combined with raw (e.g. :raw:50-100)."
+            "Invalid selector ':{sel}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, :outline (Rust item map), or a range combined with raw (e.g. :raw:50-100)."
         )
     };
     let looks_read_like = |c: &str| {
         let l = c.to_lowercase();
         l == "raw"
+            || l == "outline"
             || l == "conflicts"
             || l == "img"
             || TAIL_RE.is_match(c)
@@ -199,10 +202,30 @@ pub fn parse_sel(sel: &str) -> Result<Selector> {
     if sel.eq_ignore_ascii_case("raw") {
         return Ok(Selector::Raw);
     }
+    if sel.eq_ignore_ascii_case("outline") {
+        return Ok(Selector::Outline);
+    }
     if sel.eq_ignore_ascii_case("conflicts") || sel.eq_ignore_ascii_case("img") {
         bail!("Selector ':{sel}' is not supported by this build; use :N-M, :-N or :raw.");
     }
     Ok(parse_range_or_tail(sel, false)?.unwrap_or(Selector::None))
+}
+
+/// Whole-file text for the selectors that need all of it (`:outline`), decoded
+/// like the in-memory read path.
+fn load_source(absolute: &Path) -> Result<String> {
+    let bytes =
+        std::fs::read(absolute).with_context(|| format!("cannot read {}", absolute.display()))?;
+    if bytes.contains(&0) {
+        bail!(
+            "Cannot read '{}': binary file ({}).",
+            absolute.display(),
+            format_bytes(bytes.len())
+        );
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let (_, without_bom) = strip_bom(&text);
+    Ok(normalize_to_lf(without_bom).into_owned())
 }
 
 fn is_raw(sel: &Selector) -> bool {
@@ -277,6 +300,11 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if !meta.is_file() {
         bail!("Cannot read '{path_part}': it is a special file, not a regular file or directory.");
     }
+    if matches!(sel, Selector::Outline) {
+        let display = format_path_relative_to_cwd(&absolute, &env.cwd, false);
+        return super::read_outline::full(&absolute, &load_source(&absolute)?, &display, &path_part)
+            .map(AgentToolResult::text);
+    }
     // Autostart the file's language server (best effort, background): by the
     // time the model edits, the diagnostics gate has a pre-edit baseline.
     super::edit_diagnostics::prewarm_spawn(&env.cwd, &absolute);
@@ -337,6 +365,11 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         let text = String::from_utf8_lossy(&bytes);
         let (_, without_bom) = strip_bom(&text);
         let normalized = normalize_to_lf(without_bom);
+        // A read that leaves part of the file unseen gets its item map once (Rust
+        // sources only): ranged reads, or a first page shorter than the file.
+        let partial = !is_raw(&sel)
+            && (matches!(sel, Selector::Lines { .. } | Selector::Tail { .. })
+                || normalized.lines().count() > default_limit(&env.cwd));
         format_read_output(
             env,
             &normalized,
@@ -345,7 +378,17 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             &display,
             env.hashline,
             Some(&absolute),
-        )?
+        )
+        .map(|result| {
+            super::read_outline::append(
+                result,
+                &absolute,
+                &normalized,
+                &display,
+                selector_base,
+                partial,
+            )
+        })?
     };
     Ok(relevance_spill(env, result, save_artifact))
 }
@@ -937,7 +980,7 @@ fn slice_listing(content: &str, sel: &Selector, selector_base: &str) -> AgentToo
             let start = all.len().saturating_sub(*count);
             (start, Some(all.len() - start))
         }
-        Selector::None | Selector::Raw => (0, None),
+        Selector::None | Selector::Raw | Selector::Outline => (0, None),
     };
     if start >= all.len() {
         let suggestion = if all.is_empty() {

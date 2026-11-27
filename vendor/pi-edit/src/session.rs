@@ -311,7 +311,7 @@ impl Session {
         }
 
         let last_write = staged.iter().rposition(|file| file.op != FileOp::Noop);
-        let transactional = self.config.mode == EditMode::ApplyPatch;
+        let transactional = self.config.mode == EditMode::ApplyPatch && transactions_enabled();
         let mut written = Vec::new();
         let mut files = Vec::with_capacity(staged.len());
         for (index, mut file) in staged.into_iter().enumerate() {
@@ -472,6 +472,12 @@ impl Session {
 }
 
 /// Restore successful writes from an `apply_patch` call in reverse order.
+/// `OMP_EDIT_TX=0` turns off the rollback of a multi-file `apply_patch` that
+/// fails midway (the A/B kill switch for the transactional edit phase).
+fn transactions_enabled() -> bool {
+    std::env::var_os("OMP_EDIT_TX").is_none_or(|value| value != "0")
+}
+
 /// The original writer owns every filesystem operation, including rollback.
 async fn rollback_written(files: &[StagedFile], writer: &dyn EditWriter) -> EditResult<()> {
     let mut failures = Vec::new();

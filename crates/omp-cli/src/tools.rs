@@ -23,6 +23,7 @@ mod jobs;
 mod kill_guard;
 pub mod mcp;
 mod read;
+mod read_outline;
 pub(crate) mod relevance;
 pub(crate) mod rlm;
 pub(crate) mod rlm_combinators;

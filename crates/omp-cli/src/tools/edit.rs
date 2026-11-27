@@ -602,8 +602,12 @@ mod tests {
         }
     }
 
+    /// Serializes the tests whose outcome depends on `OMP_EDIT_TX`.
+    static TX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[tokio::test]
     async fn apply_patch_failure_rolls_back_current_and_previous_writes() {
+        let _tx = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"alpha\r\n").unwrap();
         std::fs::write(dir.path().join("b.txt"), b"beta\n").unwrap();
@@ -631,6 +635,47 @@ mod tests {
             b"alpha\r\n"
         );
         assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"beta\n");
+    }
+
+    /// `OMP_EDIT_TX=0` is the A/B kill switch of the transactional phase: a
+    /// patch that fails midway keeps what its earlier writes left.
+    #[test]
+    fn apply_patch_kill_switch_keeps_partial_writes() {
+        let _tx = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        temp_env::with_var("OMP_EDIT_TX", Some("0"), || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::write(dir.path().join("a.txt"), b"alpha\r\n").unwrap();
+                std::fs::write(dir.path().join("b.txt"), b"beta\n").unwrap();
+                let env = Env::with_mode(dir.path(), EditMode::ApplyPatch);
+                let first = blake3::hash(b"alpha\r\n").to_hex().to_string();
+                let (_, second) = original_hashes();
+                let writer = FailAfterSecondWriter {
+                    calls: AtomicUsize::new(0),
+                };
+                let error = edit_with_writer(
+                    &env,
+                    &json!({"input": anchored_two_file_patch(&first, &second)}),
+                    &writer,
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+                assert!(
+                    error.contains("injected failure after the second write"),
+                    "{error}"
+                );
+                // Two writes and no rollback request: the second write landed
+                // on disk before the injected failure.
+                assert_eq!(writer.calls.load(Ordering::SeqCst), 2);
+                assert_eq!(
+                    std::fs::read(dir.path().join("a.txt")).unwrap(),
+                    b"ALPHA\r\n",
+                    "the first write must stay without the transaction"
+                );
+                assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"BETA\n");
+            });
+        });
     }
 
     #[tokio::test]

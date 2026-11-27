@@ -12,6 +12,17 @@ use super::util::{
 
 const TABLE_HEADER: &str = "# omt.table.v1";
 
+/// `OMP_STRUCTURED_OUTPUT=0` selects the rendering that preceded the
+/// containment phase (pretty JSON for queried values, unbudgeted text) — the
+/// A/B kill switch for that phase.
+#[must_use]
+pub(crate) fn enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("OMP_STRUCTURED_OUTPUT").is_none_or(|value| value != "0")
+    })
+}
+
 /// Optional schema-directed projection. No fields are omitted by default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EncodeOptions<'a> {

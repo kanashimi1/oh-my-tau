@@ -2013,6 +2013,7 @@ dependencies = [
  "omp-ext",
  "omp-hub",
  "omp-judge",
+ "omp-ladder",
  "omp-lsp",
  "omp-mcp",
  "omp-providers",

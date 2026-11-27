@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 mimalloc = "0.1"
 omp-urls = { path = "../omp-urls" }
+omp-ladder = { path = "../omp-ladder" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
