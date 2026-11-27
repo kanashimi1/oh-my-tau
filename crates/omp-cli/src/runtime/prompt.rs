@@ -87,6 +87,12 @@ impl Runtime {
         behavior: Option<&str>,
         images: Vec<pa_agent::types::ImageContent>,
     ) -> Result<(), CmdError> {
+        // Budget gate: once the session budget is exceeded, refuse to start a
+        // new turn (slash commands are dispatched earlier and still work).
+        if let Some(msg) = crate::features::budget::prompt_refusal() {
+            self.emit_notice("warning", &msg, Some("budget"));
+            return Err(CmdError::new(msg));
+        }
         // A prompt during in-flight compaction cancels it and waits for the
         // pass to settle first (TS prompt-side `abortCompaction` +
         // `waitForManualMaintenanceCleanup`): the turn must start on the

@@ -70,10 +70,14 @@ static REQUEST_SLOTS: LazyLock<Semaphore> =
 /// (TS `STRUCTURED_TOOL_NAME`).
 const STRUCTURED_TOOL_NAME: &str = "respond";
 
-/// Process-wide ceiling on eval subagent children running at once (omp
-/// `task.maxConcurrency` protocol default, as the `task` tool uses); also the
-/// worker limit `workpool()` reports.
-const SUBAGENT_CONCURRENCY: usize = 32;
+/// Process-wide ceiling on eval subagent children running at once; also the
+/// worker limit `workpool()` reports. Default `min(available_parallelism, 8)`
+/// (TS `task.maxConcurrency` protocol default is overridden per deployment by
+/// that setting, which the `task` tool resolves; the eval launcher keeps the
+/// process-wide auto default).
+fn subagent_concurrency() -> usize {
+    omp_task::TaskRunner::default_max_concurrency()
+}
 
 /// Error text of an *agent* handle cancelled through `cancel()`. TS agent
 /// jobs go through `manager.cancel(job.id)` with no reason, so the snapshot
@@ -608,11 +612,11 @@ impl Launcher for SubprocessLauncher {
 }
 
 /// Process-wide launcher: `agent()` runs and workpool turns share one runner,
-/// so the [`SUBAGENT_CONCURRENCY`] ceiling holds across both.
+/// so the [`subagent_concurrency()`] ceiling holds across both.
 static LAUNCHER: LazyLock<Arc<dyn Launcher>> = LazyLock::new(|| {
     let binary = crate::respawn_exe();
     Arc::new(SubprocessLauncher {
-        runner: omp_task::TaskRunner::new(binary, SUBAGENT_CONCURRENCY),
+        runner: omp_task::TaskRunner::new(binary, subagent_concurrency()),
     }) as Arc<dyn Launcher>
 });
 

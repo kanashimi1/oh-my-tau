@@ -8,7 +8,6 @@
 //! across file I/O.
 
 use std::fs::Metadata;
-use std::os::unix::fs::MetadataExt as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -106,23 +105,47 @@ fn now_ms() -> f64 {
 }
 
 /// Node `stat.mtimeMs`.
+#[cfg(unix)]
 fn mtime_ms(meta: &Metadata) -> f64 {
+    use std::os::unix::fs::MetadataExt;
     (meta.mtime() as f64) * 1000.0 + (meta.mtime_nsec() as f64) / 1_000_000.0
 }
 
-/// Node `stat.birthtimeMs || stat.ctimeMs`.
-fn born_ms(meta: &Metadata) -> f64 {
-    let birth = meta
-        .created()
+/// Portable `mtime_ms` via `metadata.modified()` (same formula, same values).
+#[cfg(not(unix))]
+fn mtime_ms(meta: &Metadata) -> f64 {
+    meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map_or(0.0, |d| {
             (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0
-        });
+        })
+}
+
+/// Node `stat.birthtimeMs || stat.ctimeMs`.
+#[cfg(unix)]
+fn born_ms(meta: &Metadata) -> f64 {
+    use std::os::unix::fs::MetadataExt;
+    let birth = metadata_birthtime_ms(meta);
     if birth != 0.0 {
         return birth;
     }
     (meta.ctime() as f64) * 1000.0 + (meta.ctime_nsec() as f64) / 1_000_000.0
+}
+
+/// Portable `born_ms`: `metadata.created()` only (no ctime on this platform).
+#[cfg(not(unix))]
+fn born_ms(meta: &Metadata) -> f64 {
+    metadata_birthtime_ms(meta)
+}
+
+fn metadata_birthtime_ms(meta: &Metadata) -> f64 {
+    meta.created()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0.0, |d| {
+            (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0
+        })
 }
 
 /// Order a full sync so recent activity lands first: transcripts modified in
@@ -240,7 +263,7 @@ impl Pass<'_, '_> {
 /// identity mean the stored cursor is current. `last_modified` is Node's
 /// fractional `mtimeMs`, compared exactly like TS (`===`).
 #[allow(clippy::float_cmp)] // exact equality is the TS semantics
-fn unchanged(stored: Option<&FileOffset>, meta: &Metadata, replay: bool) -> bool {
+fn unchanged(stored: Option<&FileOffset>, file: &str, meta: &Metadata, replay: bool) -> bool {
     if replay {
         return false;
     }
@@ -250,7 +273,7 @@ fn unchanged(stored: Option<&FileOffset>, meta: &Metadata, replay: bool) -> bool
     };
     stored.last_modified == mtime_ms(meta)
         && i64::try_from(meta.len()).is_ok_and(|size| size == state.size)
-        && matches_session_file(state, meta)
+        && matches_session_file(state, file, meta)
 }
 
 fn parse_job(file: &str, job: &Job, replay: bool) -> Result<ParsedSession> {
@@ -361,7 +384,7 @@ fn sync_all_sessions_locked(opts: &SyncOptions<'_>) -> Result<(SyncResult, bool)
                     slots.push(None);
                     continue;
                 };
-                if unchanged(stored.as_ref(), &meta, replay) {
+                if unchanged(stored.as_ref(), file, &meta, replay) {
                     slots.push(None);
                     continue;
                 }

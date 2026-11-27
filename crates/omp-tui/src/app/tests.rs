@@ -1,3 +1,4 @@
+use super::turn_usage::{format_tokens, TurnUsage};
 use super::*;
 use crate::chat::ChatRole;
 use crate::port::FakePort;
@@ -1942,48 +1943,159 @@ fn hidden_custom_notices_never_render() {
 }
 
 #[test]
-fn live_token_counter_estimates_partial_delta_then_reconciles_usage_on_message_end() {
+fn format_tokens_compacts() {
+    assert_eq!(format_tokens(0), "0");
+    assert_eq!(format_tokens(999), "999");
+    assert_eq!(format_tokens(1234), "1.2k");
+    assert_eq!(format_tokens(18_200), "18.2k");
+    assert_eq!(format_tokens(1_400), "1.4k");
+    assert_eq!(format_tokens(1_500_000), "1.5M");
+}
+
+#[test]
+fn turn_usage_estimates_from_deltas_then_exact() {
+    let mut usage = TurnUsage::default();
+    // 1200 text chars + 3600 thinking chars → (1200+3600)/4 = 1200 out.
+    let text = "a".repeat(1200);
+    let think = "t".repeat(3600);
+    usage.observe_message(&json!({
+        "id": "m1", "role": "assistant",
+        "content": [{"type": "text", "text": text}, {"type": "thinking", "thinking": think}]
+    }));
+    assert_eq!(usage.output_tokens(), 1200);
+    assert_eq!(usage.thinking_tokens(), 900);
+    // No provider usage yet: input falls back to the context estimate.
+    assert_eq!(usage.input_tokens(Some(18_200)), 18_200);
+    // Second message accumulates per turn.
+    usage.observe_message(&json!({
+        "id": "m2", "role": "assistant",
+        "content": [{"type": "text", "text": "b".repeat(400)}]
+    }));
+    assert_eq!(usage.estimated_output(), 1300);
+    // Provider usage wins over the estimate once it arrives.
+    usage.observe_message(&json!({
+        "id": "m1", "role": "assistant", "usage": {"input": 100, "output": 500, "cacheRead": 50}
+    }));
+    assert_eq!(usage.output_tokens(), 500);
+    assert_eq!(usage.input_tokens(None), 150);
+    // Pricing math: 150 in @ $2/M + 500 out @ $8/M = $0.0043.
+    let cost = usage.cost(150, 500, 2.0, 8.0).unwrap();
+    assert!((cost - 0.0043).abs() < 1e-9, "cost: {cost}");
+}
+#[test]
+fn turn_usage_deltas_add_thinking_and_text() {
+    let mut usage = TurnUsage::default();
+    // Thinking deltas (`delta_updates` mode: no cumulative `message`).
+    usage.observe_delta(&json!({
+        "type": "message_update", "messageId": "m1",
+        "assistantMessageEvent": {"type": "thinking_delta", "delta": "t".repeat(3600)}
+    }));
+    assert_eq!(usage.output_tokens(), 900);
+    // Text deltas add into the same message.
+    usage.observe_delta(&json!({
+        "type": "message_update", "messageId": "m1",
+        "assistantMessageEvent": {"type": "text_delta", "delta": "a".repeat(1200)}
+    }));
+    assert_eq!(usage.output_tokens(), 1200);
+    assert_eq!(usage.thinking_tokens(), 900);
+    // A settled cumulative snapshot resets the deltas (no double count).
+    usage.observe_message(&json!({
+        "id": "m1", "role": "assistant",
+        "content": [{"type": "thinking", "thinking": "t".repeat(3600)},
+                    {"type": "text", "text": "a".repeat(1200)}]
+    }));
+    assert_eq!(usage.output_tokens(), 1200);
+    assert_eq!(usage.thinking_tokens(), 900);
+}
+
+#[test]
+fn loader_row_counts_thinking_deltas_live() {
     let mut app = app();
-    start_streaming(&mut app);
-
-    // Partial text_delta: no provider usage yet -> chars/4 estimate, marked ≈.
-    app.apply_event(&crate::events::parse_frame(&json!({
-        "type": "message_update",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "a".repeat(100)}]
-        }
+    let _port = port();
+    app.apply_event(&AppEvent::AgentStart);
+    app.apply_event(&AppEvent::ContextUsage(json!({
+        "type": "context_usage", "model": "zai/glm-5.3-flash", "tokens": 1234
     })));
-    let s = screen(&mut app, 80, 10);
-    assert!(s.contains("↓≈25 tok"), "estimate after first delta: {s}");
-
-    // A longer partial delta grows the estimate (still no reported usage).
-    app.apply_event(&crate::events::parse_frame(&json!({
-        "type": "message_update",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "a".repeat(300)}]
-        }
+    let render_row = |app: &mut App| -> String {
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
+            .collect()
+    };
+    // Thinking-only deltas: `↓` grows with each delta.
+    app.apply_event(&AppEvent::MessageUpdate(json!({
+        "type": "message_update", "messageId": "m1",
+        "assistantMessageEvent": {"type": "thinking_delta", "delta": "t".repeat(1800)}
     })));
-    let s = screen(&mut app, 80, 10);
-    assert!(s.contains("↓≈75 tok"), "estimate after longer delta: {s}");
-
-    // message_end carries the actual usage: the partial estimate is dropped
-    // and the run counter reconciles to the reported output tokens — exact
-    // value, no ≈ marker, and no double count of estimate + usage.
-    app.apply_event(&crate::events::parse_frame(&json!({
-        "type": "message_end",
-        "message": {
-            "role": "assistant",
-            "stopReason": "endTurn",
-            "usage": {"input": 1000, "output": 117}
-        }
+    let row1 = render_row(&mut app);
+    assert!(row1.contains("↓450"), "first row: {row1:?}");
+    assert!(row1.contains("(think 450)"), "first row: {row1:?}");
+    app.apply_event(&AppEvent::MessageUpdate(json!({
+        "type": "message_update", "messageId": "m1",
+        "assistantMessageEvent": {"type": "thinking_delta", "delta": "t".repeat(1800)}
     })));
-    let s = screen(&mut app, 80, 10);
-    assert!(s.contains("↓117 tok"), "reconciled to actual usage: {s}");
-    assert!(
-        !s.contains("↓≈"),
-        "estimate marker gone after message_end: {s}"
-    );
-    assert!(!s.contains("↓192"), "estimate must not double count: {s}");
+    let row2 = render_row(&mut app);
+    assert!(row2.contains("↓900"), "second row: {row2:?}");
+    assert!(row2.contains("(think 900)"), "second row: {row2:?}");
+}
+
+#[test]
+fn loader_row_shows_live_token_usage() {
+    let mut app = app();
+    let _port = port();
+    app.apply_event(&AppEvent::AgentStart);
+    app.apply_event(&AppEvent::ContextUsage(json!({
+        "type": "context_usage", "model": "zai/glm-5.3-flash", "tokens": 1234
+    })));
+    // Stream ~1200 output tokens (~300 text + ~900 thinking).
+    app.apply_event(&AppEvent::MessageUpdate(json!({
+        "message": {"id": "m1", "role": "assistant",
+                    "content": [{"type": "thinking", "thinking": "t".repeat(3600)},
+                                {"type": "text", "text": "a".repeat(1200)}]}
+    })));
+    let backend = TestBackend::new(80, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.render(f)).unwrap();
+    let buf = terminal.backend().buffer();
+    let row: String = (0..80).map(|x| buf[(x, 7)].symbol()).collect();
+    assert!(row.contains("↑1.2k"), "row: {row:?}");
+    assert!(row.contains("↓1.2k"), "row: {row:?}");
+    assert!(row.contains("(think 900)"), "row: {row:?}");
+}
+
+#[test]
+fn loader_usage_drops_on_narrow_terminals() {
+    let mut app = app();
+    let _port = port();
+    app.apply_event(&AppEvent::AgentStart);
+    app.apply_event(&AppEvent::ContextUsage(json!({
+        "type": "context_usage", "model": "zai/glm-5.3-flash", "tokens": 1234
+    })));
+    app.apply_event(&AppEvent::MessageUpdate(json!({
+        "message": {"id": "m1", "role": "assistant",
+                    "content": [{"type": "text", "text": "a".repeat(1200)}]}
+    })));
+    let backend = TestBackend::new(40, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| app.render(f)).unwrap();
+    let buf = terminal.backend().buffer();
+    let row: String = (0..40).map(|x| buf[(x, 7)].symbol()).collect();
+    assert!(!row.contains("↑1.2k"), "row: {row:?}");
+    assert!(row.contains("Working…"), "row: {row:?}");
+}
+
+#[test]
+fn turn_usage_resets_each_turn() {
+    let mut app = app();
+    let _port = port();
+    app.apply_event(&AppEvent::AgentStart);
+    app.apply_event(&AppEvent::MessageUpdate(json!({
+        "message": {"id": "m1", "role": "assistant",
+                    "content": [{"type": "text", "text": "a".repeat(1200)}]}
+    })));
+    assert_eq!(app.turn_usage.output_tokens(), 300);
+    app.apply_event(&AppEvent::TurnStart);
+    assert_eq!(app.turn_usage.output_tokens(), 0);
 }

@@ -183,6 +183,7 @@ impl Runtime {
                     tool.set_a2a_owner(&self.a2a_owner);
                 }
                 tools.extend(crate::tools::mcp::mcp_tools(&self.cwd).await);
+                tools.extend(crate::tools::wasm::wasm_tools(&self.cwd));
                 // TS `reconcileThinkTool`: model swaps re-evaluate the hidden
                 // think tool's eligibility.
                 let hidden =

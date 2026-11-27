@@ -927,8 +927,11 @@ fn ensure_token(path: &std::path::Path) -> Result<String> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(path, format!("{token}\n"))?;
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(token)
 }
 
@@ -1021,6 +1024,7 @@ async fn main() -> Result<()> {
         });
     }
 
+    #[cfg(unix)]
     let shutdown = async {
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
             Ok(mut term) => {
@@ -1037,6 +1041,11 @@ async fn main() -> Result<()> {
                 "SIGINT"
             }
         }
+    };
+    #[cfg(not(unix))]
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+        "SIGINT"
     };
     tokio::pin!(shutdown);
     loop {

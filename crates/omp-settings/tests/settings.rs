@@ -17,9 +17,12 @@ fn tempdir(tag: &str) -> PathBuf {
 fn schema_covers_ts_registry() {
     // 526 register({...}) definitions extracted from TS v18.6.1, plus the 19
     // settings only the TS panel (`createSettingsHost`) lists, plus the omp-rs
-    // `magicKeywords.ultracode` gate and the omp-rs `context.modelVariants` opt-in.
-    assert_eq!(SETTINGS.len(), 548);
+    // gates `magicKeywords.ultracode`, `systemPrompt.compact` and
+    // `sandbox.enabled`, plus the omp-rs `context.modelVariants` opt-in.
+    assert_eq!(SETTINGS.len(), 550);
     assert!(lookup("magicKeywords.ultracode").is_some());
+    assert!(lookup("sandbox.enabled").is_some());
+    assert!(lookup("systemPrompt.compact").is_some());
     assert!(
         matches!(lookup("context.modelVariants"), Some(def) if matches!(def.ty, SettingType::Record))
     );

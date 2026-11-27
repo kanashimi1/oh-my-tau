@@ -5,7 +5,7 @@ use super::{
     agent_id_taken, apply_child_policy, cancel_handle, json, launch_agent, lookup_handle,
     parse_handle_ref, settle_agent, Arc, Duration, Handle, HandleStatus, HashMap, Instant,
     Launcher, LazyLock, Map, Mutex, OpCtx, Ordering, PathBuf, Value, VecDeque, AGENT_HANDLES,
-    EVAL_SUBAGENT_OUTPUT, LAUNCHER, SUBAGENT_CONCURRENCY, WAIT_TICK,
+    EVAL_SUBAGENT_OUTPUT, LAUNCHER, subagent_concurrency, WAIT_TICK,
 };
 
 /// TS `WorkPoolItem.status`.
@@ -542,14 +542,14 @@ fn create_workpool(
         state: Mutex::new(PoolState::new(
             name.clone(),
             agent.clone(),
-            SUBAGENT_CONCURRENCY,
+            subagent_concurrency(),
         )),
         context,
         cwd: cwd.to_path_buf(),
         launcher: launcher.clone(),
     };
     pools.insert(name.clone(), Arc::new(pool));
-    Ok(json!({"name": name, "agent": agent, "limit": SUBAGENT_CONCURRENCY}))
+    Ok(json!({"name": name, "agent": agent, "limit": subagent_concurrency()}))
 }
 
 // ---------------------------------------------------------------------------
@@ -782,7 +782,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             created,
-            json!({"name": "test-pool-e2e", "agent": "task", "limit": SUBAGENT_CONCURRENCY})
+            json!({"name": "test-pool-e2e", "agent": "task", "limit": subagent_concurrency()})
         );
         let dup = run_workpool_with(
             &json!({"op": "create", "name": "test-pool-e2e"}),

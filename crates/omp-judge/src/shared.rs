@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
-use laya_ort::QuestionProbs;
+use crate::onnx::QuestionProbs;
 use serde_json::{json, Value};
 
 use crate::scorer::ModelPaths;
@@ -51,7 +51,7 @@ pub fn socket_path(paths: &ModelPaths) -> PathBuf {
         .join(format!("laya-{:016x}.sock", h.finish()))
 }
 
-/// Client of the shared judge daemon (drop-in for `laya_ort::Judge::judge`).
+/// Client of the shared judge daemon (drop-in for `onnx::Judge::judge`).
 #[derive(Debug)]
 pub struct Client {
     paths: ModelPaths,
@@ -322,7 +322,7 @@ pub fn serve(paths: &ModelPaths, sock: &Path) -> Result<()> {
         return Ok(()); // a daemon for this model is running (or loading)
     }
     let t0 = Instant::now();
-    let mut judge = laya_ort::Judge::load(&paths.ckpt, &paths.onnx, paths.threads.max(1))
+    let mut judge = crate::onnx::Judge::load(&paths.ckpt, &paths.onnx, paths.threads.max(1))
         .with_context(|| {
             format!(
                 "load laya judge (ckpt {}, onnx {})",

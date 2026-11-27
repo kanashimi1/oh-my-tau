@@ -426,6 +426,7 @@ async fn async_main() -> Result<()> {
         append_system_prompt: args.append_system_prompt.clone(),
         tools_csv,
         subagent: false,
+        compact_prompt: args.compact_prompt,
         model: args.model.clone().unwrap_or_default(),
         generated_append: Vec::new(),
     };
@@ -508,6 +509,13 @@ async fn async_main() -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     context::set_active(context_strategy);
+    // `/sandbox` (features/sandbox.rs): `--sandbox` or the `sandbox.enabled`
+    // setting turns on Landlock/seccomp confinement for tool subprocesses.
+    if args.sandbox
+        || omp_settings::Settings::load(&cwd).get_bool("sandbox.enabled") == Some(true)
+    {
+        crate::features::sandbox::set_enabled(true);
+    }
     approval::Gate::install(
         args.approval_mode.as_deref().and_then(approval::parse_mode),
         args.auto_approve,

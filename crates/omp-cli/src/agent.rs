@@ -202,6 +202,7 @@ pub async fn build_agent(
             tools.push(load_tools);
         }
     }
+    tools.extend(crate::tools::wasm::wasm_tools(cwd));
     // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
     // after the built-ins; a `--tools <csv>` list admits hidden names too
     // (subagent runs carry `yield` in their csv), like TS's requestedTools
@@ -352,7 +353,9 @@ pub async fn build_agent(
             ext_hooks.cloned(),
         )),
         transform_context,
-        before_tool_call: crate::tools::relevance::wrap_before(before_tool_call),
+        before_tool_call: Some(crate::features::plan::gate(
+            crate::tools::relevance::wrap_before(before_tool_call),
+        )),
         after_tool_call,
         ..AgentOptions::default()
     });

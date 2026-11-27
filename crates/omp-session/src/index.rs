@@ -13,7 +13,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -62,19 +62,6 @@ fn kind_of(type_field: Option<&str>) -> EntryKind {
         Some("mode_change") => EntryKind::ModeChange,
         _ => EntryKind::Other,
     }
-}
-
-/// The cheap per-line parse: top-level `type`/`id`/`parentId` only.
-#[derive(serde::Deserialize)]
-struct Head {
-    #[serde(rename = "type", default)]
-    kind: Option<String>,
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(rename = "parentId", default)]
-    parent_id: Option<String>,
-    #[serde(default)]
-    timestamp: Option<String>,
 }
 
 /// One journal entry's index record.
@@ -129,38 +116,9 @@ impl SessionIndex {
     /// # Errors
     /// I/O failure.
     pub fn load(path: &Path) -> Result<Self> {
-        let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-        let mut refs = Vec::new();
-        let mut malformed = Vec::new();
-        let mut offset = 0u64;
-        for (n, chunk) in BufReader::new(file).split(b'\n').enumerate() {
-            let bytes = chunk.with_context(|| format!("{}:{}", path.display(), n + 1))?;
-            let line_len = bytes.len();
-            let text = String::from_utf8_lossy(&bytes);
-            let raw = text.strip_suffix('\r').unwrap_or(&text);
-            if raw.trim().is_empty() {
-                offset += line_len as u64 + 1;
-                continue;
-            }
-            match head_of(&bytes) {
-                Some(head) => refs.push(EntryRef {
-                    line_no: n as u32 + 1,
-                    offset,
-                    len: line_len as u32,
-                    id: head.id.unwrap_or_default().into_boxed_str(),
-                    parent_id: head.parent_id.unwrap_or_default().into_boxed_str(),
-                    timestamp: head.timestamp.unwrap_or_default().into_boxed_str(),
-                    kind: kind_of(head.kind.as_deref()),
-                    type_name: head.kind.unwrap_or_default().into_boxed_str(),
-                }),
-                None => malformed.push(Malformed {
-                    line_no: n + 1,
-                    raw: raw.to_owned(),
-                }),
-            }
-            offset += line_len as u64 + 1;
-        }
+        let buf = crate::scan::FileBuf::read(path)?;
+        let (refs, malformed) = scan_refs(buf.as_slice())?;
+        let size = buf.as_slice().len() as u64;
 
         // First line: fixed-width title slot?
         let mut title_slot = None;
@@ -312,29 +270,81 @@ impl SessionIndex {
     }
 }
 
-/// `Head` from a raw line: the fast path is a borrowed typed parse; lines that
-/// are JSON objects with unusual field shapes fall back to a `Value` parse so
-/// they still index (with empty links).
-fn head_of(bytes: &[u8]) -> Option<Head> {
-    if let Ok(head) = serde_json::from_slice::<Head>(bytes) {
-        return Some(head);
-    }
-    let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(bytes) else {
-        return None;
-    };
-    Some(Head {
-        kind: obj.get("type").and_then(Value::as_str).map(str::to_owned),
-        id: obj.get("id").and_then(Value::as_str).map(str::to_owned),
-        parent_id: obj
-            .get("parentId")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        timestamp: obj
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-    })
+/// Buffers larger than this are scanned with rayon (line spans first, then
+/// parallel parse, results reassembled in file order).
+const PAR_THRESHOLD: usize = 4 * 1024 * 1024;
+
+/// Per-line scan result, in file order after assembly.
+enum ScanItem {
+    Ref(EntryRef),
+    Malformed(Malformed),
+    Blank,
 }
+
+/// Parse one line span into a [`ScanItem`].
+fn scan_span(buf: &[u8], line_no: usize, offset: u32, len: u32) -> ScanItem {
+    let bytes = &buf[offset as usize..offset as usize + len as usize];
+    let raw = crate::scan::decode_line(bytes);
+    if raw.trim().is_empty() {
+        return ScanItem::Blank;
+    }
+    match crate::scan::head_of(bytes) {
+        Some(head) => ScanItem::Ref(EntryRef {
+            line_no: line_no as u32,
+            offset: u64::from(offset),
+            len,
+            id: head.id.unwrap_or_default().into(),
+            parent_id: head.parent_id.unwrap_or_default().into(),
+            timestamp: head.timestamp.unwrap_or_default().into(),
+            kind: kind_of(head.kind.as_deref()),
+            type_name: head.kind.unwrap_or_default().into(),
+        }),
+        None => ScanItem::Malformed(Malformed {
+            line_no,
+            raw: raw.into_owned(),
+        }),
+    }
+}
+
+/// The whole-file link scan: serial below [`PAR_THRESHOLD`], rayon-parallel
+/// above it (chunked spans, ordered assembly — identical results).
+fn scan_refs(buf: &[u8]) -> anyhow::Result<(Vec<EntryRef>, Vec<Malformed>)> {
+    let items: Vec<ScanItem> = if buf.len() > PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let spans = crate::scan::line_spans(buf);
+        let threads = rayon::current_num_threads().max(1);
+        let chunk = (spans.len() / (threads * 8)).clamp(256, 4096).max(1);
+        spans
+            .par_chunks(chunk)
+            .map(|c| {
+                c.iter()
+                    .map(|&(n, o, l)| scan_span(buf, n, o, l))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<Vec<_>>>()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+    } else {
+        crate::scan::line_spans(buf)
+            .into_iter()
+            .map(|(n, o, l)| scan_span(buf, n, o, l))
+            .collect()
+    };
+    let mut refs = Vec::new();
+    let mut malformed = Vec::new();
+    for item in items {
+        match item {
+            ScanItem::Ref(r) => refs.push(r),
+            ScanItem::Malformed(m) => malformed.push(m),
+            ScanItem::Blank => {}
+        }
+    }
+    Ok((refs, malformed))
+}
+
+/// Per-line head parsing lives in [`crate::scan::head_of`] (borrowed typed
+/// parse with a `Value` fallback for JSON objects with unusual field shapes).
 
 /// Buffered positional reader over a session journal. Branch passes walk
 /// entries mostly in file order, so a forward jump inside the buffer is a

@@ -388,6 +388,14 @@ impl Runtime {
 
     /// Terminal `agent_end`, or the retry saga when the run failed transiently.
     fn on_agent_end(self: &Arc<Self>, frame: Value, messages: &[AgentMessage]) {
+        // Budget gate: after each assistant turn, stop once the limit is spent.
+        // Spawned so the check runs after the agent's state lock is released.
+        if crate::features::budget::is_armed() {
+            let rt = self.clone();
+            tokio::spawn(async move {
+                crate::features::budget::check_after_turn(&rt).await;
+            });
+        }
         self.emit_queue_update();
         self.shadow_judge_turn(messages);
         let failed = last_assistant_msg(messages).and_then(FailedTurn::from_message);

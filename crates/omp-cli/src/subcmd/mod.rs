@@ -7,6 +7,9 @@
 pub mod agent_merge;
 pub mod collab;
 pub mod config;
+/// `omt daemon` needs Unix sockets; not built on Windows.
+#[cfg(unix)]
+pub mod daemon;
 pub mod export;
 pub mod gc;
 pub mod hub;
@@ -25,7 +28,7 @@ pub mod web;
 /// Subcommands this module implements.
 #[must_use]
 pub fn known(name: &str) -> bool {
-    matches!(
+    let known = matches!(
         name,
         "models"
             | "stats"
@@ -43,7 +46,10 @@ pub fn known(name: &str) -> bool {
             | "agent-merge"
             | "review"
             | "attach"
-    )
+    );
+    #[cfg(unix)]
+    let known = known || name == "daemon";
+    known
 }
 
 /// Dispatch `omp-rs <name> <args>`; `args` excludes the subcommand token.
@@ -69,6 +75,8 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "agent-merge" => agent_merge::run(args),
         "review" => review::run(args),
         "attach" => crate::attach::run(args),
+        #[cfg(unix)]
+        "daemon" => daemon::run(args),
         _ => anyhow::bail!("unknown subcommand: {name}"),
     }
 }

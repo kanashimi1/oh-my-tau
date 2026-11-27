@@ -1,3 +1,4 @@
+use super::turn_usage::format_tokens;
 use super::{
     App, Component, Constraint, Direction, Frame, Instant, Layout, Line, Maintenance, Rect, Span,
     Style, BRAIN_THINKING, SPINNER, SPINNER_ADVANCE_MS,
@@ -307,44 +308,77 @@ impl App {
         )
         .unwrap_or(usize::MAX)
             % SPINNER.len();
+        // Live token usage only while streaming (not during maintenance) and
+        // only once there is something to show; dropped on narrow terminals.
+        let usage = if area.width >= 60 {
+            self.loader_usage_text()
+        } else {
+            None
+        };
+        if self.theme.clean() && self.maintenance.is_none() {
+            let line = self.clean_loader_line(frame_idx, usage.as_deref());
+            frame.render_widget(Paragraph::new(line), area);
+            return;
+        }
         let label = match self.maintenance {
             Some(Maintenance::Compaction) => " compacting… (esc to cancel)",
             Some(Maintenance::Retry) => " retrying… (esc to cancel)",
             None => " Working…",
         };
-        if self.theme.clean() && self.maintenance.is_none() {
-            frame.render_widget(Paragraph::new(self.clean_loader_line(frame_idx)), area);
-            return;
-        }
+        let text = match &usage {
+            Some(u) => format!("{} {label} · {u}", SPINNER[frame_idx]),
+            None => format!("{} {label}", SPINNER[frame_idx]),
+        };
         let line = Line::from(Span::styled(
-            format!(
-                "{} {label}{}",
-                SPINNER[frame_idx],
-                self.loader_token_suffix()
-            ),
+            text,
             Style::default().fg(self.theme.color("accent")),
         ));
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    fn loader_token_suffix(&self) -> String {
-        if !self.status.streaming || self.maintenance.is_some() {
-            return String::new();
+    /// The live usage suffix for the loader row (`↑in ↓out (think t) · $c`),
+    /// `None` until any token count is known this turn.
+    fn loader_usage_text(&self) -> Option<String> {
+        if !self.status.streaming {
+            return None;
         }
-        let n = self.run_output_tokens.saturating_add(self.partial_output);
-        let approximate = if self.partial_output > 0 && !self.partial_reported {
-            "≈"
-        } else {
-            ""
-        };
-        format!(
-            " · ↓{approximate}{} tok",
-            crate::chat::blocks::format_number(n)
-        )
+        let input = self.turn_usage.input_tokens(self.status.context_tokens);
+        let output = self.turn_usage.output_tokens();
+        if input == 0 && output == 0 {
+            return None;
+        }
+        let mut parts = vec![
+            format!("↑{}", format_tokens(input)),
+            format!("↓{}", format_tokens(output)),
+        ];
+        let think = self.turn_usage.thinking_tokens();
+        if think > 0 {
+            parts.push(format!("(think {})", format_tokens(think)));
+        }
+        if let Some((in_per_m, out_per_m)) = self.model_pricing {
+            if let Some(cost) = self.turn_usage.cost(input, output, in_per_m, out_per_m) {
+                parts.push(format!("${cost:.3}"));
+            }
+        }
+        Some(parts.join(" "))
+    }
+
+    /// Re-resolve the active model's pricing (loader cost suffix) from the
+    /// `/model` catalogue; `None` when the model is unknown or unpriced.
+    pub(super) fn refresh_model_pricing(&mut self) {
+        let model = self.status.model.clone();
+        self.model_pricing = self
+            .overlays
+            .models_mut()
+            .models
+            .iter()
+            .find(|m| format!("{}/{}", m.provider, m.id) == model)
+            .map(|m| (m.cost_input, m.cost_output))
+            .filter(|(i, o)| *i > 0.0 || *o > 0.0);
     }
 
     /// Clean loader: spinner, what is happening, Omi's face, elapsed time.
-    fn clean_loader_line(&self, frame_idx: usize) -> Line<'static> {
+    fn clean_loader_line(&self, frame_idx: usize, usage: Option<&str>) -> Line<'static> {
         use crate::chrome::mascot::{face, Mood};
         let tool_running = self.messages.live_tail().iter().any(|e| match &e.kind {
             crate::chat::ChatKind::Tool(card) => !card.status.settled(),
@@ -364,6 +398,10 @@ impl App {
         let accent = Style::default().fg(self.theme.color("accent"));
         let dim = Style::default().fg(self.theme.color("dim"));
         let pink = Style::default().fg(ratatui::style::Color::Rgb(236, 112, 214));
+        let tail = match usage {
+            Some(u) => format!("  {}s · {u} · esc to interrupt", elapsed.as_secs()),
+            None => format!("  {}s · esc to interrupt", elapsed.as_secs()),
+        };
         Line::from(vec![
             Span::styled(format!("{} ", SPINNER[frame_idx]), accent),
             Span::styled(
@@ -379,14 +417,7 @@ impl App {
                 Span::raw("")
             },
             Span::styled(face(mood, tick).to_owned(), pink),
-            Span::styled(
-                format!(
-                    "  {}s{} · esc to interrupt",
-                    elapsed.as_secs(),
-                    self.loader_token_suffix()
-                ),
-                dim,
-            ),
+            Span::styled(tail, dim),
         ])
     }
 

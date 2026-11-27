@@ -15,14 +15,14 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_ACCESS_DENIED, ERROR_CANT_ACCESS_FILE, ERROR_SHARING_VIOLATION,
-        GetLastError, HANDLE, MAX_PATH, NO_ERROR,
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_CANT_ACCESS_FILE,
+        ERROR_SHARING_VIOLATION, HANDLE, MAX_PATH, NO_ERROR,
     },
     Storage::FileSystem::{
+        GetCompressedFileSizeW, GetDiskFreeSpaceExW, GetDiskFreeSpaceW, GetFileInformationByHandle,
+        GetFinalPathNameByHandleW, GetVolumeInformationW, GetVolumePathNameW,
         BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_NAME_NORMALIZED, FILE_WRITE_ATTRIBUTES, GetCompressedFileSizeW, GetDiskFreeSpaceExW,
-        GetDiskFreeSpaceW, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-        GetVolumeInformationW, GetVolumePathNameW, INVALID_FILE_SIZE, VOLUME_NAME_DOS,
+        FILE_NAME_NORMALIZED, FILE_WRITE_ATTRIBUTES, INVALID_FILE_SIZE, VOLUME_NAME_DOS,
     },
 };
 
@@ -161,14 +161,16 @@ pub(crate) fn chown(
 }
 
 static PATHEXT: LazyLock<Vec<String>> = LazyLock::new(|| {
-    let parsed: Vec<String> = std::env::var_os("PATHEXT").map_or_default(|value| {
-        value
-            .to_string_lossy()
-            .split(';')
-            .map(|entry| entry.trim().trim_start_matches('.').to_ascii_lowercase())
-            .filter(|entry| !entry.is_empty())
-            .collect()
-    });
+    let parsed: Vec<String> = std::env::var_os("PATHEXT")
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .split(';')
+                .map(|entry| entry.trim().trim_start_matches('.').to_ascii_lowercase())
+                .filter(|entry| !entry.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     if parsed.is_empty() {
         ["com", "exe", "bat", "cmd"].map(str::to_owned).to_vec()
     } else {

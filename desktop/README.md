@@ -22,7 +22,7 @@ hotkey.
 Cross-compile for Windows x86_64 with `cargo-xwin`:
 
 ```sh
-cd /home/kaneki/fleet-split/omp-rs/desktop
+cd desktop
 cargo xwin build --target x86_64-pc-windows-msvc --release
 ```
 
@@ -36,7 +36,7 @@ Copy it to the install location:
 
 ```sh
 cp target/x86_64-pc-windows-msvc/release/tau.exe \
-  /mnt/c/Users/kaneki/AppData/Local/Programs/Tau/tau.exe
+  /mnt/c/Users/<you>/AppData/Local/Programs/Tau/tau.exe
 ```
 
 No installer is required; `tau.exe` runs standalone (WebView2 is installed on
@@ -45,7 +45,7 @@ the host).
 ## Run
 
 ```sh
-/mnt/c/Users/kaneki/AppData/Local/Programs/Tau/tau.exe &
+/mnt/c/Users/<you>/AppData/Local/Programs/Tau/tau.exe &
 ```
 
 On startup the app probes `http://127.0.0.1:7467/api/info`. If the service is

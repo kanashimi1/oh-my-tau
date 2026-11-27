@@ -465,9 +465,10 @@ pub struct App {
     pump: EventPump,
     /// Spinner clock origin (TS derives the glyph from wall time).
     spinner_start: Instant,
-    run_output_tokens: u64,
-    partial_output: u64,
-    partial_reported: bool,
+    /// Live per-turn token tally for the loader row (reset each turn).
+    turn_usage: turn_usage::TurnUsage,
+    /// Active model's `$/M` pricing `(input, output)` for the cost suffix.
+    model_pricing: Option<(f64, f64)>,
     /// Run epoch, mirrored from the pump at every `agent_start`.
     pub run_epoch: u64,
     /// Steering queue previews (`queue_update.steering`), newest last.
@@ -569,9 +570,8 @@ impl App {
             scroll: 0,
             pump: EventPump::new(),
             spinner_start: Instant::now(),
-            run_output_tokens: 0,
-            partial_output: 0,
-            partial_reported: false,
+            turn_usage: turn_usage::TurnUsage::default(),
+            model_pricing: None,
             run_epoch: 0,
             steering: Vec::new(),
             follow_up: Vec::new(),
@@ -679,6 +679,7 @@ mod events;
 mod input;
 mod render;
 mod slash;
+mod turn_usage;
 
 /// Wall-clock milliseconds (drives status-line animation ticks).
 fn now_millis() -> u64 {

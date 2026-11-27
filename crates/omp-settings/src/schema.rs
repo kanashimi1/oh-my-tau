@@ -2543,7 +2543,7 @@ pub static SETTINGS: &[SettingDef] = &[
         id: "retry.maxRetries",
         ty: crate::SettingType::Number,
         env: None,
-        default_yaml: Some("10"),
+        default_yaml: Some("4"),
         credential: false,
     },
     SettingDef {
@@ -2576,6 +2576,13 @@ pub static SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         id: "retry.waitForUsageReset",
+        ty: crate::SettingType::Boolean,
+        env: None,
+        default_yaml: Some("false"),
+        credential: false,
+    },
+    SettingDef {
+        id: "sandbox.enabled",
         ty: crate::SettingType::Boolean,
         env: None,
         default_yaml: Some("false"),
@@ -3119,6 +3126,13 @@ pub static SETTINGS: &[SettingDef] = &[
         credential: false,
     },
     SettingDef {
+        id: "systemPrompt.compact",
+        ty: crate::SettingType::Boolean,
+        env: None,
+        default_yaml: Some("false"),
+        credential: false,
+    },
+    SettingDef {
         id: "task.agentAdvisor",
         ty: crate::SettingType::Record,
         env: None,
@@ -3234,7 +3248,9 @@ pub static SETTINGS: &[SettingDef] = &[
         id: "task.maxConcurrency",
         ty: crate::SettingType::Number,
         env: None,
-        default_yaml: Some("32"),
+        // `0` = auto: `min(available_parallelism, 8)` (see
+        // `TaskRunner::resolve_max_concurrency`); a positive number overrides.
+        default_yaml: Some("0"),
         credential: false,
     },
     SettingDef {

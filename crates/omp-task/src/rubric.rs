@@ -291,7 +291,11 @@ impl RubricRecord {
             .append(true)
             .open(path)
         {
-            let _ = writeln!(f, "{}", json!(self));
+            // One write(2) per record: `writeln!` on an unbuffered File issues
+            // several writes, so concurrent appenders tore each other's lines.
+            let mut line = json!(self).to_string();
+            line.push('\n');
+            let _ = f.write_all(line.as_bytes());
         }
     }
 }
@@ -512,6 +516,11 @@ mod tests {
 
     #[tokio::test]
     async fn completed_child_is_scored_and_logged() {
+        // Serialize env-var + log-file access with any other test touching
+        // `LOG_ENV` (CI runs tests in parallel threads; interleaved appends
+        // produced torn reads).
+        static LOG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = LOG_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!("omp-rubric-{}", std::process::id()));
         // Pids are reused: clear a stale log from a previous process so the
         // file holds exactly this run's record.

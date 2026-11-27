@@ -61,9 +61,10 @@ use std::{
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    net::UnixListener,
     task::{JoinHandle, JoinSet},
     time::timeout,
 };
@@ -464,6 +465,7 @@ async fn read_line_capped<S: AsyncRead + Unpin>(
 /// (registry.ts:280-364). Data after the first newline is ignored (`handled`
 /// flag, registry.ts:286-287); an over-cap line destroys the connection
 /// without a response.
+#[cfg(unix)]
 async fn handle_connection(
     mut stream: tokio::net::UnixStream,
     token: Arc<String>,
@@ -710,9 +712,10 @@ fn resolve_socket_endpoint(
     entry_id: &str,
     fallback_base: &Path,
 ) -> std::io::Result<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
+    // `OsStr::len` is the byte length on Unix, the same measure the original
+    // `OsStrExt::as_bytes().len()` used.
     let canonical = dir.join(format!("{entry_id}.sock"));
-    if canonical.as_os_str().as_bytes().len() < SUN_PATH_LIMIT {
+    if canonical.as_os_str().len() < SUN_PATH_LIMIT {
         return Ok(canonical);
     }
     let short_dir = socket_fallback_dir(dir, fallback_base);
@@ -823,7 +826,8 @@ impl Drop for CollabHostPublication {
 /// statically impossible (all fields are strings and integers).
 // invariant: registry metadata is a plain data struct, serde_json cannot fail to serialize it.
 #[allow(clippy::expect_used)]
-pub fn publish_collab_host(
+#[cfg(unix)]
+fn publish_collab_host_unix(
     source: Arc<dyn CollabHostRegistrySource>,
     options: Option<&CollabPublishOptions>,
 ) -> anyhow::Result<CollabHostPublication> {
@@ -912,9 +916,35 @@ pub fn publish_collab_host(
     })
 }
 
+/// Publish a live Collab host to the local registry (see
+/// [`publish_collab_host_unix`]). Unix-domain-socket IPC only.
+///
+/// # Errors
+/// Registry directory, socket bind or metadata write failure.
+#[cfg(unix)]
+pub fn publish_collab_host(
+    source: Arc<dyn CollabHostRegistrySource>,
+    options: Option<&CollabPublishOptions>,
+) -> anyhow::Result<CollabHostPublication> {
+    publish_collab_host_unix(source, options)
+}
+
+/// Non-Unix platforms have no Unix-domain sockets: publishing is a clear,
+/// unsupported-platform error rather than a compile failure.
+#[cfg(not(unix))]
+pub fn publish_collab_host(
+    _source: Arc<dyn CollabHostRegistrySource>,
+    _options: Option<&CollabPublishOptions>,
+) -> anyhow::Result<CollabHostPublication> {
+    anyhow::bail!(
+        "collab host publishing requires Unix-domain sockets and is not supported on this platform"
+    )
+}
+
 /// Accept loop for one publication. Accept errors abort the loop except the
 /// transient per-connection resets (TS keeps the server alive across accept
 /// errors; a persistently failing accept is fatal here rather than spinning).
+#[cfg(unix)]
 async fn accept_loop(
     listener: UnixListener,
     token: Arc<String>,
@@ -968,6 +998,7 @@ async fn query(
     }
 }
 
+#[cfg(unix)]
 // invariant: frame is a serde_json object built in-memory, serialization cannot fail.
 #[allow(clippy::expect_used)]
 async fn query_once(meta: &CollabHostRecord, request: serde_json::Value) -> QueryResult {
@@ -1022,6 +1053,15 @@ async fn query_once(meta: &CollabHostRecord, request: serde_json::Value) -> Quer
         };
     }
     QueryResult::Ok(serde_json::Value::Object(response.clone()))
+}
+
+/// Non-Unix: no Unix-domain sockets, so no endpoint can be reached. `Skip`
+/// keeps a possibly-live entry from being pruned by a platform limitation.
+#[cfg(not(unix))]
+async fn query_once(_meta: &CollabHostRecord, _request: serde_json::Value) -> QueryResult {
+    QueryResult::Skip {
+        error: Some("collab registry IPC is unsupported on this platform".to_owned()),
+    }
 }
 
 async fn query_snapshot(
@@ -1290,7 +1330,7 @@ pub async fn resolve_collab_host_link(
     )))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use std::collections::{HashMap, HashSet};

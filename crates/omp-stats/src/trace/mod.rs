@@ -157,9 +157,23 @@ pub(crate) fn read_transcript(resolved: &Path) -> Result<Vec<u8>> {
     }
 }
 
+/// Node `stat.mtimeMs`: `sec * 1e3 + nsec / 1e6`.
+#[cfg(unix)]
 pub(crate) fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
     use std::os::unix::fs::MetadataExt;
     meta.mtime() as f64 * 1000.0 + (meta.mtime_nsec() as f64) / 1_000_000.0
+}
+
+/// Portable `mtime_ms` via `metadata.modified()` (same formula, same values).
+#[cfg(not(unix))]
+pub(crate) fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
+    use std::time::UNIX_EPOCH;
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0.0, |d| {
+            (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0
+        })
 }
 
 /// ISO string → ms epoch, `None` when absent/unparseable (`Date.parse`).

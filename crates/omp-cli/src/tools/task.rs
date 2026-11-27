@@ -43,13 +43,20 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "rewind",
 ];
 
-/// omp `task.maxConcurrency` protocol default.
-const MAX_CONCURRENCY: usize = 32;
+/// Fan-out ceiling for `tasks[]` batches: the `task.maxConcurrency` setting
+/// wins when it is a positive number; otherwise `min(available_parallelism, 8)`
+/// (`TaskRunner::default_max_concurrency`; the schema default `0` = auto).
+fn effective_max_concurrency(cwd: &std::path::Path) -> usize {
+    let settings = omp_settings::Settings::load(cwd);
+    TaskRunner::resolve_max_concurrency(settings.get_number("task.maxConcurrency"))
+}
 
 /// Static header of the tool description (the `task.md` template rendered
 /// with the protocol defaults: batch + async enabled, no isolation, default
 /// agent `task`). The discovered agent list is appended dynamically.
 pub const DESCRIPTION_HEADER: &str = r"Spawn `tasks[]` concurrently; the call returns immediately with the children's ids/handles while they keep running in the background.
+
+Subagents run as child processes with bounded concurrency: `task.maxConcurrency` when set to a positive number, else `min(CPU count, 8)`.
 
 # Results
 Each child's result auto-delivers to you as a message at your next turn boundary: one combined delivery per settled batch (`<task-results>` for finished children, `<agent-messages>` for what they sent you). Print (`omt -p`) and rpc sessions stay alive while your task children run — a settled child starts a turn with its delivery. Keep working; read results as they land, do not poll.
@@ -591,7 +598,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
     }
 
     let binary = crate::respawn_exe();
-    let runner = TaskRunner::new(binary, MAX_CONCURRENCY);
+    let runner = TaskRunner::new(binary, effective_max_concurrency(&env.cwd));
     let prompts: Vec<String> = specs.iter().map(|s| s.prompt.clone()).collect();
     // Non-blocking (TS async task semantics): the children keep running; each
     // result is scored (SERA — the rubrics were frozen above, before any spawn)

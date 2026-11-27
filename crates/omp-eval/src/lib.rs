@@ -38,6 +38,7 @@
 
 use parking_lot::Mutex;
 use std::io::{self, BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -454,6 +455,7 @@ impl KernelProcess {
             c
         } else {
             let mut c = Command::new(program);
+            #[cfg(unix)]
             c.process_group(0);
             c
         };
@@ -513,13 +515,21 @@ impl KernelProcess {
     /// pgid equal the runner's pid), so cells that spawned subprocesses do not
     /// leak them.
     pub(crate) fn kill_group(&mut self) {
-        // Negative pid targets the runner's own process group; nix::kill is
-        // a safe wrapper (the workspace forbids `unsafe`, and none is needed).
-        if let Ok(pid) = i32::try_from(self.child.id()) {
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(-pid),
-                nix::sys::signal::Signal::SIGKILL,
-            );
+        #[cfg(unix)]
+        {
+            // Negative pid targets the runner's own process group; nix::kill is
+            // a safe wrapper (the workspace forbids `unsafe`, and none is needed).
+            if let Ok(pid) = i32::try_from(self.child.id()) {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(-pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // No process groups on this platform: kill the runner itself.
+            let _ = self.child.kill();
         }
     }
 }
@@ -855,11 +865,16 @@ impl PythonKernel {
                     // KeyboardInterrupt("Execution interrupted"); reuse the
                     // escalation window to let the runner settle.
                     if let Some(p) = self.process.lock().as_mut() {
+                        #[cfg(unix)]
                         if let Ok(pid) = i32::try_from(p.child.id()) {
                             let _ = nix::sys::signal::kill(
                                 nix::unistd::Pid::from_raw(-pid),
                                 nix::sys::signal::Signal::SIGINT,
                             );
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            let _ = p.child.kill();
                         }
                     }
                     // One shot: stop polling the token while the interrupt lands.

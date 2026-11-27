@@ -291,15 +291,14 @@ impl App {
             AppEvent::AgentStart => {
                 self.last_stop_reason = None;
                 self.spinner_start = Instant::now();
-                self.run_output_tokens = 0;
-                self.partial_output = 0;
-                self.partial_reported = false;
+                self.turn_usage.reset();
                 self.status.streaming = true;
                 self.pending_submission = false;
                 self.title
                     .set_state(TitleState::Working, Some(&self.title_label));
             }
             AppEvent::TurnStart => {
+                self.turn_usage.reset();
                 self.status.streaming = true;
                 self.pending_submission = false;
             }
@@ -323,33 +322,13 @@ impl App {
                     self.notify_turn_settled(true);
                 }
             }
-            AppEvent::MessageUpdate(frame) => {
-                let message = &frame["message"];
-                let reported = message["usage"]["output"]
-                    .as_u64()
-                    .or_else(|| frame["liveUsage"]["output"].as_u64())
-                    .filter(|n| *n > 0);
-                self.partial_reported = reported.is_some();
-                self.partial_output = reported.unwrap_or_else(|| {
-                    let chars = message["content"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|b| b["text"].as_str().or_else(|| b["thinking"].as_str()))
-                        .map(str::len)
-                        .sum::<usize>();
-                    chars.div_ceil(4) as u64
-                });
-            }
             AppEvent::MessageEnd(frame) => {
+                if let Some(message) = frame.get("message") {
+                    self.turn_usage.observe_message(message);
+                }
                 let message = frame.get("message");
                 if message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant")
                 {
-                    self.partial_output = 0;
-                    self.partial_reported = false;
-                    self.run_output_tokens = self
-                        .run_output_tokens
-                        .saturating_add(frame["message"]["usage"]["output"].as_u64().unwrap_or(0));
                     self.last_stop_reason = message
                         .and_then(|m| m.get("stopReason"))
                         .and_then(Value::as_str)
@@ -371,6 +350,14 @@ impl App {
                 self.title.set_state(state, Some(name));
             }
             AppEvent::MessageStart(_) => self.pending_submission = false,
+            AppEvent::MessageUpdate(frame) => {
+                if let Some(message) = frame.get("message") {
+                    self.turn_usage.observe_message(message);
+                }
+                // `delta_updates` mode carries only `assistantMessageEvent.delta`
+                // (no cumulative `message` snapshot); fold it here.
+                self.turn_usage.observe_delta(frame);
+            }
             AppEvent::ModelChanged(frame) => {
                 if let Some(m) = frame
                     .get("model")
@@ -385,11 +372,16 @@ impl App {
                     self.status.model.clone_from(&m);
                     self.overlays.models_mut().current = Some(m);
                 }
+                self.refresh_model_pricing();
             }
-            AppEvent::ContextUsage(frame) => self.apply_context_usage(frame),
+            AppEvent::ContextUsage(frame) => {
+                self.apply_context_usage(frame);
+                self.refresh_model_pricing();
+            }
             AppEvent::ModelsChanged { models } => {
                 let picker = self.overlays.models_mut();
                 picker.models.clone_from(models);
+                self.refresh_model_pricing();
             }
             AppEvent::ThinkingLevelChanged(frame) => {
                 let configured_auto =

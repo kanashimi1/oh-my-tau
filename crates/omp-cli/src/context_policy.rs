@@ -357,7 +357,11 @@ impl Policy {
             Some("1" | "true" | "yes")
         );
         p.schedule = env("OMP_CONTEXT_POLICY_SCRIPT")
-            .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|t| t.trim().parse::<u8>().ok())
+                    .collect()
+            })
             .unwrap_or_default();
         p.log = env("OMP_CONTEXT_POLICY_LOG").map(PathBuf::from);
         if p.kind == Kind::Laya {
