@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.1
+
+### Fixed
+- JS cells: a trailing `return` that follows a statement on the same line (`await x; return y`) or is indented
+  published an empty result; the value is now published like a `return` that starts its own line.
+
 ## 0.14.0
 
 The development line as of 2026-11-27, merged with public v0.13.0 (previous section). On top of v0.13.0:
