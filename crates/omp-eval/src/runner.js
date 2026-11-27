@@ -35,7 +35,9 @@
 // Cell transforms (minimal port of omp `wrapCode`, without babel — a small
 // top-level scanner instead of an AST):
 //   - `returnFinalExpression`: the final top-level expression statement is
-//     rewritten to `__omp_set_final_expr__((expr))`.
+//     rewritten to `__omp_set_final_expr__((expr))`. A final top-level
+//     `return <expr>;` is rewritten the same way and a final `return;` to
+//     nothing, so both spellings publish the value.
 //   - `demoteTopLevelLexicals`: top-level `let`/`const`/`class`/function
 //     declarations are demoted to sloppy global assignments so bindings
 //     survive the cell (omp publishes them onto the VM context global).
@@ -579,6 +581,40 @@ function scanTopLevel(code) {
 const KEYWORD_STATEMENT =
   /^\s*(?:const|let|var|function|async\s+function|class|if|for|while|do|switch|try|return|throw|import|export|break|continue)\b/;
 
+// The expression of a trailing top-level `return <expr>;`, "" for a trailing
+// `return;`, or null when the trailing statement is not one. The statement is
+// cut at its top-level semicolon (a comment may follow it). A `return`
+// followed by a line break keeps its JavaScript meaning: it returns undefined.
+function trailingReturn(tail) {
+  if (!/^return\b/.test(tail)) return null;
+  const rest = tail.slice(6);
+  if (/^[\r\n]/.test(rest) || /^[\t ]*\/\//.test(rest)) return null;
+  let end = rest.length;
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < rest.length; i++) {
+    const ch = rest[i];
+    const next = rest[i + 1];
+    if (quote !== null) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "/" && next === "/") {
+      end = i;
+      break;
+    } else if (ch === "/" && next === "*") {
+      const close = rest.indexOf("*/", i + 2);
+      i = close < 0 ? rest.length : close + 1;
+    } else if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") depth -= 1;
+    else if (ch === ";" && depth === 0) {
+      end = i;
+      break;
+    }
+  }
+  return rest.slice(0, end).trim();
+}
+
 // Demote top-level declarations to sloppy global assignments and capture the
 // trailing expression. Returns { source, finalExpr } where finalExpr is the
 // source text of the trailing expression statement (without `;`), or null.
@@ -589,7 +625,13 @@ function transformCell(code) {
   const tail = body.slice(stmtStart).replace(/[\s;]*$/, "");
   let finalExpr = null;
   let prefix = body.slice(0, stmtStart);
-  if (
+  const returned = trailingReturn(tail);
+  if (returned === "") {
+    body = prefix + ";";
+  } else if (returned !== null) {
+    finalExpr = returned;
+    body = prefix + "__omp_set_final_expr__((" + returned + "));";
+  } else if (
     tail !== "" &&
     !KEYWORD_STATEMENT.test(tail) &&
     !/^[!#]/.test(tail) &&
