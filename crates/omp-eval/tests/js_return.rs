@@ -44,6 +44,11 @@ fn trailing_return_publishes_the_value() {
         "if (false) { return 1 }\nconst c = await Promise.resolve(0)\nreturn 2;",
     );
     assert_eq!((status, out.as_str()), (CellStatus::Ok, "2\n"));
+    // After a statement on the same line, and indented: still the trailing statement.
+    let (status, out) = output(&k, "const f = await Promise.resolve(6); return f * 2;");
+    assert_eq!((status, out.as_str()), (CellStatus::Ok, "12\n"));
+    let (status, out) = output(&k, "  const g = await Promise.resolve(5)\n  return g + 1;");
+    assert_eq!((status, out.as_str()), (CellStatus::Ok, "6\n"));
     // Values are published exactly like a trailing expression publishes them.
     let (_, plain) = output(&k, "const d = 5\nd * 2");
     let (_, returned) = output(&k, "const e = 5\nreturn e * 2;");

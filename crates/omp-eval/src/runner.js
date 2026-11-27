@@ -586,8 +586,11 @@ const KEYWORD_STATEMENT =
 // cut at its top-level semicolon (a comment may follow it). A `return`
 // followed by a line break keeps its JavaScript meaning: it returns undefined.
 function trailingReturn(tail) {
-  if (!/^return\b/.test(tail)) return null;
-  const rest = tail.slice(6);
+  // `stmt; return x;` on one line and an indented `return` are the same
+  // statement as a `return` that starts its own line at column 0.
+  const head = /^\s*return\b/.exec(tail);
+  if (!head) return null;
+  const rest = tail.slice(head[0].length);
   if (/^[\r\n]/.test(rest) || /^[\t ]*\/\//.test(rest)) return null;
   let end = rest.length;
   let depth = 0;
