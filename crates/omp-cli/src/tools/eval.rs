@@ -31,6 +31,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::eval_bridge::{EvalBridge, OpCtx};
 use super::eval_journal::{self, Lang};
+use super::turn_arms;
 use super::util::{notice_with_artifact, save_artifact, sink_window, spill_window, SpillConfig};
 use super::Env;
 #[path = "eval_output.rs"]
@@ -46,9 +47,9 @@ mod eval_tests;
 #[path = "eval_observation.rs"]
 mod eval_observation;
 
-/// omp `TOOL_TIMEOUTS.eval` (`tools/tool-timeouts.ts`): default 30 s, clamped
-/// to 1–3600 s when the agent passes a value; `0` disables the deadline.
-const DEFAULT_TIMEOUT_SECS: f64 = 30.0;
+/// omp `TOOL_TIMEOUTS.eval` (`tools/tool-timeouts.ts`): default 30 s (180 s
+/// under the `OMP_TURN_HARNESS` arm), clamped to 1–3600 s when the agent
+/// passes a value; `0` disables the deadline.
 const MIN_TIMEOUT_SECS: f64 = 1.0;
 const MAX_TIMEOUT_SECS: f64 = 3600.0;
 
@@ -104,7 +105,7 @@ impl AgentTool for EvalTool {
         "eval"
     }
     fn description(&self) -> &str {
-        DESCRIPTION
+        turn_arms::description()
     }
     fn parameters(&self) -> &Value {
         static SCHEMA: LazyLock<Value> = LazyLock::new(schema);
@@ -177,7 +178,7 @@ fn slot(cwd: &std::path::Path) -> Arc<AsyncMutex<KernelState>> {
 /// when the agent omits `timeout`, `0` disables, otherwise clamped 1–3600 s.
 fn resolve_timeout(args: &Value) -> Option<Duration> {
     match args.get("timeout").and_then(Value::as_f64) {
-        None => Some(Duration::from_secs_f64(DEFAULT_TIMEOUT_SECS)),
+        None => Some(Duration::from_secs_f64(turn_arms::eval_default_timeout_secs())),
         Some(0.0) => None,
         Some(secs) => Some(Duration::from_secs_f64(
             secs.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS),
@@ -342,10 +343,17 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("missing string argument `code`"))?
         .to_string();
-    let is_js = match language {
+    // `#!bash` cell (harness arm): the script below the shebang is one `tool.bash` call.
+    let shell_cell = turn_arms::shell_cell(&code);
+    let code = shell_cell.clone().unwrap_or(code);
+    let is_js = if shell_cell.is_some() {
+        true
+    } else {
+        match language {
         "py" | "python" => false,
         "js" | "javascript" => true,
-        other => bail!("language must be \"py\" or \"js\" (was {other:?})"),
+            other => bail!("language must be \"py\" or \"js\" (was {other:?})"),
+        }
     };
     let lang = if is_js { Lang::Js } else { Lang::Py };
 

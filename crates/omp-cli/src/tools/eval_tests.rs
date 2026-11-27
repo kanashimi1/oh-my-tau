@@ -222,6 +222,28 @@ async fn abort_cancels_a_running_cell() {
 }
 
 #[tokio::test]
+async fn shell_cell_runs_the_script_through_the_bash_tool() {
+    if !require_bun("shell_cell_runs_the_script_through_the_bash_tool") {
+        return;
+    }
+    let env = test_env("shell-cell");
+    // The exit status is part of the shell result the model reads.
+    let js = crate::tools::turn_arms::shell_cell_if("#!/bin/bash\necho shebang-ok\nexit 3\n", true)
+        .expect("expanded");
+    let r = run(&env, json!({"language": "js", "code": js})).await;
+    let out = text(&r);
+    assert!(
+        out.contains("shebang-ok") && out.contains("exited with code 3"),
+        "got: {out}"
+    );
+    assert!(!out.contains("settleHostReply"), "no JS stack in a shell result: {out}");
+    let js = crate::tools::turn_arms::shell_cell_if("#!bash\necho fine\n", true).expect("expanded");
+    let r = run(&env, json!({"language": "js", "code": js})).await;
+    assert!(text(&r).contains("fine") && r.is_error != Some(true), "got: {}", text(&r));
+    shutdown_slot(&env.cwd);
+}
+
+#[tokio::test]
 async fn python_prelude_tool_bridge_reaches_session_tools() {
     let env = test_env("bridge");
     std::fs::write(env.cwd.join("note.txt"), "bridged\n").unwrap();

@@ -29,6 +29,7 @@ pub(crate) mod rlm_combinators;
 mod search;
 pub(crate) mod task;
 mod todo;
+mod turn_arms;
 pub mod wasm;
 pub use todo::{phases_from_entries, TodoPhase, TodoTool};
 #[cfg(test)]
