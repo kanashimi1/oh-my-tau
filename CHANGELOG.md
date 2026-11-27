@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.14.0
+
+The development line as of 2026-11-27, merged with public v0.13.0 (previous section). On top of v0.13.0:
+
+### Agent, tools and protocol
+- Compaction: the defaulted threshold is capped at 150k tokens (1M-window models used to re-send the whole
+  history until ~850k); summaries default to Kimi for Coding.
+- Eval: a trailing top-level `return` publishes the cell value; ranged prelude reads; large reads bound to
+  selected lines; large cell output streams into bounded artifacts; read-only host calls dispatch concurrently in
+  the JS kernel; opt-in observation packs and same-session dedup; displayed images reach the model as image content.
+- Deterministic Rust repair macro-step; Rust edit-verify loops run through Blaze v2; macro-step exposed in code mode.
+- Lazy Hypercode context and RLM; opt-in TypeScript declaration catalog for deferred tools; lazy MCP tool loading.
+- Provider stream watchdogs (headers, first chunk, inter-chunk idle).
+
+### Tau desktop, web and TUI
+- Tau composer, activity trace and fleet navigation redesigned; restored Herdr panels, model brands and resume
+  journals; batched streaming; hesitation filtering in dictation. Working agent logos animate in the web UI.
+- TUI: single-cell thinking glyph, faster loader spinner, editor bounds fix.
+
 ## 0.13.0
 
 Everything since v0.12.0 (2026-10-25): the local development line from 2026-10-24 to
