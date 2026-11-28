@@ -19,7 +19,7 @@ members = [
 exclude = ["crates/.wsckpt"]
 
 [workspace.package]
-version = "0.14.1"
+version = "0.14.2"
 edition = "2021"
 license = "MIT"
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.2
+
+### Added
+- `eval`: the "plan the steps once, then write them as one cell" rule is part of the tool description by default
+  (`OMP_TURN_STEPS=0` turns it off); cells starting with `#!bash` run the script below as one shell call.
+- `eval` result `details.turnClass` (`quiet` / `error` / `other`) for turn accounting from the session journal.
+
 ## 0.14.1
 
 ### Fixed

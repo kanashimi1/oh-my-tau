@@ -3,7 +3,9 @@
 //!
 //! | arm | idea | where it acts |
 //! |---|---|---|
-//! | `OMP_TURN_QUIET` | do not end a turn on a quiet success | `eval` description, rule first |
+//! On by default: `OMP_TURN_STEPS` (the "plan once, then one cell" rule); `OMP_TURN_STEPS=0` turns it off.
+//!
+//! | arm | do not end a turn on a quiet success | `eval` description, rule first |
 //! | `OMP_TURN_TODO` | the todo update rides with the next working call | `eval` description |
 //! | `OMP_TURN_HARNESS` | errors the harness itself causes | `#!bash` cells, stale `asyncio.run` note, 180 s cell deadline |
 //! | `OMP_TURN_WAIT` | wait inside the cell, not across turns | `eval` description |
@@ -35,7 +37,8 @@ static ARMS: LazyLock<Arms> = LazyLock::new(|| Arms {
     harness: flag("OMP_TURN_HARNESS"),
     wait: flag("OMP_TURN_WAIT"),
     read: flag("OMP_TURN_READ"),
-    steps: flag("OMP_TURN_STEPS"),
+    // On in production since 0.14.2 (glm-5.3-flash matrix: turns 0.53 [0.35, 0.77] of base); `0` turns it off.
+    steps: std::env::var_os("OMP_TURN_STEPS").is_none_or(|v| v != "0"),
     salvage: flag("OMP_TURN_SALVAGE"),
     nudge: flag("OMP_TURN_NUDGE"),
     keepstate: flag("OMP_TURN_KEEPSTATE"),
