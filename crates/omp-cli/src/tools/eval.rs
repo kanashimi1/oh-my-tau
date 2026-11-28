@@ -31,6 +31,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::eval_bridge::{EvalBridge, OpCtx};
 use super::eval_journal::{self, Lang};
+use super::turn_arms;
 use super::util::{notice_with_artifact, save_artifact, sink_window, spill_window, SpillConfig};
 use super::Env;
 #[path = "eval_output.rs"]
@@ -46,9 +47,9 @@ mod eval_tests;
 #[path = "eval_observation.rs"]
 mod eval_observation;
 
-/// omp `TOOL_TIMEOUTS.eval` (`tools/tool-timeouts.ts`): default 30 s, clamped
-/// to 1–3600 s when the agent passes a value; `0` disables the deadline.
-const DEFAULT_TIMEOUT_SECS: f64 = 30.0;
+/// omp `TOOL_TIMEOUTS.eval` (`tools/tool-timeouts.ts`): default 30 s (180 s
+/// under the `OMP_TURN_HARNESS` arm), clamped to 1–3600 s when the agent
+/// passes a value; `0` disables the deadline.
 const MIN_TIMEOUT_SECS: f64 = 1.0;
 const MAX_TIMEOUT_SECS: f64 = 3600.0;
 
@@ -104,7 +105,7 @@ impl AgentTool for EvalTool {
         "eval"
     }
     fn description(&self) -> &str {
-        DESCRIPTION
+        turn_arms::description()
     }
     fn parameters(&self) -> &Value {
         static SCHEMA: LazyLock<Value> = LazyLock::new(schema);
@@ -177,7 +178,7 @@ fn slot(cwd: &std::path::Path) -> Arc<AsyncMutex<KernelState>> {
 /// when the agent omits `timeout`, `0` disables, otherwise clamped 1–3600 s.
 fn resolve_timeout(args: &Value) -> Option<Duration> {
     match args.get("timeout").and_then(Value::as_f64) {
-        None => Some(Duration::from_secs_f64(DEFAULT_TIMEOUT_SECS)),
+        None => Some(Duration::from_secs_f64(turn_arms::eval_default_timeout_secs())),
         Some(0.0) => None,
         Some(secs) => Some(Duration::from_secs_f64(
             secs.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS),
@@ -342,10 +343,17 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("missing string argument `code`"))?
         .to_string();
-    let is_js = match language {
+    // `#!bash` cell (harness arm): the script below the shebang is one `tool.bash` call.
+    let shell_cell = turn_arms::shell_cell(&code);
+    let code = shell_cell.clone().unwrap_or(code);
+    let is_js = if shell_cell.is_some() {
+        true
+    } else {
+        match language {
         "py" | "python" => false,
         "js" | "javascript" => true,
-        other => bail!("language must be \"py\" or \"js\" (was {other:?})"),
+            other => bail!("language must be \"py\" or \"js\" (was {other:?})"),
+        }
     };
     let lang = if is_js { Lang::Js } else { Lang::Py };
 
@@ -475,6 +483,29 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
                 push_timeout_annotation(&mut output, &result, true, timeout);
                 result.output = output.finish();
             }
+            // Salvage arm: a cell that failed to parse gets one retry without the model.
+            let mut salvaged = None;
+            if result.status != CellStatus::Ok && !shell_cell.is_some() {
+                if let Some((label, second)) = turn_arms::salvage_cell(cell_code, &result.output) {
+                    let k = Arc::clone(&kernel);
+                    let bridge = make_bridge();
+                    let cell_cancel = cancel.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        k.execute_with(&second, run_opts(&bridge, timeout, cell_cancel, None))
+                    })
+                    .await
+                    {
+                        Ok(Ok(mut second)) if second.status == CellStatus::Ok => {
+                            second.output = format!("[harness: the cell did not parse as JS; rerun {label}]\n{}", second.output);
+                            salvaged = Some(second);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(second) = salvaged {
+                result = second;
+            }
             eval_journal::record_cell(&cwd, lang, cell_code, &result);
             let failed = result.status != CellStatus::Ok;
             results.push(result);
@@ -551,7 +582,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             state.py = None;
         }
     }
-    let text = if stream_output {
+    let mut text = if stream_output {
         result.output.clone()
     } else {
         let mut text = output_prefix(kernel_loss_notice.as_deref(), replayed, results.len());
@@ -579,6 +610,11 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             cap_output_with(&text, &output_cfg)
         }
     };
+    // Nudge arm: a run of quiet cells gets one line of reminder in the result.
+    if let Some(note) = turn_arms::nudge(result.status == CellStatus::Ok, &text) {
+        let _ = write!(text, "\n\n[{note}]");
+    }
+    let text = text;
     // Images a cell displayed (PIL/_repr_png_ values, bridged `read` of an image file, image bundles)
     // reach the model as image content; the cell text alone cannot carry pixels.
     let images = display_images(&result.displays);
@@ -705,6 +741,7 @@ fn displays_for_details(displays: &[Value]) -> Vec<Value> {
 /// `details` payload: execution counter plus timeout annotations, omp-style.
 fn cell_details(result: &CellResult, replayed: bool) -> Value {
     json!({
+        "turnClass": turn_arms::cell_class(result.status == CellStatus::Ok, &result.output),
         "executionCount": result.execution_count,
         "status": format!("{:?}", result.status),
         "timedOut": result.timed_out,

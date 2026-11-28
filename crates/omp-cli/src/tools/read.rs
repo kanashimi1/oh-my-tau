@@ -39,10 +39,11 @@ const MAX_LINES: usize = 3000;
     clippy::cast_precision_loss
 )] // clamped to 1..=3000 before the cast
 fn default_limit(cwd: &Path) -> usize {
-    omp_settings::Settings::load(cwd)
+    let configured = omp_settings::Settings::load(cwd)
         .get_number("read.defaultLimit")
         .filter(|v| v.is_finite())
-        .map_or(DEFAULT_LIMIT, |v| v.clamp(1.0, MAX_LINES as f64) as usize)
+        .map_or(DEFAULT_LIMIT, |v| v.clamp(1.0, MAX_LINES as f64) as usize);
+    super::turn_arms::read_default_limit(configured)
 }
 const LEADING_CONTEXT: usize = 1;
 const TRAILING_CONTEXT: usize = 3;
