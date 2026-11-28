@@ -142,7 +142,7 @@ fn is_shell_shebang(line: &str) -> bool {
 }
 
 pub(super) fn shell_cell_if(code: &str, harness: bool) -> Option<String> {
-    if !harness && !arms().steps {
+    if !harness {
         return None;
     }
     let trimmed = code.trim_start_matches(['\u{feff}', ' ', '\t', '\r']);
@@ -170,7 +170,7 @@ pub(super) fn shell_cell_if(code: &str, harness: bool) -> Option<String> {
 /// `tool.bash` call, so a pure shell step needs no JS quoting.
 #[must_use]
 pub(crate) fn shell_cell(code: &str) -> Option<String> {
-    shell_cell_if(code, arms().harness)
+    shell_cell_if(code, arms().harness || arms().steps)
 }
 
 /// `OMP_TURN_ROTATE=<tokens>`: compaction threshold in tokens for the rotation arm.
