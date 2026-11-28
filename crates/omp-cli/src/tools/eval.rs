@@ -483,6 +483,29 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
                 push_timeout_annotation(&mut output, &result, true, timeout);
                 result.output = output.finish();
             }
+            // Salvage arm: a cell that failed to parse gets one retry without the model.
+            let mut salvaged = None;
+            if result.status != CellStatus::Ok && !shell_cell.is_some() {
+                if let Some((label, second)) = turn_arms::salvage_cell(cell_code, &result.output) {
+                    let k = Arc::clone(&kernel);
+                    let bridge = make_bridge();
+                    let cell_cancel = cancel.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        k.execute_with(&second, run_opts(&bridge, timeout, cell_cancel, None))
+                    })
+                    .await
+                    {
+                        Ok(Ok(mut second)) if second.status == CellStatus::Ok => {
+                            second.output = format!("[harness: the cell did not parse as JS; rerun {label}]\n{}", second.output);
+                            salvaged = Some(second);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(second) = salvaged {
+                result = second;
+            }
             eval_journal::record_cell(&cwd, lang, cell_code, &result);
             let failed = result.status != CellStatus::Ok;
             results.push(result);
@@ -559,7 +582,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             state.py = None;
         }
     }
-    let text = if stream_output {
+    let mut text = if stream_output {
         result.output.clone()
     } else {
         let mut text = output_prefix(kernel_loss_notice.as_deref(), replayed, results.len());
@@ -587,6 +610,11 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             cap_output_with(&text, &output_cfg)
         }
     };
+    // Nudge arm: a run of quiet cells gets one line of reminder in the result.
+    if let Some(note) = turn_arms::nudge(result.status == CellStatus::Ok, &text) {
+        let _ = write!(text, "\n\n[{note}]");
+    }
+    let text = text;
     // Images a cell displayed (PIL/_repr_png_ values, bridged `read` of an image file, image bundles)
     // reach the model as image content; the cell text alone cannot carry pixels.
     let images = display_images(&result.displays);
@@ -713,6 +741,7 @@ fn displays_for_details(displays: &[Value]) -> Vec<Value> {
 /// `details` payload: execution counter plus timeout annotations, omp-style.
 fn cell_details(result: &CellResult, replayed: bool) -> Value {
     json!({
+        "turnClass": turn_arms::cell_class(result.status == CellStatus::Ok, &result.output),
         "executionCount": result.execution_count,
         "status": format!("{:?}", result.status),
         "timedOut": result.timed_out,

@@ -141,6 +141,10 @@ pub fn load_settings_from(dir: &Path) -> CompactionSettings {
             s.strategy = Some("off".to_owned());
         }
     }
+    // Rotation arm: an explicit token threshold from the environment.
+    if let Some(t) = crate::tools::turn_arms::rotate_threshold_tokens() {
+        s.threshold_tokens = Some(t);
+    }
     // Flat dotted-key extension underneath the registry values.
     if let Some(config) = std::fs::read_to_string(dir.join("config.yml"))
         .ok()

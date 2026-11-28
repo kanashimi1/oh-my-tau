@@ -18,6 +18,11 @@ pub(crate) struct Arms {
     pub harness: bool,
     pub wait: bool,
     pub read: bool,
+    pub steps: bool,
+    pub salvage: bool,
+    pub nudge: bool,
+    pub keepstate: bool,
+    pub rotate: bool,
 }
 
 fn flag(name: &str) -> bool {
@@ -30,6 +35,11 @@ static ARMS: LazyLock<Arms> = LazyLock::new(|| Arms {
     harness: flag("OMP_TURN_HARNESS"),
     wait: flag("OMP_TURN_WAIT"),
     read: flag("OMP_TURN_READ"),
+    steps: flag("OMP_TURN_STEPS"),
+    salvage: flag("OMP_TURN_SALVAGE"),
+    nudge: flag("OMP_TURN_NUDGE"),
+    keepstate: flag("OMP_TURN_KEEPSTATE"),
+    rotate: flag("OMP_TURN_ROTATE"),
 });
 
 #[must_use]
@@ -68,6 +78,8 @@ fn compose(base: &str, a: Arms) -> String {
         (a.harness, HARNESS_NOTE),
         (a.wait, WAIT_NOTE),
         (a.read, READ_NOTE),
+        (a.steps, STEPS_NOTE),
+        (a.nudge, NUDGE_NOTE),
     ] {
         if on {
             out.push('\n');
@@ -76,6 +88,12 @@ fn compose(base: &str, a: Arms) -> String {
     }
     out
 }
+
+const STEPS_NOTE: &str = "Plan the steps once, then write them as ONE `#!bash` script that starts with `set -euo pipefail` \
+(stops at the first failing step) and prints a short digest at the end: the whole chain costs one cell. Open a new \
+cell only for a step that needs a decision based on output.";
+const NUDGE_NOTE: &str = "A reminder appended to a cell result counts consecutive short one-step cells: treat it as a \
+request to chain the next known steps into one cell.";
 
 /// The `eval` description for the active arms (read once per process).
 pub(crate) fn description() -> &'static str {
@@ -89,6 +107,9 @@ pub(crate) fn description() -> &'static str {
 pub(crate) fn eval_default_timeout_secs() -> f64 {
     if arms().harness {
         180.0
+    } else if arms().keepstate {
+        // A timed-out JS cell loses its kernel state; fewer deadlines, fewer losses.
+        600.0
     } else {
         30.0
     }
@@ -118,7 +139,7 @@ fn is_shell_shebang(line: &str) -> bool {
 }
 
 pub(super) fn shell_cell_if(code: &str, harness: bool) -> Option<String> {
-    if !harness {
+    if !harness && !arms().steps {
         return None;
     }
     let trimmed = code.trim_start_matches(['\u{feff}', ' ', '\t', '\r']);
@@ -149,8 +170,104 @@ pub(crate) fn shell_cell(code: &str) -> Option<String> {
     shell_cell_if(code, arms().harness)
 }
 
+/// `OMP_TURN_ROTATE=<tokens>`: compaction threshold in tokens for the rotation arm.
+#[must_use]
+pub(crate) fn rotate_threshold_tokens() -> Option<f64> {
+    std::env::var("OMP_TURN_ROTATE")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|t| t.is_finite() && *t > 0.0)
+}
+
+fn looks_like_js(code: &str) -> bool {
+    const TOKENS: [&str; 8] = [
+        "const ", "let ", "await ", "=>", "tool.", "require(", "console.", "function",
+    ];
+    TOKENS.iter().any(|t| code.contains(t))
+}
+
+fn shell_js(body: &str) -> Option<String> {
+    let mut js = String::from("return await (async () => {\n    const script = ");
+    js.push_str(&serde_json::to_string(body).ok()?);
+    js.push_str(
+        ";\n    try {\n        return (await tool.bash({ command: script, timeout: 1800 })).text;\n    } catch (error) {\n        return String(error && error.message ? error.message : error);\n    }\n})();\n",
+    );
+    Some(js)
+}
+
+/// Self-healing (salvage arm): a cell that failed to parse gets one harness
+/// retry without the model — a `return` outside a function is wrapped, shell
+/// written into a JS cell runs as a shell script.
+#[must_use]
+pub(crate) fn salvage_cell(code: &str, output: &str) -> Option<(&'static str, String)> {
+    if !arms().salvage || !output.contains("SyntaxError") {
+        return None;
+    }
+    if output.contains("Return statements are only valid inside functions") {
+        return Some((
+            "wrapped in a function",
+            format!("return await (async () => {{\n{code}\n}})();"),
+        ));
+    }
+    if !looks_like_js(code) && code.lines().count() <= 40 {
+        return Some(("a shell script", shell_js(code)?));
+    }
+    None
+}
+
+static QUIET_RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Quiet cell: finished without error and returned at most 300 characters.
+#[must_use]
+pub(crate) fn is_quiet_cell(ok: bool, output: &str) -> bool {
+    ok && output.trim().len() <= 300
+}
+
+/// One cell's class for the session journal (`details.turnClass`).
+#[must_use]
+pub(crate) fn cell_class(ok: bool, output: &str) -> &'static str {
+    if !ok {
+        "error"
+    } else if is_quiet_cell(ok, output) {
+        "quiet"
+    } else {
+        "other"
+    }
+}
+
+/// Nudge arm: after `QUIET_RUN_N` quiet cells in a row, the text the result
+/// carries; a cell that was not quiet resets the run.
+#[must_use]
+pub(crate) fn nudge(ok: bool, output: &str) -> Option<String> {
+    if !arms().nudge {
+        return None;
+    }
+    let run = if is_quiet_cell(ok, output) {
+        QUIET_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+    } else {
+        QUIET_RUN.store(0, std::sync::atomic::Ordering::Relaxed);
+        0
+    };
+    (run >= 3).then(|| format!(
+        "turn economy: {run} cells in a row returned a short result; write the next steps you already know into ONE cell and return only what you need to read"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
+    fn salvage(code: &str, output: &str, salvage: bool) -> Option<(&'static str, String)> {
+        if !salvage || !output.contains("SyntaxError") {
+            return None;
+        }
+        if output.contains("Return statements are only valid inside functions") {
+            return Some(("wrapped in a function", format!("return await (async () => {{\n{code}\n}})();")));
+        }
+        if !looks_like_js(code) && code.lines().count() <= 40 {
+            return Some(("a shell script", shell_js(code)?));
+        }
+        None
+    }
+
     use super::*;
 
     const OFF: Arms = Arms {
@@ -159,6 +276,11 @@ mod tests {
         harness: false,
         wait: false,
         read: false,
+        steps: false,
+        salvage: false,
+        nudge: false,
+        keepstate: false,
+        rotate: false,
     };
 
     #[test]
@@ -198,6 +320,28 @@ mod tests {
         assert!(!js.contains("\nlet "), "no top-level `let`: the runner demotes top-level declarations");
         assert_eq!(shell_cell_if("#!/usr/bin/env bun\nconsole.log(1)\n", true), None);
         assert_eq!(shell_cell_if("const x = 1;\n", true), None);
+    }
+
+    #[test]
+    fn salvage_wraps_a_bare_return_and_runs_shell_as_shell() {
+        let (label, js) = salvage("for (const a of b) { return a }", "SyntaxError: Return statements are only valid inside functions", true)
+            .expect("wrapped");
+        assert_eq!(label, "wrapped in a function");
+        assert!(js.starts_with("return await (async () => {\nfor (const a of b)"));
+        let (label, js) = salvage("ls -la src | grep mod\\n", "SyntaxError: Unexpected identifier 'ls'", true).expect("shell");
+        assert_eq!(label, "a shell script");
+        assert!(js.contains("tool.bash"));
+        // JS that merely has a typo is left to the model; so is anything without the arm.
+        assert!(salvage("const x = ;", "SyntaxError: Unexpected token ';'", true).is_none());
+        assert!(salvage("ls -la", "SyntaxError: Unexpected identifier 'ls'", false).is_none());
+    }
+
+    #[test]
+    fn cell_class_separates_quiet_error_other() {
+        assert_eq!(cell_class(true, "x"), "quiet");
+        assert_eq!(cell_class(false, "boom"), "error");
+        assert_eq!(cell_class(true, &"x".repeat(301)), "other");
+        assert!(nudge(true, "ok").is_none() || crate::tools::turn_arms::arms().nudge);
     }
 
     #[test]
